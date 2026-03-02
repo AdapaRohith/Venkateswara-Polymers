@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-primary: #0f0f14;
+  --color-bg-card: #16161f;
+  --color-bg-input: #1c1c28;
+  --color-bg-tooltip: #1c1c28;
+  --color-border-default: #2a2a3a;
+  --color-border-subtle: #202030;
+  --color-text-primary: #ededf0;
+  --color-text-secondary: #9494a8;
+  --color-accent-gold: #a78bfa;
+  --color-accent-gold-hover: #8b5cf6;
+  --color-accent-gold-muted: #a78bfa33;
+  --color-chart-bar1: #a78bfa;
+  --color-chart-bar2: #7c3aed;
+  --color-chart-bar3: #6366f1;
+  --color-chart-bar4: #4f46e5;
+  --color-chart-line: #a78bfa;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--color-bg-primary);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #2a2a3a;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a3a4f;
+  }
+
+  input:focus,
+  select:focus {
+    outline: none;
+  }
+
+  @keyframes slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-slide-up {
+    animation: slide-up 0.3s ease-out;
+  }
+}
