@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useToast } from '../components/Toast'
+import InputWithCamera from '../components/InputWithCamera'
 import { createOrder, logRoll, fetchOrdersSummary } from '../utils/api'
 
 export default function DataEntry() {
@@ -105,23 +106,21 @@ export default function DataEntry() {
                     <form onSubmit={handleCreateOrder} className="space-y-5">
                         <div className="space-y-2">
                             <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Order Number</label>
-                            <input
+                            <InputWithCamera
                                 type="text"
                                 value={orderForm.order_number}
                                 onChange={(e) => setOrderForm((p) => ({ ...p, order_number: e.target.value }))}
                                 placeholder="e.g. ORD001"
-                                className={inputClass}
                                 required
                             />
                         </div>
                         <div className="space-y-2">
                             <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Client Name</label>
-                            <input
+                            <InputWithCamera
                                 type="text"
                                 value={orderForm.client_name}
                                 onChange={(e) => setOrderForm((p) => ({ ...p, client_name: e.target.value }))}
                                 placeholder="e.g. ABC Plastics"
-                                className={inputClass}
                                 required
                             />
                         </div>
@@ -174,27 +173,25 @@ export default function DataEntry() {
                         <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-2">
                                 <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Gross Weight</label>
-                                <input
+                                <InputWithCamera
                                     type="number"
                                     step="0.01"
                                     min="0"
                                     value={rollForm.gross_weight}
                                     onChange={(e) => setRollForm((p) => ({ ...p, gross_weight: e.target.value }))}
                                     placeholder="0.00"
-                                    className={inputClass}
                                     required
                                 />
                             </div>
                             <div className="space-y-2">
                                 <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Net Weight</label>
-                                <input
+                                <InputWithCamera
                                     type="number"
                                     step="0.01"
                                     min="0"
                                     value={rollForm.net_weight}
                                     onChange={(e) => setRollForm((p) => ({ ...p, net_weight: e.target.value }))}
                                     placeholder="0.00"
-                                    className={inputClass}
                                     required
                                 />
                             </div>

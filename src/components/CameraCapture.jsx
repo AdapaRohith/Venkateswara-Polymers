@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 
-export default function CameraCapture({ open, onClose }) {
+export default function CameraCapture({ open, onClose, onCapture }) {
     const [mode, setMode] = useState(null) // null | 'camera' | 'upload'
     const [preview, setPreview] = useState(null)
     const [stream, setStream] = useState(null)
@@ -96,6 +96,16 @@ export default function CameraCapture({ open, onClose }) {
         setCameraError(null)
     }
 
+    // Handle done action to pass the image data back upward
+    const handleDone = () => {
+        if (onCapture && preview) {
+            onCapture(preview)
+        } else {
+            handleClose()
+        }
+        setPreview(null)
+    }
+
     if (!open) return null
 
     return (
@@ -142,7 +152,7 @@ export default function CameraCapture({ open, onClose }) {
                                     Retake
                                 </button>
                                 <button
-                                    onClick={handleClose}
+                                    onClick={handleDone}
                                     className="flex-1 py-2.5 px-4 rounded-lg bg-accent-gold text-black text-sm font-semibold transition-all hover:bg-accent-gold-hover active:scale-[0.98]"
                                 >
                                     Done

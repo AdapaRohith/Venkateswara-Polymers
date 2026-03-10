@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import DataTable from '../components/DataTable'
+import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 
 const columns = [
@@ -130,12 +131,11 @@ export default function RawMaterial({ data, setData }) {
                 <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Date</label>
-                        <input
+                        <InputWithCamera
                             type="date"
                             name="date"
                             value={form.date}
                             onChange={handleChange}
-                            className={inputClass}
                             required
                         />
                     </div>
@@ -143,14 +143,14 @@ export default function RawMaterial({ data, setData }) {
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Quantity Received</label>
                         <div className="flex gap-2">
-                            <input
+                            <InputWithCamera
                                 type="text"
                                 inputMode="decimal"
                                 name="quantityReceived"
                                 value={form.quantityReceived}
                                 onChange={handleChange}
                                 placeholder="0.00"
-                                className={`${inputClass} flex-1`}
+                                className="flex-1"
                                 required
                             />
                             <select
@@ -167,28 +167,26 @@ export default function RawMaterial({ data, setData }) {
 
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Gross Weight</label>
-                        <input
+                        <InputWithCamera
                             type="number"
                             name="grossWeight"
                             value={form.grossWeight}
                             onChange={handleChange}
                             step="0.01"
                             placeholder="0.00"
-                            className={inputClass}
                             required
                         />
                     </div>
 
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Tare Weight</label>
-                        <input
+                        <InputWithCamera
                             type="number"
                             name="tareWeight"
                             value={form.tareWeight}
                             onChange={handleChange}
                             step="0.01"
                             placeholder="0.00"
-                            className={inputClass}
                             required
                         />
                     </div>
@@ -204,13 +202,12 @@ export default function RawMaterial({ data, setData }) {
 
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Size & Mic</label>
-                        <input
+                        <InputWithCamera
                             type="text"
                             name="sizeMic"
                             value={form.sizeMic}
                             onChange={handleChange}
                             placeholder="e.g. 12mm / 3.5 mic"
-                            className={inputClass}
                         />
                     </div>
 

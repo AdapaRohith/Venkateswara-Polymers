@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import DataTable from '../components/DataTable'
+import InputWithCamera from '../components/InputWithCamera'
 import { WastageAreaChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
 import { logRoll, fetchOrdersSummary, createOrder, deleteRoll } from '../utils/api'
@@ -246,8 +247,8 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
                             </div>
                             {showNewOrder ? (
                                 <div className="space-y-2">
-                                    <input type="text" name="newOrder" value={form.newOrder} onChange={handleChange} placeholder="Order number" className={inputClass} />
-                                    <input type="text" name="newClient" value={form.newClient} onChange={handleChange} placeholder="Client name" className={inputClass} />
+                                    <InputWithCamera type="text" name="newOrder" value={form.newOrder} onChange={handleChange} placeholder="Order number" />
+                                    <InputWithCamera type="text" name="newClient" value={form.newClient} onChange={handleChange} placeholder="Client name" />
                                 </div>
                             ) : (
                                 <select name="order_number" value={form.order_number} onChange={handleChange} className={`${inputClass} appearance-none cursor-pointer`} required={!showNewOrder}>
@@ -283,11 +284,11 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
                         <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-2">
                                 <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Gross Weight</label>
-                                <input type="number" name="gross_weight" value={form.gross_weight} onChange={handleChange} step="0.01" placeholder="0.00" className={inputClass} required />
+                                <InputWithCamera type="number" name="gross_weight" value={form.gross_weight} onChange={handleChange} step="0.01" placeholder="0.00" required />
                             </div>
                             <div className="space-y-2">
                                 <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Net Weight</label>
-                                <input type="number" name="net_weight" value={form.net_weight} onChange={handleChange} step="0.01" placeholder="0.00" className={inputClass} required />
+                                <InputWithCamera type="number" name="net_weight" value={form.net_weight} onChange={handleChange} step="0.01" placeholder="0.00" required />
                             </div>
                         </div>
 

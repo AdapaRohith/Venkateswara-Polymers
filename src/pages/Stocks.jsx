@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import { SectionBarChart } from '../components/Charts'
+import InputWithCamera from '../components/InputWithCamera'
 
 // Convert any unit to kg
 function toKg(value, unit) {
@@ -224,12 +225,11 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
                 <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Date</label>
-                        <input
+                        <InputWithCamera
                             type="date"
                             name="date"
                             value={form.date}
                             onChange={handleChange}
-                            className={inputClass}
                             required
                         />
                     </div>
@@ -255,14 +255,14 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Quantity Used</label>
                         <div className="flex gap-2">
-                            <input
+                            <InputWithCamera
                                 type="text"
                                 inputMode="decimal"
                                 name="quantityUsed"
                                 value={form.quantityUsed}
                                 onChange={handleChange}
                                 placeholder="0.00"
-                                className={`${inputClass} flex-1`}
+                                className="flex-1"
                                 required
                             />
                             <select

@@ -72,7 +72,22 @@ const navItems = [
 export default function Sidebar() {
     const [open, setOpen] = useState(false)
     const [cameraOpen, setCameraOpen] = useState(false)
+    const [isDarkMode, setIsDarkMode] = useState(true)
     const location = useLocation()
+
+    useEffect(() => {
+        setIsDarkMode(document.documentElement.classList.contains('dark'))
+    }, [])
+
+    const toggleTheme = () => {
+        if (isDarkMode) {
+            document.documentElement.classList.remove('dark')
+            setIsDarkMode(false)
+        } else {
+            document.documentElement.classList.add('dark')
+            setIsDarkMode(true)
+        }
+    }
 
     // Close sidebar on route change (mobile)
     useEffect(() => {
@@ -184,6 +199,27 @@ export default function Sidebar() {
                         <div className="text-left">
                             <p className="text-xs font-semibold tracking-wide">Scan / Upload</p>
                             <p className="text-[10px] text-text-secondary/50 font-normal">Camera or file</p>
+                        </div>
+                    </button>
+                </div>
+
+                {/* Theme Toggle */}
+                <div className="px-4 pb-3">
+                    <button
+                        onClick={toggleTheme}
+                        className="w-full flex items-center justify-between px-4 py-3 rounded-xl border border-border-default text-text-secondary hover:bg-white/[0.03] transition-all group"
+                    >
+                        <div className="flex items-center gap-3">
+                            {isDarkMode ? (
+                                <svg className="w-5 h-5 text-accent-gold" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+                                </svg>
+                            ) : (
+                                <svg className="w-5 h-5 text-accent-gold" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
+                                </svg>
+                            )}
+                            <span className="text-xs font-semibold tracking-wide">{isDarkMode ? 'Dark Mode' : 'Light Mode'}</span>
                         </div>
                     </button>
                 </div>

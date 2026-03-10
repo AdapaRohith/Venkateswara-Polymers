@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import DataTable from '../components/DataTable'
+import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
 import { logRoll, fetchOrdersSummary, createOrder, deleteRoll } from '../utils/api'
@@ -266,7 +267,7 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
                 <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Date</label>
-                        <input type="date" name="date" value={form.date} onChange={handleChange} className={inputClass} required />
+                        <InputWithCamera type="date" name="date" value={form.date} onChange={handleChange} required />
                     </div>
 
                     <div className="space-y-2">
@@ -278,8 +279,8 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
                         </div>
                         {showNewOrder ? (
                             <div className="space-y-2">
-                                <input type="text" name="newOrder" value={form.newOrder} onChange={handleChange} placeholder="Order number" className={inputClass} />
-                                <input type="text" name="newClient" value={form.newClient} onChange={handleChange} placeholder="Client name" className={inputClass} />
+                                <InputWithCamera type="text" name="newOrder" value={form.newOrder} onChange={handleChange} placeholder="Order number" />
+                                <InputWithCamera type="text" name="newClient" value={form.newClient} onChange={handleChange} placeholder="Client name" />
                             </div>
                         ) : (
                             <select name="order_number" value={form.order_number} onChange={handleChange} className={`${inputClass} appearance-none cursor-pointer`} required={!showNewOrder}>
@@ -314,12 +315,12 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
 
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Gross Weight</label>
-                        <input type="number" name="grossWeight" value={form.grossWeight} onChange={handleChange} step="0.01" placeholder="0.00" className={inputClass} required />
+                        <InputWithCamera type="number" name="grossWeight" value={form.grossWeight} onChange={handleChange} step="0.01" placeholder="0.00" required />
                     </div>
 
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Tare Weight</label>
-                        <input type="number" name="tareWeight" value={form.tareWeight} onChange={handleChange} step="0.01" placeholder="0.00" className={inputClass} required />
+                        <InputWithCamera type="number" name="tareWeight" value={form.tareWeight} onChange={handleChange} step="0.01" placeholder="0.00" required />
                     </div>
 
                     <div className="space-y-2">
@@ -333,7 +334,7 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
 
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Size & Mic</label>
-                        <input type="text" name="sizeMic" value={form.sizeMic} onChange={handleChange} placeholder="e.g. 12mm / 3.5 mic" className={inputClass} />
+                        <InputWithCamera type="text" name="sizeMic" value={form.sizeMic} onChange={handleChange} placeholder="e.g. 12mm / 3.5 mic" />
                     </div>
 
                     <div className="flex items-end md:col-span-2">

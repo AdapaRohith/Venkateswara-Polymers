@@ -1,23 +1,65 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg-primary: #0f0f14;
-  --color-bg-card: #16161f;
-  --color-bg-input: #1c1c28;
-  --color-bg-tooltip: #1c1c28;
-  --color-border-default: #2a2a3a;
-  --color-border-subtle: #202030;
-  --color-text-primary: #ededf0;
-  --color-text-secondary: #9494a8;
-  --color-accent-gold: #a78bfa;
-  --color-accent-gold-hover: #8b5cf6;
-  --color-accent-gold-muted: #a78bfa33;
-  --color-chart-bar1: #a78bfa;
-  --color-chart-bar2: #7c3aed;
-  --color-chart-bar3: #6366f1;
-  --color-chart-bar4: #4f46e5;
-  --color-chart-line: #a78bfa;
+  --color-primary: var(--primary);
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-card: var(--bg-card);
+  --color-bg-input: var(--bg-input);
+  --color-bg-tooltip: var(--bg-tooltip);
+  --color-border-default: var(--border-default);
+  --color-border-subtle: var(--border-subtle);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-accent-gold: var(--accent-gold);
+  --color-accent-gold-hover: var(--accent-gold-hover);
+  --color-accent-gold-muted: var(--accent-gold-muted);
+  --color-chart-bar1: var(--chart-bar1);
+  --color-chart-bar2: var(--chart-bar2);
+  --color-chart-bar3: var(--chart-bar3);
+  --color-chart-bar4: var(--chart-bar4);
+  --color-chart-line: var(--chart-line);
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  :root {
+    --primary: #19b2b3;
+    --bg-primary: #f6f6f8;
+    --bg-card: #ffffff;
+    --bg-input: #ffffff;
+    --bg-tooltip: #f1f5f9;
+    --border-default: #e2e8f0;
+    --border-subtle: #f8fafc;
+    --text-primary: #0f172a;
+    --text-secondary: #64748b;
+    --accent-gold: #19b2b3;
+    --accent-gold-hover: #148f8f;
+    --accent-gold-muted: rgba(25, 178, 179, 0.15);
+    --chart-bar1: #19b2b3;
+    --chart-bar2: #38bdf8;
+    --chart-bar3: #818cf8;
+    --chart-bar4: #c084fc;
+    --chart-line: #19b2b3;
+  }
+
+  .dark {
+    --bg-primary: #0f0f14;
+    --bg-card: #16161f;
+    --bg-input: #1c1c28;
+    --bg-tooltip: #1c1c28;
+    --border-default: #2a2a3a;
+    --border-subtle: #202030;
+    --text-primary: #ededf0;
+    --text-secondary: #9494a8;
+    --accent-gold: #a78bfa;
+    --accent-gold-hover: #8b5cf6;
+    --accent-gold-muted: #a78bfa33;
+    --chart-bar1: #a78bfa;
+    --chart-bar2: #7c3aed;
+    --chart-bar3: #6366f1;
+    --chart-bar4: #4f46e5;
+    --chart-line: #a78bfa;
+  }
 }
 
 @layer base {
