@@ -13,24 +13,28 @@ export default function Dashboard({ rawMaterials, manufacturingData, tradingData
         [manufacturingData]
     )
 
+    const totalTradingNet = useMemo(
+        () => tradingData.reduce((sum, item) => sum + item.netWeight, 0),
+        [tradingData]
+    )
+
     const totalTradingValue = useMemo(
         () => tradingData.reduce((sum, item) => sum + item.totalValue, 0),
         [tradingData]
     )
 
     const totalWastage = useMemo(
-        () => Math.max(0, totalRawNet - (totalMfgNet + tradingData.reduce((s, i) => s + i.netWeight, 0))),
-        [totalRawNet, totalMfgNet, tradingData]
+        () => Math.max(0, totalRawNet - totalMfgNet),
+        [totalRawNet, totalMfgNet]
     )
 
     const barChartData = useMemo(
         () => [
             { name: 'Raw Material', value: totalRawNet },
             { name: 'Manufacturing', value: totalMfgNet },
-            { name: 'Trading', value: totalTradingValue },
             { name: 'Wastage', value: totalWastage },
         ],
-        [totalRawNet, totalMfgNet, totalTradingValue, totalWastage]
+        [totalRawNet, totalMfgNet, totalWastage]
     )
 
     // Build running cumulative chart data for each category
@@ -52,7 +56,6 @@ export default function Dashboard({ rawMaterials, manufacturingData, tradingData
         const allEntries = [
             ...rawMaterials.map(e => ({ id: e.id, netWeight: +e.netWeight })),
             ...manufacturingData.map(e => ({ id: e.id, netWeight: -e.netWeight })),
-            ...tradingData.map(e => ({ id: e.id, netWeight: -e.netWeight })),
         ].sort((a, b) => a.id - b.id)
 
         let cumulative = 0
@@ -60,7 +63,7 @@ export default function Dashboard({ rawMaterials, manufacturingData, tradingData
             cumulative += entry.netWeight
             return { label: `#${idx + 1}`, value: parseFloat(Math.max(0, cumulative).toFixed(2)) }
         })
-    }, [rawMaterials, manufacturingData, tradingData])
+    }, [rawMaterials, manufacturingData])
 
     return (
         <div className="space-y-8">

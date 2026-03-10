@@ -27,3 +27,24 @@ export const logRoll = (body) =>
 
 export const deleteRoll = (id) =>
     request(`${POST_API}/rolls/${id}`, { method: 'DELETE' })
+
+// Fetch all rolls across all orders, grouped by material
+export async function fetchAllRolls() {
+    const orders = await fetchOrdersSummary()
+    const allRolls = { manufactured: [], trading: [], waste: [] }
+
+    const details = await Promise.all(
+        orders.map((o) => fetchOrderDetails(o.order_number).catch(() => ({ rolls: [] })))
+    )
+
+    details.forEach((d) => {
+        (d.rolls || []).forEach((roll) => {
+            const mat = (roll.material || '').toLowerCase()
+            if (allRolls[mat]) {
+                allRolls[mat].push(roll)
+            }
+        })
+    })
+
+    return allRolls
+}

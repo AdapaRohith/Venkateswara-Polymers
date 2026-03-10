@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import DataTable from '../components/DataTable'
+import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
 import { logRoll, fetchOrdersSummary, createOrder, deleteRoll } from '../utils/api'
 
@@ -120,8 +121,26 @@ export default function Trading({ data, setData }) {
         setData((prev) => prev.filter((item) => item.id !== id).map((item, idx) => ({ ...item, sno: idx + 1 })))
     }
 
+    // ── Summary calculations ──
+    const today = new Date().toISOString().split('T')[0]
+    const todayEntries = data.filter((d) => d.date === today)
+
     const totalBuyValue = data.filter(d => d.type === 'Buy').reduce((s, i) => s + i.totalValue, 0)
     const totalSellValue = data.filter(d => d.type === 'Sell').reduce((s, i) => s + i.totalValue, 0)
+    const todayCount = todayEntries.length
+    const todayValue = todayEntries.reduce((s, i) => s + i.totalValue, 0)
+
+    // Chart: daily net weight breakdown
+    const chartData = useMemo(() => {
+        const map = {}
+        data.forEach((d) => {
+            if (!map[d.date]) map[d.date] = 0
+            map[d.date] += d.netWeight
+        })
+        return Object.entries(map)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([date, value]) => ({ name: date, value }))
+    }, [data])
 
     return (
         <div className="space-y-8">
@@ -130,8 +149,8 @@ export default function Trading({ data, setData }) {
                 <p className="text-sm text-text-secondary mt-1">Track stock bought and sold — synced to backend</p>
             </div>
 
-            {/* Summary */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Summary Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Entries</p>
@@ -147,7 +166,18 @@ export default function Trading({ data, setData }) {
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Sold (₹)</p>
                     <p className="text-3xl font-semibold text-emerald-400">₹{totalSellValue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
                 </div>
+                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-violet-500/80 via-violet-500/40 to-transparent" />
+                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Today's Entries</p>
+                    <p className="text-3xl font-semibold text-text-primary">{todayCount}</p>
+                    <p className="text-xs text-text-secondary/50 mt-1">₹{todayValue.toLocaleString('en-IN', { minimumFractionDigits: 2 })} total</p>
+                </div>
             </div>
+
+            {/* Chart */}
+            {chartData.length > 0 && (
+                <SectionBarChart data={chartData} title="Daily Trading Volume" color="#34d399" />
+            )}
 
             {/* Form */}
             <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6">

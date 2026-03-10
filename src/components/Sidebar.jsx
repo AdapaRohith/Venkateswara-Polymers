@@ -1,4 +1,6 @@
-import { NavLink } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
+import CameraCapture from './CameraCapture'
 
 const navItems = [
     {
@@ -16,6 +18,15 @@ const navItems = [
         icon: (
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
+            </svg>
+        ),
+    },
+    {
+        name: 'Stocks',
+        path: '/stocks',
+        icon: (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125v-3.75m16.5 3.75v3.75c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125v-3.75" />
             </svg>
         ),
     },
@@ -59,51 +70,132 @@ const navItems = [
 ]
 
 export default function Sidebar() {
+    const [open, setOpen] = useState(false)
+    const [cameraOpen, setCameraOpen] = useState(false)
+    const location = useLocation()
+
+    // Close sidebar on route change (mobile)
+    useEffect(() => {
+        setOpen(false)
+    }, [location.pathname])
+
     return (
-        <aside className="fixed left-0 top-0 h-screen w-64 bg-bg-card border-r border-border-default flex flex-col z-50">
-            {/* Logo */}
-            <div className="px-6 py-8 border-b border-border-default">
-                <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-lg bg-accent-gold/10 flex items-center justify-center">
-                        <span className="text-accent-gold font-bold text-sm">VP</span>
+        <>
+            {/* Mobile top bar */}
+            <div className="lg:hidden fixed top-0 left-0 right-0 h-14 bg-bg-card border-b border-border-default flex items-center px-4 z-50">
+                <button
+                    onClick={() => setOpen(true)}
+                    className="text-text-primary p-2 -ml-2 rounded-lg hover:bg-white/[0.05] transition-colors"
+                    aria-label="Open menu"
+                >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+                    </svg>
+                </button>
+                <div className="flex items-center gap-2 ml-3">
+                    <div className="w-7 h-7 rounded-md bg-accent-gold/10 flex items-center justify-center">
+                        <span className="text-accent-gold font-bold text-[10px]">VP</span>
                     </div>
-                    <div>
-                        <h1 className="text-base font-semibold tracking-wide text-text-primary">Venkateswara</h1>
-                        <p className="text-[11px] text-text-secondary tracking-widest uppercase">Polymers</p>
-                    </div>
+                    <span className="text-sm font-semibold text-text-primary tracking-wide">Venkateswara</span>
                 </div>
             </div>
 
-            {/* Navigation */}
-            <nav className="flex-1 px-3 py-6 overflow-y-auto">
-                <p className="px-3 mb-4 text-[10px] font-medium tracking-widest uppercase text-text-secondary/60">
-                    Navigation
-                </p>
-                <ul className="space-y-1">
-                    {navItems.map((item) => (
-                        <li key={item.path}>
-                            <NavLink
-                                to={item.path}
-                                end={item.path === '/'}
-                                className={({ isActive }) =>
-                                    `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 border-l-2 ${isActive
-                                        ? 'text-accent-gold border-accent-gold bg-accent-gold/5'
-                                        : 'text-text-secondary border-transparent hover:text-text-primary hover:bg-white/[0.03]'
-                                    }`
-                                }
-                            >
-                                {item.icon}
-                                <span>{item.name}</span>
-                            </NavLink>
-                        </li>
-                    ))}
-                </ul>
-            </nav>
+            {/* Overlay */}
+            {open && (
+                <div
+                    className="lg:hidden fixed inset-0 bg-black/60 z-[60] backdrop-blur-sm"
+                    onClick={() => setOpen(false)}
+                />
+            )}
 
-            {/* Footer */}
-            <div className="px-6 py-4 border-t border-border-default">
-                <p className="text-[10px] text-text-secondary/40 tracking-wide">© 2026 Venkateswara Polymers</p>
-            </div>
-        </aside>
+            {/* Sidebar panel */}
+            <aside
+                className={`
+                    fixed left-0 top-0 h-screen w-64 bg-bg-card border-r border-border-default flex flex-col z-[70]
+                    transition-transform duration-300 ease-in-out
+                    lg:translate-x-0
+                    ${open ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+                `}
+            >
+                {/* Logo + close */}
+                <div className="px-6 py-8 border-b border-border-default">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 rounded-lg bg-accent-gold/10 flex items-center justify-center">
+                                <span className="text-accent-gold font-bold text-sm">VP</span>
+                            </div>
+                            <div>
+                                <h1 className="text-base font-semibold tracking-wide text-text-primary">Venkateswara</h1>
+                                <p className="text-[11px] text-text-secondary tracking-widest uppercase">Polymers</p>
+                            </div>
+                        </div>
+                        {/* Close button (mobile only) */}
+                        <button
+                            onClick={() => setOpen(false)}
+                            className="lg:hidden text-text-secondary hover:text-text-primary p-1 rounded-lg hover:bg-white/[0.05] transition-colors"
+                            aria-label="Close menu"
+                        >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                {/* Navigation */}
+                <nav className="flex-1 px-3 py-6 overflow-y-auto">
+                    <p className="px-3 mb-4 text-[10px] font-medium tracking-widest uppercase text-text-secondary/60">
+                        Navigation
+                    </p>
+                    <ul className="space-y-1">
+                        {navItems.map((item) => (
+                            <li key={item.path}>
+                                <NavLink
+                                    to={item.path}
+                                    end={item.path === '/'}
+                                    className={({ isActive }) =>
+                                        `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 border-l-2 ${isActive
+                                            ? 'text-accent-gold border-accent-gold bg-accent-gold/5'
+                                            : 'text-text-secondary border-transparent hover:text-text-primary hover:bg-white/[0.03]'
+                                        }`
+                                    }
+                                >
+                                    {item.icon}
+                                    <span>{item.name}</span>
+                                </NavLink>
+                            </li>
+                        ))}
+                    </ul>
+                </nav>
+
+                {/* Scan / Upload Button */}
+                <div className="px-4 pb-3">
+                    <button
+                        onClick={() => setCameraOpen(true)}
+                        className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-dashed border-accent-gold/30 text-accent-gold hover:bg-accent-gold/[0.05] hover:border-accent-gold/50 transition-all group"
+                    >
+                        <div className="relative w-9 h-9 rounded-lg bg-accent-gold/10 flex items-center justify-center shrink-0 group-hover:bg-accent-gold/20 transition-colors">
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z" />
+                            </svg>
+                            <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-accent-gold rounded-full animate-pulse" />
+                        </div>
+                        <div className="text-left">
+                            <p className="text-xs font-semibold tracking-wide">Scan / Upload</p>
+                            <p className="text-[10px] text-text-secondary/50 font-normal">Camera or file</p>
+                        </div>
+                    </button>
+                </div>
+
+                {/* Footer */}
+                <div className="px-6 py-4 border-t border-border-default">
+                    <p className="text-[10px] text-text-secondary/40 tracking-wide">© 2026 Venkateswara Polymers</p>
+                </div>
+            </aside>
+
+            {/* Camera / Upload Modal */}
+            <CameraCapture open={cameraOpen} onClose={() => setCameraOpen(false)} />
+        </>
     )
 }

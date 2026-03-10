@@ -124,3 +124,31 @@ export function WastageAreaChart({ data }) {
         </div>
     )
 }
+
+export function SectionBarChart({ data, title = 'Breakdown', color = '#a78bfa' }) {
+    return (
+        <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6">
+            <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">
+                {title}
+            </h3>
+            <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={data} barCategoryGap="30%">
+                    <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" vertical={false} />
+                    <XAxis
+                        dataKey="name"
+                        tick={{ fill: '#9494a8', fontSize: 12 }}
+                        axisLine={{ stroke: '#2a2a3a' }}
+                        tickLine={false}
+                    />
+                    <YAxis
+                        tick={{ fill: '#9494a8', fontSize: 12 }}
+                        axisLine={false}
+                        tickLine={false}
+                    />
+                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(167,139,250,0.04)' }} />
+                    <Bar dataKey="value" fill={color} radius={[4, 4, 0, 0]} maxBarSize={48} />
+                </BarChart>
+            </ResponsiveContainer>
+        </div>
+    )
+}
