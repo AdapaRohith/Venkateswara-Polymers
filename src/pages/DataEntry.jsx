@@ -1,7 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useToast } from '../components/Toast'
 import InputWithCamera from '../components/InputWithCamera'
-import { createOrder, logRoll, fetchOrdersSummary } from '../utils/api'
 
 export default function DataEntry() {
     const toast = useToast()
@@ -21,37 +20,24 @@ export default function DataEntry() {
     const [orders, setOrders] = useState([])
 
     // Fetch existing orders for dropdown
-    useEffect(() => {
-        fetchOrdersSummary()
-            .then((data) => setOrders(data))
-            .catch(() => { })
-    }, [])
 
-    const refreshOrders = () => {
-        fetchOrdersSummary()
-            .then((data) => setOrders(data))
-            .catch(() => { })
-    }
 
     // ── Create Order handler ──
-    const handleCreateOrder = async (e) => {
+    const handleCreateOrder = (e) => {
         e.preventDefault()
         if (!orderForm.order_number.trim() || !orderForm.client_name.trim()) return
-        setOrderLoading(true)
-        try {
-            await createOrder(orderForm)
-            toast.success(`Order "${orderForm.order_number}" created successfully`)
-            setOrderForm({ order_number: '', client_name: '' })
-            refreshOrders()
-        } catch (err) {
-            toast.error(err.message)
-        } finally {
-            setOrderLoading(false)
+        const alreadyExists = orders.some((o) => o.order_number === orderForm.order_number.trim())
+        if (alreadyExists) {
+            toast.error('Order already exists')
+            return
         }
+        setOrders((prev) => [...prev, { order_number: orderForm.order_number.trim(), client_name: orderForm.client_name.trim() }])
+        toast.success(`Order "${orderForm.order_number}" created successfully`)
+        setOrderForm({ order_number: '', client_name: '' })
     }
 
     // ── Log Roll handler ──
-    const handleLogRoll = async (e) => {
+    const handleLogRoll = (e) => {
         e.preventDefault()
         const gross = parseFloat(rollForm.gross_weight)
         const net = parseFloat(rollForm.net_weight)
@@ -69,21 +55,8 @@ export default function DataEntry() {
             return
         }
 
-        setRollLoading(true)
-        try {
-            await logRoll({
-                order_number: rollForm.order_number,
-                material: rollForm.material,
-                gross_weight: gross,
-                net_weight: net,
-            })
-            toast.success('Roll logged successfully')
-            setRollForm((prev) => ({ ...prev, gross_weight: '', net_weight: '' }))
-        } catch (err) {
-            toast.error(err.message)
-        } finally {
-            setRollLoading(false)
-        }
+        toast.success('Roll logged successfully')
+        setRollForm((prev) => ({ ...prev, gross_weight: '', net_weight: '' }))
     }
 
     const inputClass =

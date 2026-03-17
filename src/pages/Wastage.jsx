@@ -1,9 +1,8 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { WastageAreaChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
-import { logRoll, fetchOrdersSummary, createOrder, deleteRoll } from '../utils/api'
 
 const historyColumns = [
     { key: 'sno', label: 'S.No' },
@@ -39,20 +38,37 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
     const [submitting, setSubmitting] = useState(false)
     const [showNewOrder, setShowNewOrder] = useState(false)
 
-    useEffect(() => {
-        fetchOrdersSummary().then(setOrders).catch(() => { })
-    }, [])
 
-    const totalRawNet = rawMaterials.reduce((s, i) => s + i.netWeight, 0)
-    const totalMfgNet = manufacturingData.reduce((s, i) => s + i.netWeight, 0)
+
+    // Fixed: rawMaterials use quantityInKg, not netWeight
+    const totalRawIn = rawMaterials.reduce((s, i) => s + (i.quantityInKg || 0), 0)
+    const totalMfgOutput = manufacturingData.reduce((s, i) => s + (i.netWeight || 0), 0)
+    const totalMfgInput = manufacturingData.reduce((s, i) => s + (i.materialUsed || i.netWeight || 0), 0)
     const totalWasteLogged = wastageData.reduce((s, i) => s + (i.actualWeight || 0), 0)
-    const autoWastage = Math.max(0, totalRawNet - totalMfgNet)
+    const autoWastage = Math.max(0, totalMfgInput - totalMfgOutput)
+
+    // ── Per-order wastage breakdown ──
+    const perOrderData = useMemo(() => {
+        const orderMap = {}
+        manufacturingData.forEach((m) => {
+            const o = m.order_number || 'Unknown'
+            if (!orderMap[o]) orderMap[o] = { order: o, materialUsed: 0, output: 0, rolls: 0 }
+            orderMap[o].materialUsed += (m.materialUsed || m.netWeight || 0)
+            orderMap[o].output += (m.netWeight || 0)
+            orderMap[o].rolls += 1
+        })
+        return Object.values(orderMap).map((row) => ({
+            ...row,
+            wastage: Math.max(0, row.materialUsed - row.output),
+            wastagePercent: row.materialUsed > 0 ? Math.max(0, ((row.materialUsed - row.output) / row.materialUsed) * 100) : 0,
+        }))
+    }, [manufacturingData])
 
     const chartData = useMemo(() => [
-        { name: 'Raw Material', value: totalRawNet },
-        { name: 'Manufacturing', value: totalMfgNet },
-        { name: 'Wastage', value: autoWastage },
-    ], [totalRawNet, totalMfgNet, autoWastage])
+        { name: 'Raw Material In', value: totalRawIn },
+        { name: 'Mfg Output', value: totalMfgOutput },
+        { name: 'Process Wastage', value: autoWastage },
+    ], [totalRawIn, totalMfgOutput, autoWastage])
 
     // ── Stock batch calculations ──
     const stockBatches = useMemo(() => {
@@ -88,15 +104,12 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
                 toast.error('Please fill order number and client name')
                 return
             }
-            try {
-                await createOrder({ order_number: form.newOrder.trim(), client_name: form.newClient.trim() })
-                toast.success(`Order "${form.newOrder.trim()}" created`)
-                orderNum = form.newOrder.trim()
-                fetchOrdersSummary().then(setOrders).catch(() => { })
-            } catch (err) {
-                if (!err.message.includes('already exists')) { toast.error(err.message); return }
-                orderNum = form.newOrder.trim()
+            orderNum = form.newOrder.trim()
+            const alreadyExists = orders.some((o) => o.order_number === orderNum)
+            if (!alreadyExists) {
+                setOrders((prev) => [...prev, { order_number: orderNum, client_name: form.newClient.trim() }])
             }
+            toast.success(`Order "${orderNum}" created`)
         }
 
         const gross = parseFloat(form.gross_weight)
@@ -136,52 +149,40 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
         }
 
         setSubmitting(true)
-        try {
-            const result = await logRoll({ order_number: orderNum, material: 'waste', gross_weight: gross, net_weight: net })
 
-            const entryId = result?.id || Date.now()
-            const entry = {
-                id: entryId,
-                sno: wastageData.length + 1,
-                date: new Date().toISOString().split('T')[0],
-                order_number: orderNum,
-                grossWeight: gross,
-                netWeight: net,
-                actualWeight: actualWeight,
-                stockUsageId: stockEntry ? stockEntry.id : null,
-            }
-            setWastageData((prev) => [...prev, entry].map((item, idx) => ({ ...item, sno: idx + 1 })))
-
-            // Auto-deduct from stock
-            if (stockEntry && setStockUsage) {
-                stockEntry.linkedEntryId = entryId
-                setStockUsage((prev) => [...prev, stockEntry])
-            }
-
-            toast.success('Waste entry logged to backend')
-            setForm(p => ({ ...p, gross_weight: '', net_weight: '', newOrder: '', newClient: '', fromStockId: '' }))
-            setShowNewOrder(false)
-        } catch (err) {
-            toast.error(err.message)
-        } finally {
-            setSubmitting(false)
+        const entryId = Date.now()
+        const entry = {
+            id: entryId,
+            sno: wastageData.length + 1,
+            date: new Date().toISOString().split('T')[0],
+            order_number: orderNum,
+            grossWeight: gross,
+            netWeight: net,
+            actualWeight: actualWeight,
+            stockUsageId: stockEntry ? stockEntry.id : null,
         }
+        setWastageData((prev) => [...prev, entry].map((item, idx) => ({ ...item, sno: idx + 1 })))
+
+        // Auto-deduct from stock
+        if (stockEntry && setStockUsage) {
+            stockEntry.linkedEntryId = entryId
+            setStockUsage((prev) => [...prev, stockEntry])
+        }
+
+        toast.success('Waste entry added')
+        setForm(p => ({ ...p, gross_weight: '', net_weight: '', newOrder: '', newClient: '', fromStockId: '' }))
+        setShowNewOrder(false)
+        setSubmitting(false)
     }
 
-    const handleDelete = async (id) => {
+    const handleDelete = (id) => {
         // Find and remove corresponding stock usage entry
         const entry = wastageData.find((item) => item.id === id)
         if (entry?.stockUsageId && setStockUsage) {
             setStockUsage((prev) => prev.filter((u) => u.id !== entry.stockUsageId).map((u, idx) => ({ ...u, sno: idx + 1 })))
         }
-
-        try {
-            await deleteRoll(id)
-            toast.success('Waste entry deleted from backend')
-        } catch (err) {
-            toast.error(err.message)
-        }
         setWastageData((prev) => prev.filter((item) => item.id !== id).map((item, idx) => ({ ...item, sno: idx + 1 })))
+        toast.success('Waste entry deleted')
     }
 
     const inputClass =
@@ -191,44 +192,102 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
         <div className="space-y-8">
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Wastage</h2>
-                <p className="text-sm text-text-secondary mt-1">Auto-calculated wastage &amp; log waste rolls to backend</p>
+                <p className="text-sm text-text-secondary mt-1">Per-order wastage breakdown &amp; waste roll logging</p>
             </div>
 
             {/* Summary cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {/* Auto-calculated wastage card */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
-                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-red-500/80 via-red-500/40 to-transparent" />
-                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Auto Wastage</p>
-                    <p className="text-3xl font-semibold text-red-400">{autoWastage.toFixed(2)}</p>
-                    <p className="text-xs text-text-secondary/50 mt-1">Raw − Manufacturing</p>
+                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
+                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Raw Material In</p>
+                    <p className="text-3xl font-semibold text-blue-400">{formatKg(totalRawIn)}</p>
+                    <p className="text-xs text-text-secondary/50 mt-1">total received</p>
                 </div>
                 <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
-                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-amber-500/80 via-amber-500/40 to-transparent" />
-                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Logged Wastage</p>
-                    <p className="text-3xl font-semibold text-amber-400">{totalWasteLogged.toFixed(2)}</p>
-                    <p className="text-xs text-text-secondary/50 mt-1">{wastageData.length} entries</p>
+                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
+                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Material Used</p>
+                    <p className="text-3xl font-semibold text-accent-gold">{formatKg(totalMfgInput)}</p>
+                    <p className="text-xs text-text-secondary/50 mt-1">consumed in mfg</p>
                 </div>
                 <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-emerald-500/80 via-emerald-500/40 to-transparent" />
-                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Current Stock</p>
-                    <p className={`text-3xl font-semibold ${currentStock >= 0 ? 'text-emerald-400' : 'text-red-500'}`}>{formatKg(currentStock)}</p>
-                    <p className="text-xs text-text-secondary/50 mt-1">available in raw material</p>
+                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Mfg Output</p>
+                    <p className="text-3xl font-semibold text-emerald-400">{formatKg(totalMfgOutput)}</p>
+                    <p className="text-xs text-text-secondary/50 mt-1">net weight produced</p>
+                </div>
+                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-red-500/80 via-red-500/40 to-transparent" />
+                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Process Wastage</p>
+                    <p className="text-3xl font-semibold text-red-400">{formatKg(autoWastage)}</p>
+                    <p className="text-xs text-text-secondary/50 mt-1">
+                        {totalMfgInput > 0 ? `${((autoWastage / totalMfgInput) * 100).toFixed(1)}% of material` : 'no data'}
+                    </p>
                 </div>
             </div>
 
-            {/* Detailed wastage breakdown */}
-            <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-8 overflow-hidden">
-                <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-red-500/80 via-red-500/40 to-transparent" />
-                <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">Auto-Calculated Wastage</h3>
+            {/* Per-Order Wastage Breakdown Table */}
+            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
+                <div className="px-6 pt-6 pb-4">
+                    <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">Per-Order Wastage Breakdown</h3>
+                    <p className="text-xs text-text-secondary/40 mt-1">Material Used vs. Manufacturing Output per order</p>
                 </div>
-                <p className="text-5xl font-bold text-text-primary mb-4">{autoWastage.toFixed(2)}</p>
-                <div className="text-sm text-text-secondary space-y-1">
-                    <p>Raw Material Net: <span className="text-text-primary font-medium">{totalRawNet.toFixed(2)}</span></p>
-                    <p>Manufacturing Net: <span className="text-text-primary font-medium">{totalMfgNet.toFixed(2)}</span></p>
-                    <p className="text-accent-gold pt-2 font-medium">Wastage = Raw - Manufacturing</p>
-                </div>
+                {perOrderData.length > 0 ? (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="border-t border-b border-border-default bg-bg-input/40">
+                                    <th className="text-left px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-wider uppercase">Order</th>
+                                    <th className="text-right px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-wider uppercase">Rolls</th>
+                                    <th className="text-right px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-wider uppercase">Material Used</th>
+                                    <th className="text-right px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-wider uppercase">Output</th>
+                                    <th className="text-right px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-wider uppercase">Wastage</th>
+                                    <th className="text-right px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-wider uppercase">Wastage %</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {perOrderData.map((row) => (
+                                    <tr key={row.order} className="border-b border-border-default/50 hover:bg-bg-input/20 transition-colors">
+                                        <td className="px-6 py-3 text-text-primary font-medium">{row.order}</td>
+                                        <td className="text-right px-6 py-3 text-text-secondary">{row.rolls}</td>
+                                        <td className="text-right px-6 py-3 text-accent-gold">{row.materialUsed.toFixed(2)} kg</td>
+                                        <td className="text-right px-6 py-3 text-emerald-400">{row.output.toFixed(2)} kg</td>
+                                        <td className="text-right px-6 py-3 text-red-400 font-semibold">{row.wastage.toFixed(2)} kg</td>
+                                        <td className="text-right px-6 py-3">
+                                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                                                row.wastagePercent > 10 ? 'bg-red-500/20 text-red-400' :
+                                                row.wastagePercent > 5 ? 'bg-amber-500/20 text-amber-400' :
+                                                'bg-emerald-500/20 text-emerald-400'
+                                            }`}>
+                                                {row.wastagePercent.toFixed(1)}%
+                                            </span>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                            <tfoot>
+                                <tr className="border-t-2 border-border-default bg-bg-input/30">
+                                    <td className="px-6 py-3 text-text-primary font-semibold">Total</td>
+                                    <td className="text-right px-6 py-3 text-text-primary font-semibold">{perOrderData.reduce((s, r) => s + r.rolls, 0)}</td>
+                                    <td className="text-right px-6 py-3 text-accent-gold font-semibold">{totalMfgInput.toFixed(2)} kg</td>
+                                    <td className="text-right px-6 py-3 text-emerald-400 font-semibold">{totalMfgOutput.toFixed(2)} kg</td>
+                                    <td className="text-right px-6 py-3 text-red-400 font-bold">{autoWastage.toFixed(2)} kg</td>
+                                    <td className="text-right px-6 py-3">
+                                        <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${
+                                            totalMfgInput > 0 && ((autoWastage / totalMfgInput) * 100) > 10 ? 'bg-red-500/20 text-red-400' :
+                                            'bg-amber-500/20 text-amber-400'
+                                        }`}>
+                                            {totalMfgInput > 0 ? ((autoWastage / totalMfgInput) * 100).toFixed(1) : '0.0'}%
+                                        </span>
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                ) : (
+                    <div className="px-6 pb-6">
+                        <p className="text-sm text-text-secondary/50 italic">No manufacturing data yet. Add manufacturing entries with "Material Used" to see per-order wastage.</p>
+                    </div>
+                )}
             </div>
 
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">

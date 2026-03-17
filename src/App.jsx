@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import { ToastProvider } from './components/Toast'
 import Sidebar from './components/Sidebar'
@@ -9,7 +9,6 @@ import Trading from './pages/Trading'
 import Wastage from './pages/Wastage'
 import LogHistory from './pages/LogHistory'
 import Stocks from './pages/Stocks'
-import { fetchAllRolls } from './utils/api'
 
 // Helper: returns YYYY-MM-DD string for N days ago from today
 function daysAgo(n) {
@@ -20,16 +19,16 @@ function daysAgo(n) {
 
 function App() {
   const [rawMaterials, setRawMaterials] = useState([
-    { id: 1, sno: 1, date: daysAgo(6), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', grossWeight: 520, tareWeight: 45, netWeight: 475, sizeMic: '12mm / 3.5 mic' },
-    { id: 2, sno: 2, date: daysAgo(6), quantityReceived: 8, quantityUnit: 'tons', quantityInKg: 8000, quantityDisplay: '8 tons', grossWeight: 610, tareWeight: 55, netWeight: 555, sizeMic: '10mm / 3.0 mic' },
-    { id: 3, sno: 3, date: daysAgo(5), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', grossWeight: 480, tareWeight: 40, netWeight: 440, sizeMic: '14mm / 4.0 mic' },
-    { id: 4, sno: 4, date: daysAgo(4), quantityReceived: 12, quantityUnit: 'tons', quantityInKg: 12000, quantityDisplay: '12 tons', grossWeight: 700, tareWeight: 60, netWeight: 640, sizeMic: '12mm / 3.5 mic' },
-    { id: 5, sno: 5, date: daysAgo(3), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', grossWeight: 550, tareWeight: 50, netWeight: 500, sizeMic: '8mm / 2.5 mic' },
-    { id: 6, sno: 6, date: daysAgo(3), quantityReceived: 5, quantityUnit: 'tons', quantityInKg: 5000, quantityDisplay: '5 tons', grossWeight: 430, tareWeight: 35, netWeight: 395, sizeMic: '10mm / 3.0 mic' },
-    { id: 7, sno: 7, date: daysAgo(2), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', grossWeight: 590, tareWeight: 48, netWeight: 542, sizeMic: '14mm / 4.0 mic' },
-    { id: 8, sno: 8, date: daysAgo(1), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', grossWeight: 660, tareWeight: 52, netWeight: 608, sizeMic: '10mm / 3.0 mic' },
-    { id: 9, sno: 9, date: daysAgo(0), quantityReceived: 8, quantityUnit: 'tons', quantityInKg: 8000, quantityDisplay: '8 tons', grossWeight: 510, tareWeight: 42, netWeight: 468, sizeMic: '8mm / 2.5 mic' },
-    { id: 10, sno: 10, date: daysAgo(0), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', grossWeight: 720, tareWeight: 65, netWeight: 655, sizeMic: '12mm / 3.5 mic' },
+    { id: 1, sno: 1, date: daysAgo(6), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', brandName: 'Reliance', codeName: 'REL-001' },
+    { id: 2, sno: 2, date: daysAgo(6), quantityReceived: 8, quantityUnit: 'tons', quantityInKg: 8000, quantityDisplay: '8 tons', brandName: 'SABIC', codeName: 'SAB-102' },
+    { id: 3, sno: 3, date: daysAgo(5), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', brandName: 'Haldia', codeName: 'HAL-205' },
+    { id: 4, sno: 4, date: daysAgo(4), quantityReceived: 12, quantityUnit: 'tons', quantityInKg: 12000, quantityDisplay: '12 tons', brandName: 'Reliance', codeName: 'REL-003' },
+    { id: 5, sno: 5, date: daysAgo(3), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', brandName: 'GAIL', codeName: 'GAI-110' },
+    { id: 6, sno: 6, date: daysAgo(3), quantityReceived: 5, quantityUnit: 'tons', quantityInKg: 5000, quantityDisplay: '5 tons', brandName: 'SABIC', codeName: 'SAB-102' },
+    { id: 7, sno: 7, date: daysAgo(2), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', brandName: 'Haldia', codeName: 'HAL-310' },
+    { id: 8, sno: 8, date: daysAgo(1), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', brandName: 'Reliance', codeName: 'REL-001' },
+    { id: 9, sno: 9, date: daysAgo(0), quantityReceived: 8, quantityUnit: 'tons', quantityInKg: 8000, quantityDisplay: '8 tons', brandName: 'GAIL', codeName: 'GAI-110' },
+    { id: 10, sno: 10, date: daysAgo(0), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', brandName: 'Reliance', codeName: 'REL-003' },
   ])
   const [manufacturingData, setManufacturingData] = useState([
     { id: 101, sno: 1, date: daysAgo(6), order_number: 'ORD-001', grossWeight: 350, tareWeight: 38, netWeight: 312, sizeMic: '12mm / 3.5 mic' },
@@ -79,75 +78,7 @@ function App() {
     { id: 407, sno: 7, date: daysAgo(1), quantityUsed: 2000, quantityUnit: 'kg', quantityInKg: 2000, fromStockId: 2, fromStockLabel: `${daysAgo(6)} — 8 tons`, beforeBalance: 5500, afterBalance: 3500, logMessage: '' },
   ])
 
-  // Load backend rolls on mount and populate section states
-  useEffect(() => {
-    fetchAllRolls()
-      .then((allRolls) => {
-        // Populate manufacturing data from backend
-        if (allRolls.manufactured.length > 0) {
-          setManufacturingData((prev) => {
-            const existingIds = new Set(prev.map((p) => p.id))
-            const newEntries = allRolls.manufactured
-              .filter((r) => !existingIds.has(r.id))
-              .map((r, idx) => ({
-                id: r.id,
-                sno: prev.length + idx + 1,
-                date: r.entry_date || '',
-                order_number: r.order_number || '—',
-                grossWeight: Number(r.gross_weight),
-                tareWeight: Number(r.net_weight),
-                netWeight: Number(r.gross_weight) - Number(r.net_weight),
-                sizeMic: '',
-              }))
-            const merged = [...prev, ...newEntries]
-            return merged.map((item, idx) => ({ ...item, sno: idx + 1 }))
-          })
-        }
 
-        // Populate trading data from backend
-        if (allRolls.trading.length > 0) {
-          setTradingData((prev) => {
-            const existingIds = new Set(prev.map((p) => p.id))
-            const newEntries = allRolls.trading
-              .filter((r) => !existingIds.has(r.id))
-              .map((r, idx) => ({
-                id: r.id,
-                sno: prev.length + idx + 1,
-                date: r.entry_date || '',
-                order_number: r.order_number || '—',
-                netWeight: Number(r.gross_weight),
-                rate: 0,
-                totalValue: 0,
-                sizeMic: '',
-                type: 'Buy',
-              }))
-            const merged = [...prev, ...newEntries]
-            return merged.map((item, idx) => ({ ...item, sno: idx + 1 }))
-          })
-        }
-
-        // Populate wastage data from backend
-        if (allRolls.waste.length > 0) {
-          setWastageData((prev) => {
-            const existingIds = new Set(prev.map((p) => p.id))
-            const newEntries = allRolls.waste
-              .filter((r) => !existingIds.has(r.id))
-              .map((r, idx) => ({
-                id: r.id,
-                sno: prev.length + idx + 1,
-                date: r.entry_date || '',
-                order_number: r.order_number || '—',
-                grossWeight: Number(r.gross_weight),
-                netWeight: Number(r.net_weight),
-                actualWeight: Number(r.gross_weight) - Number(r.net_weight),
-              }))
-            const merged = [...prev, ...newEntries]
-            return merged.map((item, idx) => ({ ...item, sno: idx + 1 }))
-          })
-        }
-      })
-      .catch(() => { })
-  }, [])
 
   return (
     <ToastProvider>

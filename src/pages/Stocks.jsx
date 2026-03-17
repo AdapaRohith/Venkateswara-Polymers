@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { SectionBarChart } from '../components/Charts'
 import InputWithCamera from '../components/InputWithCamera'
+import DataTable from '../components/DataTable'
 
 // Convert any unit to kg
 function toKg(value, unit) {
@@ -21,6 +22,12 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
         quantityUnit: 'kg',
         fromStockId: '',
     })
+    const [filterBrand, setFilterBrand] = useState('')
+    const [filterCode, setFilterCode] = useState('')
+
+    // Unique brand/code values from raw materials
+    const uniqueBrands = useMemo(() => [...new Set(rawMaterials.map(r => r.brandName).filter(Boolean))].sort(), [rawMaterials])
+    const uniqueCodes = useMemo(() => [...new Set(rawMaterials.map(r => r.codeName).filter(Boolean))].sort(), [rawMaterials])
 
     const handleChange = (e) => {
         setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }))
@@ -40,13 +47,18 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
                     initialQty: r.quantityInKg || 0,
                     totalUsed: usedFromThisBatch,
                     remaining,
-                    label: `${r.date} — ${r.quantityDisplay || formatKg(r.quantityInKg || 0)}`,
+                    label: `${r.date} — ${r.quantityDisplay || formatKg(r.quantityInKg || 0)}${r.brandName ? ` [${r.brandName}]` : ''}${r.codeName ? ` (${r.codeName})` : ''}`,
                 }
             })
     }, [rawMaterials, stockUsage])
 
     // Only show batches that still have stock remaining
-    const availableBatches = stockBatches.filter((b) => b.remaining > 0)
+    const availableBatches = stockBatches.filter((b) => {
+        if (b.remaining <= 0) return false
+        if (filterBrand && b.brandName !== filterBrand) return false
+        if (filterCode && b.codeName !== filterCode) return false
+        return true
+    })
 
     const handleSubmit = (e) => {
         e.preventDefault()
@@ -92,6 +104,76 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
         setStockUsage((prev) =>
             prev.filter((item) => item.id !== id).map((item, idx) => ({ ...item, sno: idx + 1 }))
         )
+    }
+
+    const handlePrintStockHistory = () => {
+        if (!stockUsage.length) return
+
+        const printWindow = window.open('', '_blank', 'width=900,height=700')
+        if (!printWindow) return
+
+        const escapeHtml = (value) => String(value ?? '—')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
+
+        const rows = [...stockUsage]
+            .reverse()
+            .map((entry) => `
+                <tr>
+                    <td>${entry.sno ?? '—'}</td>
+                    <td>${escapeHtml(entry.date)}</td>
+                    <td>${escapeHtml(entry.quantityUsed)} ${escapeHtml(entry.quantityUnit)}</td>
+                    <td>${formatKg(entry.quantityInKg || 0)}</td>
+                    <td>${escapeHtml(entry.fromStockLabel)}</td>
+                    <td>${formatKg(entry.beforeBalance || 0)}</td>
+                    <td>${formatKg(entry.afterBalance || 0)}</td>
+                    <td>${escapeHtml(entry.logMessage || '')}</td>
+                </tr>
+            `)
+            .join('')
+
+        printWindow.document.write(`
+            <html>
+                <head>
+                    <title>Stock Usage History</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
+                        h1 { margin: 0 0 6px; font-size: 20px; }
+                        p { margin: 0 0 16px; color: #4b5563; font-size: 12px; }
+                        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+                        th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; vertical-align: top; }
+                        th { background: #f3f4f6; font-weight: 600; }
+                    </style>
+                </head>
+                <body>
+                    <h1>Stock Usage History</h1>
+                    <p>Generated on ${new Date().toLocaleString()}</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Date</th>
+                                <th>Quantity Used</th>
+                                <th>Quantity in KG</th>
+                                <th>From Stock Batch</th>
+                                <th>Before Balance</th>
+                                <th>After Balance</th>
+                                <th>Log Message</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </body>
+            </html>
+        `)
+
+        printWindow.document.close()
+        printWindow.focus()
+        printWindow.print()
+        printWindow.close()
     }
 
     // ── Summary values ──
@@ -171,6 +253,8 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
                             <tr className="border-y border-border-default bg-white/[0.02]">
                                 <th className="text-left px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-widest uppercase">#</th>
                                 <th className="text-left px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-widest uppercase">Date Received</th>
+                                <th className="text-left px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-widest uppercase">Brand</th>
+                                <th className="text-left px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-widest uppercase">Code</th>
                                 <th className="text-right px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-widest uppercase">Initial Qty</th>
                                 <th className="text-right px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-widest uppercase">Used</th>
                                 <th className="text-right px-6 py-3 text-xs font-medium text-text-secondary/70 tracking-widest uppercase">Remaining</th>
@@ -180,7 +264,7 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
                         <tbody>
                             {stockBatches.length === 0 ? (
                                 <tr>
-                                    <td colSpan={6} className="px-6 py-10 text-center text-text-secondary/50">
+                                    <td colSpan={8} className="px-6 py-10 text-center text-text-secondary/50">
                                         No stock batches. Add raw material entries to create stock.
                                     </td>
                                 </tr>
@@ -193,6 +277,8 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
                                     >
                                         <td className="px-6 py-3 text-text-secondary">{idx + 1}</td>
                                         <td className="px-6 py-3 text-text-primary font-medium">{batch.date}</td>
+                                        <td className="px-6 py-3 text-text-primary">{batch.brandName || '—'}</td>
+                                        <td className="px-6 py-3 text-text-secondary">{batch.codeName || '—'}</td>
                                         <td className="px-6 py-3 text-right text-emerald-400">{formatKg(batch.initialQty)}</td>
                                         <td className="px-6 py-3 text-right text-red-400">
                                             {batch.totalUsed > 0 ? formatKg(batch.totalUsed) : '—'}
@@ -232,6 +318,34 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
                             onChange={handleChange}
                             required
                         />
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Filter by Brand</label>
+                        <select
+                            value={filterBrand}
+                            onChange={(e) => { setFilterBrand(e.target.value); setForm(prev => ({ ...prev, fromStockId: '' })) }}
+                            className={`${inputClass} cursor-pointer`}
+                        >
+                            <option value="">All Brands</option>
+                            {uniqueBrands.map((b) => (
+                                <option key={b} value={b}>{b}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Filter by Code</label>
+                        <select
+                            value={filterCode}
+                            onChange={(e) => { setFilterCode(e.target.value); setForm(prev => ({ ...prev, fromStockId: '' })) }}
+                            className={`${inputClass} cursor-pointer`}
+                        >
+                            <option value="">All Codes</option>
+                            {uniqueCodes.map((c) => (
+                                <option key={c} value={c}>{c}</option>
+                            ))}
+                        </select>
                     </div>
 
                     <div className="space-y-2">
@@ -290,10 +404,18 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
 
             {/* Usage Log History */}
             <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
-                <div className="px-6 pt-6 pb-4">
+                <div className="px-6 pt-6 pb-4 flex items-center justify-between gap-3">
                     <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">
                         Usage Log History
                     </h3>
+                    <button
+                        type="button"
+                        onClick={handlePrintStockHistory}
+                        disabled={stockUsage.length === 0}
+                        className="text-xs font-medium tracking-wide uppercase px-3 py-1.5 rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-accent-gold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                        Print Stock History
+                    </button>
                 </div>
                 {stockUsage.length === 0 ? (
                     <div className="px-6 pb-8 text-center text-text-secondary/50 text-sm">
