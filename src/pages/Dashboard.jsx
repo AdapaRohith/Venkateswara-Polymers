@@ -4,7 +4,7 @@ import { ComparisonBarChart, TrendLineChart } from '../components/Charts'
 
 export default function Dashboard({ rawMaterials, manufacturingData, tradingData }) {
     const totalRawNet = useMemo(
-        () => rawMaterials.reduce((sum, item) => sum + item.netWeight, 0),
+        () => rawMaterials.reduce((sum, item) => sum + item.quantityInKg, 0),
         [rawMaterials]
     )
 
@@ -54,7 +54,7 @@ export default function Dashboard({ rawMaterials, manufacturingData, tradingData
 
     const wastageChartData = useMemo(() => {
         const allEntries = [
-            ...rawMaterials.map(e => ({ id: e.id, netWeight: +e.netWeight })),
+            ...rawMaterials.map(e => ({ id: e.id, netWeight: +e.quantityInKg })),
             ...manufacturingData.map(e => ({ id: e.id, netWeight: -e.netWeight })),
         ].sort((a, b) => a.id - b.id)
 

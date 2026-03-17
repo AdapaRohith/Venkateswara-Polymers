@@ -1,9 +1,8 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
-import { logRoll, fetchOrdersSummary, createOrder, deleteRoll } from '../utils/api'
 
 const columns = [
     { key: 'sno', label: 'S.No' },
@@ -37,9 +36,7 @@ export default function Trading({ data, setData }) {
     const [submitting, setSubmitting] = useState(false)
     const [showNewOrder, setShowNewOrder] = useState(false)
 
-    useEffect(() => {
-        fetchOrdersSummary().then(setOrders).catch(() => { })
-    }, [])
+
 
     const totalValue = (parseFloat(form.netWeight) || 0) * (parseFloat(form.rate) || 0)
 
@@ -56,18 +53,12 @@ export default function Trading({ data, setData }) {
                 toast.error('Please fill order number and client name')
                 return
             }
-            try {
-                await createOrder({ order_number: form.newOrder.trim(), client_name: form.newClient.trim() })
-                toast.success(`Order "${form.newOrder.trim()}" created`)
-                orderNum = form.newOrder.trim()
-                fetchOrdersSummary().then(setOrders).catch(() => { })
-            } catch (err) {
-                if (!err.message.includes('already exists')) {
-                    toast.error(err.message)
-                    return
-                }
-                orderNum = form.newOrder.trim()
+            orderNum = form.newOrder.trim()
+            const alreadyExists = orders.some((o) => o.order_number === orderNum)
+            if (!alreadyExists) {
+                setOrders((prev) => [...prev, { order_number: orderNum, client_name: form.newClient.trim() }])
             }
+            toast.success(`Order "${orderNum}" created`)
         }
 
         if (!orderNum || !form.date || !form.netWeight || !form.rate) {
@@ -79,47 +70,31 @@ export default function Trading({ data, setData }) {
         const rate = parseFloat(form.rate)
 
         setSubmitting(true)
-        try {
-            const result = await logRoll({
-                order_number: orderNum,
-                material: 'trading',
-                gross_weight: net,
-                net_weight: 0,
-            })
 
-            const entry = {
-                id: result?.id || Date.now(),
-                sno: data.length + 1,
-                date: form.date,
-                order_number: orderNum,
-                netWeight: net,
-                rate: rate,
-                totalValue: net * rate,
-                sizeMic: form.sizeMic,
-                type: form.type,
-            }
-            setData((prev) => [...prev, entry])
-            toast.success('Trading entry logged to backend')
-            setForm((prev) => ({ ...prev, netWeight: '', rate: '', sizeMic: '', newOrder: '', newClient: '' }))
-            setShowNewOrder(false)
-        } catch (err) {
-            toast.error(err.message)
-        } finally {
-            setSubmitting(false)
+        const entry = {
+            id: Date.now(),
+            sno: data.length + 1,
+            date: form.date,
+            order_number: orderNum,
+            netWeight: net,
+            rate: rate,
+            totalValue: net * rate,
+            sizeMic: form.sizeMic,
+            type: form.type,
         }
+        setData((prev) => [...prev, entry])
+        toast.success('Trading entry added')
+        setForm((prev) => ({ ...prev, netWeight: '', rate: '', sizeMic: '', newOrder: '', newClient: '' }))
+        setShowNewOrder(false)
+        setSubmitting(false)
     }
 
     const inputClass =
         'w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold placeholder:text-text-secondary/30'
 
-    const handleDelete = async (id) => {
-        try {
-            await deleteRoll(id)
-            toast.success('Entry deleted from backend')
-        } catch (err) {
-            toast.error(err.message)
-        }
+    const handleDelete = (id) => {
         setData((prev) => prev.filter((item) => item.id !== id).map((item, idx) => ({ ...item, sno: idx + 1 })))
+        toast.success('Entry deleted')
     }
 
     // ── Summary calculations ──
@@ -147,7 +122,7 @@ export default function Trading({ data, setData }) {
         <div className="space-y-8">
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Trading</h2>
-                <p className="text-sm text-text-secondary mt-1">Track stock bought and sold — synced to backend</p>
+                <p className="text-sm text-text-secondary mt-1">Track stock bought and sold</p>
             </div>
 
             {/* Summary Cards */}

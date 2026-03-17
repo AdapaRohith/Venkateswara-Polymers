@@ -1,9 +1,8 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
-import { logRoll, fetchOrdersSummary, createOrder, deleteRoll } from '../utils/api'
 
 const columns = [
     { key: 'sno', label: 'S.No' },
@@ -12,6 +11,7 @@ const columns = [
     { key: 'grossWeight', label: 'Gross Weight', render: (v) => Number(v).toFixed(2) },
     { key: 'tareWeight', label: 'Tare Weight', render: (v) => Number(v).toFixed(2) },
     { key: 'netWeight', label: 'Net Weight', render: (v) => Number(v).toFixed(2) },
+    { key: 'materialUsed', label: 'Material Used', render: (v) => v ? Number(v).toFixed(2) : '—' },
     { key: 'sizeMic', label: 'Size & Mic' },
 ]
 
@@ -36,15 +36,20 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
         newClient: '',
         grossWeight: '',
         tareWeight: '',
+        materialUsed: '',
         sizeMic: '',
         fromStockId: '',
     })
     const [submitting, setSubmitting] = useState(false)
     const [showNewOrder, setShowNewOrder] = useState(false)
+    const [filterBrand, setFilterBrand] = useState('')
+    const [filterCode, setFilterCode] = useState('')
 
-    useEffect(() => {
-        fetchOrdersSummary().then(setOrders).catch(() => { })
-    }, [])
+    // Unique brand/code values from raw materials
+    const uniqueBrands = useMemo(() => [...new Set(rawMaterials.map(r => r.brandName).filter(Boolean))].sort(), [rawMaterials])
+    const uniqueCodes = useMemo(() => [...new Set(rawMaterials.map(r => r.codeName).filter(Boolean))].sort(), [rawMaterials])
+
+
 
     const netWeight = (parseFloat(form.grossWeight) || 0) - (parseFloat(form.tareWeight) || 0)
 
@@ -66,12 +71,17 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
                     initialQty: r.quantityInKg || 0,
                     totalUsed: usedFromThisBatch,
                     remaining,
-                    label: `${r.date} — ${r.quantityDisplay || formatKg(r.quantityInKg || 0)}`,
+                    label: `${r.date} — ${r.quantityDisplay || formatKg(r.quantityInKg || 0)}${r.brandName ? ` [${r.brandName}]` : ''}${r.codeName ? ` (${r.codeName})` : ''}`,
                 }
             })
     }, [rawMaterials, stockUsage])
 
-    const availableBatches = stockBatches.filter((b) => b.remaining > 0)
+    const availableBatches = stockBatches.filter((b) => {
+        if (b.remaining <= 0) return false
+        if (filterBrand && b.brandName !== filterBrand) return false
+        if (filterCode && b.codeName !== filterCode) return false
+        return true
+    })
     const totalStockIn = stockBatches.reduce((s, b) => s + b.initialQty, 0)
     const totalStockUsed = stockBatches.reduce((s, b) => s + b.totalUsed, 0)
     const currentStock = totalStockIn - totalStockUsed
@@ -85,18 +95,12 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
                 toast.error('Please fill order number and client name')
                 return
             }
-            try {
-                await createOrder({ order_number: form.newOrder.trim(), client_name: form.newClient.trim() })
-                toast.success(`Order "${form.newOrder.trim()}" created`)
-                orderNum = form.newOrder.trim()
-                fetchOrdersSummary().then(setOrders).catch(() => { })
-            } catch (err) {
-                if (!err.message.includes('already exists')) {
-                    toast.error(err.message)
-                    return
-                }
-                orderNum = form.newOrder.trim()
+            orderNum = form.newOrder.trim()
+            const alreadyExists = orders.some((o) => o.order_number === orderNum)
+            if (!alreadyExists) {
+                setOrders((prev) => [...prev, { order_number: orderNum, client_name: form.newClient.trim() }])
             }
+            toast.success(`Order "${orderNum}" created`)
         }
 
         if (!orderNum || !form.date || !form.grossWeight || !form.tareWeight) {
@@ -112,6 +116,12 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
         }
 
         const net = gross - tare
+        // Material used = user-specified input, or defaults to net weight
+        const matUsed = form.materialUsed ? parseFloat(form.materialUsed) : net
+        if (matUsed < net) {
+            toast.error('Material used cannot be less than net weight output')
+            return
+        }
 
         // Validate stock batch if selected
         let stockEntry = null
@@ -121,10 +131,9 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
                 toast.error('Selected stock batch not found')
                 return
             }
-            // net weight is in the unit used on this page (not kg/tons), convert to kg for stock
-            const netInKg = net // manufacturing net weight treated as kg
-            if (netInKg > batch.remaining) {
-                toast.error(`Cannot use ${formatKg(netInKg)} — only ${formatKg(batch.remaining)} remaining in this stock.`)
+            // Deduct by material used (raw material consumed), not net weight (output)
+            if (matUsed > batch.remaining) {
+                toast.error(`Cannot use ${formatKg(matUsed)} — only ${formatKg(batch.remaining)} remaining in this stock.`)
                 return
             }
 
@@ -132,71 +141,56 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
                 id: Date.now() + 1,
                 sno: stockUsage.length + 1,
                 date: form.date,
-                quantityUsed: net,
+                quantityUsed: matUsed,
                 quantityUnit: 'kg',
-                quantityInKg: netInKg,
+                quantityInKg: matUsed,
                 fromStockId: batch.id,
                 fromStockLabel: batch.label,
                 beforeBalance: batch.remaining,
-                afterBalance: batch.remaining - netInKg,
-                logMessage: `${formatKg(netInKg)} used for Manufacturing (${orderNum}) from stock (${batch.label})`,
+                afterBalance: batch.remaining - matUsed,
+                logMessage: `${formatKg(matUsed)} used for Manufacturing (${orderNum}) from stock (${batch.label})`,
                 source: 'Manufacturing',
+                order_number: orderNum,
             }
         }
 
         setSubmitting(true)
-        try {
-            const result = await logRoll({
-                order_number: orderNum,
-                material: 'manufactured',
-                gross_weight: gross,
-                net_weight: tare,
-            })
 
-            const entryId = result?.id || Date.now()
-            const entry = {
-                id: entryId,
-                sno: data.length + 1,
-                date: form.date,
-                order_number: orderNum,
-                grossWeight: gross,
-                tareWeight: tare,
-                netWeight: net,
-                sizeMic: form.sizeMic,
-                stockUsageId: stockEntry ? stockEntry.id : null,
-            }
-            setData((prev) => [...prev, entry])
-
-            // Auto-deduct from stock
-            if (stockEntry && setStockUsage) {
-                stockEntry.linkedEntryId = entryId
-                setStockUsage((prev) => [...prev, stockEntry])
-            }
-
-            toast.success('Manufacturing entry logged to backend')
-            setForm({ date: '', order_number: orderNum, newOrder: '', newClient: '', grossWeight: '', tareWeight: '', sizeMic: '', fromStockId: '' })
-            setShowNewOrder(false)
-        } catch (err) {
-            toast.error(err.message)
-        } finally {
-            setSubmitting(false)
+        const entryId = Date.now()
+        const entry = {
+            id: entryId,
+            sno: data.length + 1,
+            date: form.date,
+            order_number: orderNum,
+            grossWeight: gross,
+            tareWeight: tare,
+            netWeight: net,
+            materialUsed: matUsed,
+            sizeMic: form.sizeMic,
+            stockUsageId: stockEntry ? stockEntry.id : null,
         }
+        setData((prev) => [...prev, entry])
+
+        // Auto-deduct from stock
+        if (stockEntry && setStockUsage) {
+            stockEntry.linkedEntryId = entryId
+            setStockUsage((prev) => [...prev, stockEntry])
+        }
+
+        toast.success('Manufacturing entry added')
+        setForm({ date: '', order_number: orderNum, newOrder: '', newClient: '', grossWeight: '', tareWeight: '', materialUsed: '', sizeMic: '', fromStockId: '' })
+        setShowNewOrder(false)
+        setSubmitting(false)
     }
 
-    const handleDelete = async (id) => {
+    const handleDelete = (id) => {
         // Find and remove corresponding stock usage entry
         const entry = data.find((item) => item.id === id)
         if (entry?.stockUsageId && setStockUsage) {
             setStockUsage((prev) => prev.filter((u) => u.id !== entry.stockUsageId).map((u, idx) => ({ ...u, sno: idx + 1 })))
         }
-
-        try {
-            await deleteRoll(id)
-            toast.success('Entry deleted from backend')
-        } catch (err) {
-            toast.error(err.message)
-        }
         setData((prev) => prev.filter((item) => item.id !== id).map((item, idx) => ({ ...item, sno: idx + 1 })))
+        toast.success('Entry deleted')
     }
 
     // ── Summary calculations ──
@@ -292,6 +286,35 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
                         )}
                     </div>
 
+                    {/* Brand / Code Filters */}
+                    <div className="space-y-2">
+                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Filter by Brand</label>
+                        <select
+                            value={filterBrand}
+                            onChange={(e) => { setFilterBrand(e.target.value); setForm(prev => ({ ...prev, fromStockId: '' })) }}
+                            className={`${inputClass} cursor-pointer`}
+                        >
+                            <option value="">All Brands</option>
+                            {uniqueBrands.map((b) => (
+                                <option key={b} value={b}>{b}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Filter by Code</label>
+                        <select
+                            value={filterCode}
+                            onChange={(e) => { setFilterCode(e.target.value); setForm(prev => ({ ...prev, fromStockId: '' })) }}
+                            className={`${inputClass} cursor-pointer`}
+                        >
+                            <option value="">All Codes</option>
+                            {uniqueCodes.map((c) => (
+                                <option key={c} value={c}>{c}</option>
+                            ))}
+                        </select>
+                    </div>
+
                     {/* From Stock Batch */}
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">From Stock Batch</label>
@@ -330,6 +353,18 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
                         <div className="w-full bg-bg-input text-accent-gold border border-gray-700 rounded-lg px-4 py-2.5 text-sm font-semibold">
                             {netWeight.toFixed(2)}
                         </div>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">
+                            Material Used (kg) <span className="text-text-secondary/50 normal-case">(raw material consumed)</span>
+                        </label>
+                        <InputWithCamera type="number" name="materialUsed" value={form.materialUsed} onChange={handleChange} step="0.01" placeholder={netWeight > 0 ? `Default: ${netWeight.toFixed(2)}` : '0.00'} />
+                        {form.materialUsed && parseFloat(form.materialUsed) > netWeight && netWeight > 0 && (
+                            <p className="text-[10px] text-red-400/70">
+                                Wastage: {(parseFloat(form.materialUsed) - netWeight).toFixed(2)} kg ({((parseFloat(form.materialUsed) - netWeight) / parseFloat(form.materialUsed) * 100).toFixed(1)}%)
+                            </p>
+                        )}
                     </div>
 
                     <div className="space-y-2">

@@ -70,7 +70,6 @@ const navItems = [
 
 export default function Sidebar() {
     const [open, setOpen] = useState(false)
-
     const [isDarkMode, setIsDarkMode] = useState(true)
     const location = useLocation()
 
@@ -210,7 +209,6 @@ export default function Sidebar() {
                     <p className="text-[10px] text-text-secondary/40 tracking-wide">© 2026 Venkateswara Polymers</p>
                 </div>
             </aside>
-
 
         </>
     )
