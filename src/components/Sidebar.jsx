@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import CameraCapture from './CameraCapture'
 
 const navItems = [
     {
@@ -71,7 +70,7 @@ const navItems = [
 
 export default function Sidebar() {
     const [open, setOpen] = useState(false)
-    const [cameraOpen, setCameraOpen] = useState(false)
+
     const [isDarkMode, setIsDarkMode] = useState(true)
     const location = useLocation()
 
@@ -183,25 +182,7 @@ export default function Sidebar() {
                     </ul>
                 </nav>
 
-                {/* Scan / Upload Button */}
-                <div className="px-4 pb-3">
-                    <button
-                        onClick={() => setCameraOpen(true)}
-                        className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-dashed border-accent-gold/30 text-accent-gold hover:bg-accent-gold/[0.05] hover:border-accent-gold/50 transition-all group"
-                    >
-                        <div className="relative w-9 h-9 rounded-lg bg-accent-gold/10 flex items-center justify-center shrink-0 group-hover:bg-accent-gold/20 transition-colors">
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z" />
-                            </svg>
-                            <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-accent-gold rounded-full animate-pulse" />
-                        </div>
-                        <div className="text-left">
-                            <p className="text-xs font-semibold tracking-wide">Scan / Upload</p>
-                            <p className="text-[10px] text-text-secondary/50 font-normal">Camera or file</p>
-                        </div>
-                    </button>
-                </div>
+
 
                 {/* Theme Toggle */}
                 <div className="px-4 pb-3">
@@ -230,8 +211,7 @@ export default function Sidebar() {
                 </div>
             </aside>
 
-            {/* Camera / Upload Modal */}
-            <CameraCapture open={cameraOpen} onClose={() => setCameraOpen(false)} />
+
         </>
     )
 }
