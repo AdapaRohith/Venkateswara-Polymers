@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { SectionBarChart } from '../components/Charts'
 import InputWithCamera from '../components/InputWithCamera'
 import DataTable from '../components/DataTable'
@@ -184,6 +184,39 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
     const todayUsage = stockUsage
         .filter((u) => u.date === today)
         .reduce((s, u) => s + u.quantityInKg, 0)
+
+    // ── Export logs to webhook ──
+    const [exportStatus, setExportStatus] = useState('idle') // idle | sending | success | error
+    const handleExport = useCallback(async () => {
+        if (stockUsage.length === 0 || exportStatus === 'sending') return
+        setExportStatus('sending')
+        try {
+            const payload = {
+                exportedAt: new Date().toISOString(),
+                totalBatches: stockBatches.length,
+                batches: stockBatches.map((batch, idx) => ({
+                    sno: idx + 1,
+                    dateReceived: batch.date,
+                    initialQty: formatKg(batch.initialQty),
+                    used: batch.totalUsed > 0 ? formatKg(batch.totalUsed) : '—',
+                    remaining: formatKg(batch.remaining),
+                    status: batch.remaining <= 0 ? 'EMPTY' : batch.totalUsed > 0 ? 'IN USE' : 'FULL',
+                })),
+            }
+            const res = await fetch('https://n8n.avlokai.com/webhook-test/77d8abd5-246a-4797-8370-1ebfdb10ffec', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            })
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            setExportStatus('success')
+            setTimeout(() => setExportStatus('idle'), 2500)
+        } catch (err) {
+            console.error('Export failed:', err)
+            setExportStatus('error')
+            setTimeout(() => setExportStatus('idle'), 3000)
+        }
+    }, [stockBatches, stockUsage, exportStatus])
 
     // ── Chart: remaining per batch ──
     const chartData = useMemo(() => {
@@ -408,14 +441,62 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
                     <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">
                         Usage Log History
                     </h3>
-                    <button
-                        type="button"
-                        onClick={handlePrintStockHistory}
-                        disabled={stockUsage.length === 0}
-                        className="text-xs font-medium tracking-wide uppercase px-3 py-1.5 rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-accent-gold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                        Print Stock History
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={handlePrintStockHistory}
+                            disabled={stockUsage.length === 0}
+                            className="text-xs font-medium tracking-wide uppercase px-3 py-1.5 rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-accent-gold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                            Print Stock History
+                        </button>
+                        {stockUsage.length > 0 && (
+                            <button
+                                onClick={handleExport}
+                                disabled={exportStatus === 'sending'}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all duration-200 active:scale-[0.97] ${
+                                    exportStatus === 'success'
+                                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                        : exportStatus === 'error'
+                                            ? 'bg-red-500/15 text-red-400 border border-red-500/30'
+                                            : exportStatus === 'sending'
+                                                ? 'bg-accent-gold/10 text-accent-gold/60 border border-accent-gold/20 cursor-wait'
+                                                : 'bg-accent-gold/10 text-accent-gold border border-accent-gold/20 hover:bg-accent-gold/20 hover:border-accent-gold/40'
+                                }`}
+                            >
+                                {exportStatus === 'sending' ? (
+                                    <>
+                                        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                        </svg>
+                                        Exporting…
+                                    </>
+                                ) : exportStatus === 'success' ? (
+                                    <>
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                                        </svg>
+                                        Exported!
+                                    </>
+                                ) : exportStatus === 'error' ? (
+                                    <>
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                                        </svg>
+                                        Failed
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                                        </svg>
+                                        Export Logs
+                                    </>
+                                )}
+                            </button>
+                        )}
+                    </div>
                 </div>
                 {stockUsage.length === 0 ? (
                     <div className="px-6 pb-8 text-center text-text-secondary/50 text-sm">

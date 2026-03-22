@@ -206,6 +206,7 @@ export default function Sidebar({ user, onLogout }) {
                 </nav>
 
 
+
                 {/* Theme Toggle */}
                 <div className="px-4 pb-3">
                     <button
@@ -232,6 +233,7 @@ export default function Sidebar({ user, onLogout }) {
                     <p className="text-[10px] text-text-secondary/40 tracking-wide">© 2026 Venkateswara Polymers</p>
                 </div>
             </aside>
+
         </>
     )
 }
