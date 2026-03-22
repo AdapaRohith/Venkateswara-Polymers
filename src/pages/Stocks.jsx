@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from 'react'
 import { SectionBarChart } from '../components/Charts'
 import InputWithCamera from '../components/InputWithCamera'
 import DataTable from '../components/DataTable'
+import api from '../utils/api'
 
 // Convert any unit to kg
 function toKg(value, unit) {
@@ -60,7 +61,7 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
         return true
     })
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault()
         if (!form.date || !form.quantityUsed || !form.fromStockId) return
 
@@ -94,6 +95,12 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
             beforeBalance: batch.remaining,
             afterBalance: newRemaining,
             logMessage: `${formatKg(qtyInKg)} used from stock (${batch.label}) — ${formatKg(batch.remaining)} → ${formatKg(newRemaining)} remaining`,
+        }
+
+        try {
+            await api.post('/stock-usage', entry)
+        } catch (err) {
+            console.error('Failed to save stock usage entry', err)
         }
 
         setStockUsage((prev) => [...prev, entry])

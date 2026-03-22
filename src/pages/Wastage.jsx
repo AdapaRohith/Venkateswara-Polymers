@@ -3,6 +3,7 @@ import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { WastageAreaChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
+import api from '../utils/api'
 
 const historyColumns = [
     { key: 'sno', label: 'S.No' },
@@ -161,11 +162,23 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
             actualWeight: actualWeight,
             stockUsageId: stockEntry ? stockEntry.id : null,
         }
+
+        try {
+            await api.post('/wastage', entry)
+        } catch (err) {
+            console.error('Failed to save wastage entry', err)
+        }
+
         setWastageData((prev) => [...prev, entry].map((item, idx) => ({ ...item, sno: idx + 1 })))
 
         // Auto-deduct from stock
         if (stockEntry && setStockUsage) {
             stockEntry.linkedEntryId = entryId
+            try {
+                await api.post('/stock-usage', stockEntry)
+            } catch (err) {
+                console.error('Failed to save stock usage entry', err)
+            }
             setStockUsage((prev) => [...prev, stockEntry])
         }
 

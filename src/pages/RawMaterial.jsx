@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
+import api from '../utils/api'
 
 const columns = [
     { key: 'sno', label: 'S.No' },
@@ -24,7 +25,7 @@ export default function RawMaterial({ user, data, setData }) {
         setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }))
     }
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault()
         if (!form.date || !form.quantityReceived) return
 
@@ -43,6 +44,12 @@ export default function RawMaterial({ user, data, setData }) {
             quantityDisplay: `${qty} ${unit}`,
             brandName: form.brandName,
             codeName: form.codeName,
+        }
+
+        try {
+            await api.post('/raw-materials', entry)
+        } catch (err) {
+            console.error('Failed to save raw material entry', err)
         }
 
         setData((prev) => [...prev, entry])

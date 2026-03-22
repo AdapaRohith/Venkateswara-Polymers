@@ -3,6 +3,7 @@ import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
+import api from '../utils/api'
 
 const columns = [
     { key: 'sno', label: 'S.No' },
@@ -20,21 +21,17 @@ const columns = [
     },
 ]
 
-export default function Trading({ data, setData }) {
+export default function Trading({ data, setData, ordersList = [] }) {
     const toast = useToast()
-    const [orders, setOrders] = useState([])
     const [form, setForm] = useState({
         date: '',
         order_number: '',
-        newOrder: '',
-        newClient: '',
         netWeight: '',
         rate: '',
         sizeMic: '',
         type: 'Buy',
     })
     const [submitting, setSubmitting] = useState(false)
-    const [showNewOrder, setShowNewOrder] = useState(false)
 
 
 
@@ -48,18 +45,7 @@ export default function Trading({ data, setData }) {
         e.preventDefault()
 
         let orderNum = form.order_number
-        if (showNewOrder) {
-            if (!form.newOrder.trim() || !form.newClient.trim()) {
-                toast.error('Please fill order number and client name')
-                return
-            }
-            orderNum = form.newOrder.trim()
-            const alreadyExists = orders.some((o) => o.order_number === orderNum)
-            if (!alreadyExists) {
-                setOrders((prev) => [...prev, { order_number: orderNum, client_name: form.newClient.trim() }])
-            }
-            toast.success(`Order "${orderNum}" created`)
-        }
+
 
         if (!orderNum || !form.date || !form.netWeight || !form.rate) {
             toast.error('Please fill all required fields')
@@ -82,10 +68,16 @@ export default function Trading({ data, setData }) {
             sizeMic: form.sizeMic,
             type: form.type,
         }
+
+        try {
+            await api.post('/trading', entry)
+        } catch (err) {
+            console.error('Failed to save trading entry', err)
+        }
+
         setData((prev) => [...prev, entry])
         toast.success('Trading entry added')
-        setForm((prev) => ({ ...prev, netWeight: '', rate: '', sizeMic: '', newOrder: '', newClient: '' }))
-        setShowNewOrder(false)
+        setForm((prev) => ({ ...prev, netWeight: '', rate: '', sizeMic: '' }))
         setSubmitting(false)
     }
 
@@ -165,25 +157,13 @@ export default function Trading({ data, setData }) {
                     </div>
 
                     <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Order</label>
-                            <button type="button" onClick={() => setShowNewOrder(!showNewOrder)} className="text-[10px] text-accent-gold hover:underline">
-                                {showNewOrder ? 'Select existing' : '+ New order'}
-                            </button>
-                        </div>
-                        {showNewOrder ? (
-                            <div className="space-y-2">
-                                <InputWithCamera type="text" name="newOrder" value={form.newOrder} onChange={handleChange} placeholder="Order number" />
-                                <InputWithCamera type="text" name="newClient" value={form.newClient} onChange={handleChange} placeholder="Client name" />
-                            </div>
-                        ) : (
-                            <select name="order_number" value={form.order_number} onChange={handleChange} className={`${inputClass} appearance-none cursor-pointer`} required={!showNewOrder}>
-                                <option value="">Select order...</option>
-                                {orders.map((o) => (
-                                    <option key={o.order_number} value={o.order_number}>{o.order_number}</option>
-                                ))}
-                            </select>
-                        )}
+                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Order</label>
+                        <select name="order_number" value={form.order_number} onChange={handleChange} className={`${inputClass} appearance-none cursor-pointer`} required>
+                            <option value="">Select order...</option>
+                            {ordersList.map((o) => (
+                                <option key={o.order_number} value={o.order_number}>{o.order_number} {o.client_name ? `(${o.client_name})` : ''}</option>
+                            ))}
+                        </select>
                     </div>
 
                     <div className="space-y-2">

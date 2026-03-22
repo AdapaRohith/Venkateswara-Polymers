@@ -3,6 +3,7 @@ import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
+import api from '../utils/api'
 
 const columns = [
     { key: 'sno', label: 'S.No' },
@@ -26,9 +27,8 @@ function formatKg(kg) {
     return `${kg.toFixed(2)} kg`
 }
 
-export default function Manufacturing({ user, data, setData, rawMaterials = [], stockUsage = [], setStockUsage }) {
+export default function Manufacturing({ user, data, setData, rawMaterials = [], stockUsage = [], setStockUsage, ordersList = [] }) {
     const toast = useToast()
-    const [orders, setOrders] = useState([])
     const [form, setForm] = useState({
         date: '',
         order_number: '',
@@ -41,7 +41,6 @@ export default function Manufacturing({ user, data, setData, rawMaterials = [], 
         fromStockId: '',
     })
     const [submitting, setSubmitting] = useState(false)
-    const [showNewOrder, setShowNewOrder] = useState(false)
     const [filterBrand, setFilterBrand] = useState('')
     const [filterCode, setFilterCode] = useState('')
 
@@ -90,18 +89,6 @@ export default function Manufacturing({ user, data, setData, rawMaterials = [], 
         e.preventDefault()
 
         let orderNum = form.order_number
-        if (showNewOrder) {
-            if (!form.newOrder.trim() || !form.newClient.trim()) {
-                toast.error('Please fill order number and client name')
-                return
-            }
-            orderNum = form.newOrder.trim()
-            const alreadyExists = orders.some((o) => o.order_number === orderNum)
-            if (!alreadyExists) {
-                setOrders((prev) => [...prev, { order_number: orderNum, client_name: form.newClient.trim() }])
-            }
-            toast.success(`Order "${orderNum}" created`)
-        }
 
         if (!orderNum || !form.date || !form.grossWeight || !form.tareWeight) {
             toast.error('Please fill all required fields')
@@ -169,17 +156,28 @@ export default function Manufacturing({ user, data, setData, rawMaterials = [], 
             sizeMic: form.sizeMic,
             stockUsageId: stockEntry ? stockEntry.id : null,
         }
+
+        try {
+            await api.post('/manufacturing', entry)
+        } catch (err) {
+            console.error('Failed to save manufacturing entry', err)
+        }
+
         setData((prev) => [...prev, entry])
 
         // Auto-deduct from stock
         if (stockEntry && setStockUsage) {
             stockEntry.linkedEntryId = entryId
+            try {
+                await api.post('/stock-usage', stockEntry)
+            } catch (err) {
+                console.error('Failed to save stock usage entry', err)
+            }
             setStockUsage((prev) => [...prev, stockEntry])
         }
 
         toast.success('Manufacturing entry added')
         setForm({ date: '', order_number: orderNum, newOrder: '', newClient: '', grossWeight: '', tareWeight: '', materialUsed: '', sizeMic: '', fromStockId: '' })
-        setShowNewOrder(false)
         setSubmitting(false)
     }
 
@@ -265,25 +263,13 @@ export default function Manufacturing({ user, data, setData, rawMaterials = [], 
                     </div>
 
                     <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Order</label>
-                            <button type="button" onClick={() => setShowNewOrder(!showNewOrder)} className="text-[10px] text-accent-gold hover:underline">
-                                {showNewOrder ? 'Select existing' : '+ New order'}
-                            </button>
-                        </div>
-                        {showNewOrder ? (
-                            <div className="space-y-2">
-                                <InputWithCamera type="text" name="newOrder" value={form.newOrder} onChange={handleChange} placeholder="Order number" />
-                                <InputWithCamera type="text" name="newClient" value={form.newClient} onChange={handleChange} placeholder="Client name" />
-                            </div>
-                        ) : (
-                            <select name="order_number" value={form.order_number} onChange={handleChange} className={`${inputClass} appearance-none cursor-pointer`} required={!showNewOrder}>
-                                <option value="">Select order...</option>
-                                {orders.map((o) => (
-                                    <option key={o.order_number} value={o.order_number}>{o.order_number}</option>
-                                ))}
-                            </select>
-                        )}
+                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Order</label>
+                        <select name="order_number" value={form.order_number} onChange={handleChange} className={`${inputClass} appearance-none cursor-pointer`} required>
+                            <option value="">Select order...</option>
+                            {ordersList.map((o) => (
+                                <option key={o.order_number} value={o.order_number}>{o.order_number} {o.client_name ? `(${o.client_name})` : ''}</option>
+                            ))}
+                        </select>
                     </div>
 
                     {/* Brand / Code Filters */}

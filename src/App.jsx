@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import api from './utils/api'
 import { ToastProvider } from './components/Toast'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
@@ -10,6 +11,8 @@ import Wastage from './pages/Wastage'
 import LogHistory from './pages/LogHistory'
 import Stocks from './pages/Stocks'
 import Login from './pages/Login'
+import Users from './pages/Users'
+import Orders from './pages/Orders'
 
 // Helper: returns YYYY-MM-DD string for N days ago from today
 function daysAgo(n) {
@@ -94,62 +97,34 @@ function App() {
     { id: 407, sno: 7, date: daysAgo(1), quantityUsed: 2000, quantityUnit: 'kg', quantityInKg: 2000, fromStockId: 2, fromStockLabel: `${daysAgo(6)} — 8 tons`, beforeBalance: 5500, afterBalance: 3500, logMessage: '' },
   ])
 
+  const [usersList, setUsersList] = useState([])
+  const [ordersList, setOrdersList] = useState([])
+
   const hasLoadedFromServerRef = useRef(false)
-  const hasHydratedRef = useRef(false)
-  const skipNextSyncRef = useRef(true)
 
   useEffect(() => {
     if (hasLoadedFromServerRef.current) return
     hasLoadedFromServerRef.current = true
 
-    const loadState = async () => {
-      try {
-        const response = await fetch('/api/state')
-        if (!response.ok) throw new Error('Failed to fetch app state')
+    const loadAll = async () => {
+      const results = await Promise.allSettled([
+        api.get('/raw-materials'),
+        api.get('/manufacturing'),
+        api.get('/trading'),
+        api.get('/wastage'),
+        api.get('/stock-usage'),
+      ])
 
-        const state = await response.json()
-
-        if (Array.isArray(state.rawMaterials)) setRawMaterials(state.rawMaterials)
-        if (Array.isArray(state.manufacturingData)) setManufacturingData(state.manufacturingData)
-        if (Array.isArray(state.tradingData)) setTradingData(state.tradingData)
-        if (Array.isArray(state.wastageData)) setWastageData(state.wastageData)
-        if (Array.isArray(state.stockUsage)) setStockUsage(state.stockUsage)
-      } catch (error) {
-        console.error('Unable to load backend state. Using local defaults.', error)
-      } finally {
-        hasHydratedRef.current = true
-      }
+      const [rm, mfg, tr, ws, su] = results
+      if (rm.status === 'fulfilled' && Array.isArray(rm.value.data)) setRawMaterials(rm.value.data)
+      if (mfg.status === 'fulfilled' && Array.isArray(mfg.value.data)) setManufacturingData(mfg.value.data)
+      if (tr.status === 'fulfilled' && Array.isArray(tr.value.data)) setTradingData(tr.value.data)
+      if (ws.status === 'fulfilled' && Array.isArray(ws.value.data)) setWastageData(ws.value.data)
+      if (su.status === 'fulfilled' && Array.isArray(su.value.data)) setStockUsage(su.value.data)
     }
 
-    loadState()
+    loadAll().catch((err) => console.error('Failed to load initial data', err))
   }, [])
-
-  useEffect(() => {
-    if (!hasHydratedRef.current) return
-
-    if (skipNextSyncRef.current) {
-      skipNextSyncRef.current = false
-      return
-    }
-
-    const timeout = setTimeout(() => {
-      fetch('/api/state', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          rawMaterials,
-          manufacturingData,
-          tradingData,
-          wastageData,
-          stockUsage,
-        }),
-      }).catch((error) => {
-        console.error('Failed to persist app state to backend', error)
-      })
-    }, 400)
-
-    return () => clearTimeout(timeout)
-  }, [rawMaterials, manufacturingData, tradingData, wastageData, stockUsage])
 
 
 
@@ -192,12 +167,13 @@ function App() {
                             rawMaterials={rawMaterials}
                             stockUsage={stockUsage}
                             setStockUsage={setStockUsage}
+                            ordersList={ordersList}
                           />
                         }
                       />
                       <Route
                         path="/trading"
-                        element={<Trading data={tradingData} setData={setTradingData} />}
+                        element={<Trading data={tradingData} setData={setTradingData} ordersList={ordersList} />}
                       />
                       <Route
                         path="/wastage"
@@ -232,6 +208,14 @@ function App() {
                             setStockUsage={setStockUsage}
                           />
                         }
+                      />
+                      <Route
+                        path="/users"
+                        element={<Users />}
+                      />
+                      <Route
+                        path="/orders"
+                        element={<Orders />}
                       />
                     </Routes>
                   </main>
