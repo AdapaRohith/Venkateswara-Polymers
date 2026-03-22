@@ -26,7 +26,7 @@ function formatKg(kg) {
     return `${kg.toFixed(2)} kg`
 }
 
-export default function Manufacturing({ data, setData, rawMaterials = [], stockUsage = [], setStockUsage }) {
+export default function Manufacturing({ user, data, setData, rawMaterials = [], stockUsage = [], setStockUsage }) {
     const toast = useToast()
     const [orders, setOrders] = useState([])
     const [form, setForm] = useState({
@@ -380,7 +380,7 @@ export default function Manufacturing({ data, setData, rawMaterials = [], stockU
                 </form>
             </div>
 
-            <DataTable columns={columns} data={data} emptyMessage="No manufacturing entries yet." onDelete={handleDelete} />
+            <DataTable columns={columns} data={data} emptyMessage="No manufacturing entries yet." onDelete={user?.role === 'owner' ? handleDelete : undefined} />
         </div>
     )
 }

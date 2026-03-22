@@ -1,16 +1,51 @@
-# React + Vite
+# Demo VIP Anti
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Frontend: React + Vite  
+Backend: Node.js + Express + MongoDB (Mongoose)
 
-Currently, two official plugins are available:
+## Setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+1. Install dependencies:
 
-## React Compiler
+```bash
+npm install
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+2. Create your env file:
 
-## Expanding the ESLint configuration
+```bash
+copy .env.example .env
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+3. Set `MONGODB_URI` in `.env`.
+
+Example format:
+
+```env
+MONGODB_URI=mongodb+srv://<username>:<url-encoded-password>@cluster0.ahfl611.mongodb.net/demo-vip-anti?retryWrites=true&w=majority&appName=Cluster0
+PORT=5000
+```
+
+Important: if your password contains special characters like `@`, `:`, `/`, or `#`, URL-encode it.
+
+## Run
+
+Start backend:
+
+```bash
+npm run server
+```
+
+In another terminal, start frontend:
+
+```bash
+npm run dev
+```
+
+Frontend calls `/api/*`, proxied by Vite to `http://localhost:5000`.
+
+## API
+
+- `GET /api/health` → backend status
+- `GET /api/state` → full app state
+- `PUT /api/state` → save full app state

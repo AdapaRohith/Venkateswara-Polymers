@@ -10,6 +10,7 @@ const navItems = [
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
             </svg>
         ),
+        roles: ['owner'],
     },
     {
         name: 'Raw Material',
@@ -19,6 +20,7 @@ const navItems = [
                 <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
             </svg>
         ),
+        roles: ['owner', 'worker'],
     },
     {
         name: 'Stocks',
@@ -28,6 +30,7 @@ const navItems = [
                 <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125v-3.75m16.5 3.75v3.75c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125v-3.75" />
             </svg>
         ),
+        roles: ['owner', 'worker'],
     },
     {
         name: 'Manufacturing',
@@ -38,6 +41,7 @@ const navItems = [
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3 21h18" />
             </svg>
         ),
+        roles: ['owner', 'worker'],
     },
     {
         name: 'Trading',
@@ -47,6 +51,7 @@ const navItems = [
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m-3-2.818l.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
         ),
+        roles: ['owner'],
     },
     {
         name: 'Wastage',
@@ -56,6 +61,7 @@ const navItems = [
                 <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
             </svg>
         ),
+        roles: ['owner'],
     },
     {
         name: 'Log History',
@@ -65,13 +71,19 @@ const navItems = [
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
         ),
+        roles: ['owner'],
     },
 ]
 
-export default function Sidebar() {
+export default function Sidebar({ user, onLogout }) {
     const [open, setOpen] = useState(false)
     const [isDarkMode, setIsDarkMode] = useState(true)
     const location = useLocation()
+
+    // Filter nav items based on user role
+    const filteredNavItems = navItems.filter(item => 
+        item.roles.includes(user?.role || 'worker')
+    )
 
     useEffect(() => {
         setIsDarkMode(document.documentElement.classList.contains('dark'))
@@ -161,7 +173,7 @@ export default function Sidebar() {
                         Navigation
                     </p>
                     <ul className="space-y-1">
-                        {navItems.map((item) => (
+                        {filteredNavItems.map((item) => (
                             <li key={item.path}>
                                 <NavLink
                                     to={item.path}
@@ -179,6 +191,18 @@ export default function Sidebar() {
                             </li>
                         ))}
                     </ul>
+                    
+                    <div className="mt-8 px-3">
+                        <button
+                            onClick={onLogout}
+                            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 hover:bg-red-500/10 transition-all border-l-2 border-transparent"
+                        >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
+                            </svg>
+                            <span>Sign Out</span>
+                        </button>
+                    </div>
                 </nav>
 
 

@@ -11,7 +11,7 @@ const columns = [
     { key: 'codeName', label: 'Code Name' },
 ]
 
-export default function RawMaterial({ data, setData }) {
+export default function RawMaterial({ user, data, setData }) {
     const [form, setForm] = useState({
         date: '',
         quantityReceived: '',
@@ -196,7 +196,7 @@ export default function RawMaterial({ data, setData }) {
             </div>
 
             {/* Table */}
-            <DataTable columns={columns} data={data} emptyMessage="No raw material entries yet. Add one above." onDelete={handleDelete} />
+            <DataTable columns={columns} data={data} emptyMessage="No raw material entries yet. Add one above." onDelete={user?.role === 'owner' ? handleDelete : undefined} />
         </div>
     )
 }

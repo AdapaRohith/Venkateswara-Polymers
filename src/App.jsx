@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { ToastProvider } from './components/Toast'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
@@ -9,6 +9,7 @@ import Trading from './pages/Trading'
 import Wastage from './pages/Wastage'
 import LogHistory from './pages/LogHistory'
 import Stocks from './pages/Stocks'
+import Login from './pages/Login'
 
 // Helper: returns YYYY-MM-DD string for N days ago from today
 function daysAgo(n) {
@@ -18,6 +19,21 @@ function daysAgo(n) {
 }
 
 function App() {
+  const [user, setUser] = useState(() => {
+    const savedUser = localStorage.getItem('demo_user')
+    return savedUser ? JSON.parse(savedUser) : null
+  })
+
+  const handleLogin = (userData) => {
+    setUser(userData)
+    localStorage.setItem('demo_user', JSON.stringify(userData))
+  }
+
+  const handleLogout = () => {
+    setUser(null)
+    localStorage.removeItem('demo_user')
+  }
+
   const [rawMaterials, setRawMaterials] = useState([
     { id: 1, sno: 1, date: daysAgo(6), quantityReceived: 10, quantityUnit: 'tons', quantityInKg: 10000, quantityDisplay: '10 tons', brandName: 'Reliance', codeName: 'REL-001' },
     { id: 2, sno: 2, date: daysAgo(6), quantityReceived: 8, quantityUnit: 'tons', quantityInKg: 8000, quantityDisplay: '8 tons', brandName: 'SABIC', codeName: 'SAB-102' },
@@ -78,80 +94,152 @@ function App() {
     { id: 407, sno: 7, date: daysAgo(1), quantityUsed: 2000, quantityUnit: 'kg', quantityInKg: 2000, fromStockId: 2, fromStockLabel: `${daysAgo(6)} — 8 tons`, beforeBalance: 5500, afterBalance: 3500, logMessage: '' },
   ])
 
+  const hasLoadedFromServerRef = useRef(false)
+  const hasHydratedRef = useRef(false)
+  const skipNextSyncRef = useRef(true)
+
+  useEffect(() => {
+    if (hasLoadedFromServerRef.current) return
+    hasLoadedFromServerRef.current = true
+
+    const loadState = async () => {
+      try {
+        const response = await fetch('/api/state')
+        if (!response.ok) throw new Error('Failed to fetch app state')
+
+        const state = await response.json()
+
+        if (Array.isArray(state.rawMaterials)) setRawMaterials(state.rawMaterials)
+        if (Array.isArray(state.manufacturingData)) setManufacturingData(state.manufacturingData)
+        if (Array.isArray(state.tradingData)) setTradingData(state.tradingData)
+        if (Array.isArray(state.wastageData)) setWastageData(state.wastageData)
+        if (Array.isArray(state.stockUsage)) setStockUsage(state.stockUsage)
+      } catch (error) {
+        console.error('Unable to load backend state. Using local defaults.', error)
+      } finally {
+        hasHydratedRef.current = true
+      }
+    }
+
+    loadState()
+  }, [])
+
+  useEffect(() => {
+    if (!hasHydratedRef.current) return
+
+    if (skipNextSyncRef.current) {
+      skipNextSyncRef.current = false
+      return
+    }
+
+    const timeout = setTimeout(() => {
+      fetch('/api/state', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rawMaterials,
+          manufacturingData,
+          tradingData,
+          wastageData,
+          stockUsage,
+        }),
+      }).catch((error) => {
+        console.error('Failed to persist app state to backend', error)
+      })
+    }, 400)
+
+    return () => clearTimeout(timeout)
+  }, [rawMaterials, manufacturingData, tradingData, wastageData, stockUsage])
+
 
 
   return (
     <ToastProvider>
       <Router>
-        <div className="flex min-h-screen bg-bg-primary">
-          <Sidebar />
-          <main className="flex-1 ml-0 lg:ml-64 pt-18 lg:pt-0 p-4 lg:p-8 overflow-auto">
-            <Routes>
-              <Route
-                path="/"
-                element={
-                  <Dashboard
-                    rawMaterials={rawMaterials}
-                    manufacturingData={manufacturingData}
-                    tradingData={tradingData}
-                  />
-                }
-              />
-              <Route
-                path="/raw-material"
-                element={<RawMaterial data={rawMaterials} setData={setRawMaterials} />}
-              />
-              <Route
-                path="/manufacturing"
-                element={
-                  <Manufacturing
-                    data={manufacturingData}
-                    setData={setManufacturingData}
-                    rawMaterials={rawMaterials}
-                    stockUsage={stockUsage}
-                    setStockUsage={setStockUsage}
-                  />
-                }
-              />
-              <Route
-                path="/trading"
-                element={<Trading data={tradingData} setData={setTradingData} />}
-              />
-              <Route
-                path="/wastage"
-                element={
-                  <Wastage
-                    rawMaterials={rawMaterials}
-                    manufacturingData={manufacturingData}
-                    wastageData={wastageData}
-                    setWastageData={setWastageData}
-                    stockUsage={stockUsage}
-                    setStockUsage={setStockUsage}
-                  />
-                }
-              />
-              <Route path="/log-history" element={
-                <LogHistory
-                  rawMaterials={rawMaterials}
-                  manufacturingData={manufacturingData}
-                  tradingData={tradingData}
-                  wastageData={wastageData}
-                  stockUsage={stockUsage}
-                />
-              } />
-              <Route
-                path="/stocks"
-                element={
-                  <Stocks
-                    rawMaterials={rawMaterials}
-                    stockUsage={stockUsage}
-                    setStockUsage={setStockUsage}
-                  />
-                }
-              />
-            </Routes>
-          </main>
-        </div>
+        <Routes>
+          <Route path="/login" element={user ? <Navigate to="/" /> : <Login onLogin={handleLogin} />} />
+          <Route
+            path="/*"
+            element={
+              !user ? (
+                <Navigate to="/login" />
+              ) : (
+                <div className="flex min-h-screen bg-bg-primary">
+                  <Sidebar user={user} onLogout={handleLogout} />
+                  <main className="flex-1 ml-0 lg:ml-64 pt-18 lg:pt-0 p-4 lg:p-8 overflow-auto">
+                    <Routes>
+                      <Route
+                        path="/"
+                        element={
+                          <Dashboard
+                            rawMaterials={rawMaterials}
+                            manufacturingData={manufacturingData}
+                            tradingData={tradingData}
+                          />
+                        }
+                      />
+                      <Route
+                        path="/raw-material"
+                        element={<RawMaterial user={user} data={rawMaterials} setData={setRawMaterials} />}
+                      />
+                      <Route
+                        path="/manufacturing"
+                        element={
+                          <Manufacturing
+                            user={user}
+                            data={manufacturingData}
+                            setData={setManufacturingData}
+                            rawMaterials={rawMaterials}
+                            stockUsage={stockUsage}
+                            setStockUsage={setStockUsage}
+                          />
+                        }
+                      />
+                      <Route
+                        path="/trading"
+                        element={<Trading data={tradingData} setData={setTradingData} />}
+                      />
+                      <Route
+                        path="/wastage"
+                        element={
+                          <Wastage
+                            rawMaterials={rawMaterials}
+                            manufacturingData={manufacturingData}
+                            wastageData={wastageData}
+                            setWastageData={setWastageData}
+                            stockUsage={stockUsage}
+                            setStockUsage={setStockUsage}
+                          />
+                        }
+                      />
+                      <Route path="/log-history" element={
+                        <LogHistory
+                          user={user}
+                          rawMaterials={rawMaterials}
+                          manufacturingData={manufacturingData}
+                          tradingData={tradingData}
+                          wastageData={wastageData}
+                          stockUsage={stockUsage}
+                        />
+                      } />
+
+                      <Route
+                        path="/stocks"
+                        element={
+                          <Stocks
+                            rawMaterials={rawMaterials}
+                            stockUsage={stockUsage}
+                            setStockUsage={setStockUsage}
+                          />
+                        }
+                      />
+                    </Routes>
+                  </main>
+                </div>
+              )
+            }
+          />
+        </Routes>
       </Router>
     </ToastProvider>
   )
