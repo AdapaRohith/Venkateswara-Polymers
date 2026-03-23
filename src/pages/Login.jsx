@@ -36,6 +36,7 @@ const Login = ({ onLogin }) => {
 
   // Owl Animation Logic
   const isCoveringEyes = isPasswordFocused && !showPassword;
+  const shouldFlyAway = isPasswordFocused || showPassword;
   const isPeeking = isPasswordFocused && showPassword;
 
   return (
@@ -47,7 +48,14 @@ const Login = ({ onLogin }) => {
       <div className="w-full max-w-md z-10">
         {/* Interactive Owl Character */}
         <div className="flex justify-center mb-[-15px] relative z-20">
-          <div className="w-44 h-44 relative">
+          <div 
+            className="w-44 h-44 relative transition-all duration-700 ease-in-out"
+            style={{
+              transform: shouldFlyAway ? 'translateX(400px) translateY(-300px) rotate(45deg) scale(0.7)' : 'translateX(0) translateY(0) rotate(0deg) scale(1)',
+              filter: shouldFlyAway ? 'blur(2px)' : 'blur(0px)',
+              opacity: shouldFlyAway ? 0.6 : 1,
+            }}
+          >
             <svg viewBox="0 0 200 200" className="w-full h-full drop-shadow-2xl">
               {/* Ears/Tufts */}
               <path d="M60 50 L40 20 L80 40 Z" fill="#475569" />
@@ -64,7 +72,7 @@ const Login = ({ onLogin }) => {
                 <circle cx="130" cy="85" r="28" fill="#f8fafc" />
 
                 {/* Pupils - only visible when not covering eyes */}
-                <g style={{ opacity: isCoveringEyes ? 0 : 1 }} className="transition-opacity duration-300">
+                <g style={{ opacity: isCoveringEyes || showPassword ? 0 : 1 }} className="transition-opacity duration-300">
                   <circle 
                     cx="70" 
                     cy={isEmailFocused ? "95" : (isPeeking ? "85" : "85")} 
@@ -81,8 +89,8 @@ const Login = ({ onLogin }) => {
                   />
                 </g>
 
-                {/* Closed Eyelid Lines - only visible when covering eyes */}
-                <g style={{ opacity: isCoveringEyes ? 1 : 0 }} className="transition-opacity duration-300">
+                {/* Closed Eyelid Lines - only visible when covering eyes or show password is toggled */}
+                <g style={{ opacity: isCoveringEyes || showPassword ? 1 : 0 }} className="transition-opacity duration-300">
                    <path d="M55 85 Q70 100 85 85" fill="none" stroke="#475569" strokeWidth="3" strokeLinecap="round" />
                    <path d="M115 85 Q130 100 145 85" fill="none" stroke="#475569" strokeWidth="3" strokeLinecap="round" />
                 </g>
@@ -101,7 +109,7 @@ const Login = ({ onLogin }) => {
                 className="transition-all duration-500 ease-in-out"
                 style={{ 
                     transformOrigin: '40px 100px',
-                    transform: isCoveringEyes ? 'rotate(110deg) translate(20px, -40px)' : (isPeeking ? 'rotate(45deg) translate(10px, -20px)' : 'rotate(0deg)')
+                    transform: shouldFlyAway ? 'rotate(130deg) translate(30px, -50px)' : (isCoveringEyes ? 'rotate(110deg) translate(20px, -40px)' : (isPeeking ? 'rotate(45deg) translate(10px, -20px)' : 'rotate(0deg)'))
                 }}
               />
               
@@ -115,7 +123,7 @@ const Login = ({ onLogin }) => {
                 className="transition-all duration-500 ease-in-out"
                 style={{ 
                     transformOrigin: '160px 100px',
-                    transform: isCoveringEyes ? 'rotate(-110deg) translate(-20px, -40px)' : (isPeeking ? 'rotate(-45deg) translate(-10px, -20px)' : 'rotate(0deg)')
+                    transform: shouldFlyAway ? 'rotate(-130deg) translate(-30px, -50px)' : (isCoveringEyes ? 'rotate(-110deg) translate(-20px, -40px)' : (isPeeking ? 'rotate(-45deg) translate(-10px, -20px)' : 'rotate(0deg)'))
                 }}
               />
             </svg>

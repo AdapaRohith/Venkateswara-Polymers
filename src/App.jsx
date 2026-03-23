@@ -10,9 +10,10 @@ import Trading from './pages/Trading'
 import Wastage from './pages/Wastage'
 import LogHistory from './pages/LogHistory'
 import Stocks from './pages/Stocks'
-import Login from './pages/Login'
+import Login from './components/ui/animated-characters-login-page.jsx'
 import Users from './pages/Users'
 import Orders from './pages/Orders'
+import avlokaiLogo from '../avlokai_logo.png'
 
 // Protected Route Component - checks user role before rendering
 function ProtectedRoute({ element, allowedRoles, user }) {
@@ -52,6 +53,9 @@ function App() {
 
   const [usersList, setUsersList] = useState([])
   const [ordersList, setOrdersList] = useState([])
+
+  // Filter orders to exclude completed/cancelled ones for selection
+  const activeOrdersList = ordersList.filter(o => o.status !== 'completed' && o.status !== 'cancelled')
 
   const hasLoadedFromServerRef = useRef(false)
 
@@ -117,9 +121,20 @@ function App() {
               !user ? (
                 <Navigate to="/login" />
               ) : (
-                <div className="flex min-h-screen bg-bg-primary">
+                <div className="flex min-h-screen bg-bg-primary relative">
+                  {/* Watermark */}
+                  <div className="fixed inset-0 pointer-events-none z-0">
+                    <div className="absolute inset-0 flex items-center justify-center opacity-10">
+                      <img
+                        src={avlokaiLogo}
+                        alt="AvlokAI watermark"
+                        className="w-[440px] max-w-[68vw] rotate-[-18deg] object-contain"
+                      />
+                    </div>
+                  </div>
+                  
                   <Sidebar user={user} onLogout={handleLogout} />
-                  <main className="flex-1 ml-0 lg:ml-64 pt-18 lg:pt-0 p-4 lg:p-8 overflow-auto">
+                  <main className="flex-1 ml-0 lg:ml-64 pt-18 lg:pt-0 p-4 lg:p-8 overflow-auto relative z-10">
                     <Routes>
                       <Route
                         path="/"
@@ -151,7 +166,7 @@ function App() {
                             rawMaterials={rawMaterials}
                             stockUsage={stockUsage}
                             setStockUsage={setStockUsage}
-                            ordersList={ordersList}
+                            ordersList={activeOrdersList}
                           />
                         }
                       />
@@ -161,7 +176,7 @@ function App() {
                           <ProtectedRoute
                             user={user}
                             allowedRoles={['owner']}
-                            element={<Trading data={tradingData} setData={setTradingData} ordersList={ordersList} />}
+                            element={<Trading data={tradingData} setData={setTradingData} ordersList={activeOrdersList} />}
                           />
                         }
                       />
@@ -226,6 +241,17 @@ function App() {
                         element={<Orders />}
                       />
                     </Routes>
+                    {/* Footer */}
+                    <div className="mt-16 pt-8 border-t border-border-default text-center text-text-secondary/50 text-xs relative z-10">
+                      <div className="mb-3 flex justify-center">
+                        <img
+                          src={avlokaiLogo}
+                          alt="AvlokAI"
+                          className="h-14 w-auto object-contain opacity-80"
+                        />
+                      </div>
+                      <p>© 2026 AvlokAI • <a href="https://avlokai.com" target="_blank" rel="noopener noreferrer" className="hover:text-accent-gold transition-colors">avlokai.com</a></p>
+                    </div>
                   </main>
                 </div>
               )

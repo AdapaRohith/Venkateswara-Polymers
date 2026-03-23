@@ -1,18 +1,12 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Eye, EyeOff, Mail, Sparkles } from "lucide-react";
+import { Eye, EyeOff } from "lucide-react";
+import avlokaiLogo from "../../../avlokai_logo.png";
 
-
-interface PupilProps {
-  size?: number;
-  maxDistance?: number;
-  pupilColor?: string;
-  forceLookX?: number;
-  forceLookY?: number;
-}
 
 const Pupil = ({ 
   size = 12, 
@@ -20,13 +14,13 @@ const Pupil = ({
   pupilColor = "black",
   forceLookX,
   forceLookY
-}: PupilProps) => {
-  const [mouseX, setMouseX] = useState<number>(0);
-  const [mouseY, setMouseY] = useState<number>(0);
-  const pupilRef = useRef<HTMLDivElement>(null);
+} = {}) => {
+  const [mouseX, setMouseX] = useState(0);
+  const [mouseY, setMouseY] = useState(0);
+  const pupilRef = useRef(null);
 
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
+    const handleMouseMove = (e) => {
       setMouseX(e.clientX);
       setMouseY(e.clientY);
     };
@@ -81,17 +75,6 @@ const Pupil = ({
 
 
 
-interface EyeBallProps {
-  size?: number;
-  pupilSize?: number;
-  maxDistance?: number;
-  eyeColor?: string;
-  pupilColor?: string;
-  isBlinking?: boolean;
-  forceLookX?: number;
-  forceLookY?: number;
-}
-
 const EyeBall = ({ 
   size = 48, 
   pupilSize = 16, 
@@ -101,13 +84,13 @@ const EyeBall = ({
   isBlinking = false,
   forceLookX,
   forceLookY
-}: EyeBallProps) => {
-  const [mouseX, setMouseX] = useState<number>(0);
-  const [mouseY, setMouseY] = useState<number>(0);
-  const eyeRef = useRef<HTMLDivElement>(null);
+} = {}) => {
+  const [mouseX, setMouseX] = useState(0);
+  const [mouseY, setMouseY] = useState(0);
+  const eyeRef = useRef(null);
 
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
+    const handleMouseMove = (e) => {
       setMouseX(e.clientX);
       setMouseY(e.clientY);
     };
@@ -175,26 +158,27 @@ const EyeBall = ({
 
 
 
-function LoginPage() {
+function LoginPage({ onLogin }) {
+  const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [mouseX, setMouseX] = useState<number>(0);
-  const [mouseY, setMouseY] = useState<number>(0);
+  const [mouseX, setMouseX] = useState(0);
+  const [mouseY, setMouseY] = useState(0);
   const [isPurpleBlinking, setIsPurpleBlinking] = useState(false);
   const [isBlackBlinking, setIsBlackBlinking] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [isLookingAtEachOther, setIsLookingAtEachOther] = useState(false);
   const [isPurplePeeking, setIsPurplePeeking] = useState(false);
-  const purpleRef = useRef<HTMLDivElement>(null);
-  const blackRef = useRef<HTMLDivElement>(null);
-  const yellowRef = useRef<HTMLDivElement>(null);
-  const orangeRef = useRef<HTMLDivElement>(null);
+  const purpleRef = useRef(null);
+  const blackRef = useRef(null);
+  const yellowRef = useRef(null);
+  const orangeRef = useRef(null);
 
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
+    const handleMouseMove = (e) => {
       setMouseX(e.clientX);
       setMouseY(e.clientY);
     };
@@ -276,7 +260,7 @@ function LoginPage() {
     }
   }, [password, showPassword, isPurplePeeking]);
 
-  const calculatePosition = (ref: React.RefObject<HTMLDivElement | null>) => {
+  const calculatePosition = (ref) => {
     if (!ref.current) return { faceX: 0, faceY: 0, bodyRotation: 0 };
 
     const rect = ref.current.getBoundingClientRect();
@@ -301,7 +285,7 @@ function LoginPage() {
   const yellowPos = calculatePosition(yellowRef);
   const orangePos = calculatePosition(orangeRef);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     setIsLoading(true);
@@ -309,20 +293,22 @@ function LoginPage() {
     // Simulate API delay (quick)
     await new Promise(resolve => setTimeout(resolve, 300));
 
-    // Mock authentication - validate against dummy credentials
-    if (email === "erik@gmail.com" && password === "1234") {
-      console.log("✅ Login successful!");
-      alert("Login successful! Welcome, Erik!");
-      // In a real app, you would:
-      // - Store auth token
-      // - Redirect to dashboard
-      // - Set user session
-    } else {
-      setError("Invalid email or password. Please try again.");
-      console.log("❌ Login failed");
+    // Mock authentication - validate against demo credentials
+    let userData = null;
+    if (email === "owner@demo.com" && password === "owner123") {
+      userData = { email, role: "owner", name: "Admin" };
+    } else if (email === "worker@demo.com" && password === "worker123") {
+      userData = { email, role: "worker", name: "Staff" };
     }
 
-    setIsLoading(false);
+    if (userData) {
+      console.log("✅ Login successful!");
+      onLogin(userData);
+      navigate(userData.role === "worker" ? "/raw-material" : "/");
+    } else {
+      setError("Invalid email or password. Try owner@demo.com/owner123 or worker@demo.com/worker123");
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -330,11 +316,12 @@ function LoginPage() {
       {/* Left Content Section */}
       <div className="relative hidden lg:flex flex-col justify-between bg-gradient-to-br from-primary/90 via-primary to-primary/80 p-12 text-primary-foreground">
         <div className="relative z-20">
-          <div className="flex items-center gap-2 text-lg font-semibold">
-            <div className="size-8 rounded-lg bg-primary-foreground/10 backdrop-blur-sm flex items-center justify-center">
-              <Sparkles className="size-4" />
-            </div>
-            <span>YourBrand</span>
+          <div className="inline-flex items-center rounded-2xl bg-primary-foreground/10 px-5 py-4 backdrop-blur-sm">
+            <img
+              src={avlokaiLogo}
+              alt="AvlokAI"
+              className="h-16 w-auto object-contain"
+            />
           </div>
         </div>
 
@@ -509,18 +496,6 @@ function LoginPage() {
           </div>
         </div>
 
-        <div className="relative z-20 flex items-center gap-8 text-sm text-primary-foreground/60">
-          <a href="#" className="hover:text-primary-foreground transition-colors">
-            Privacy Policy
-          </a>
-          <a href="#" className="hover:text-primary-foreground transition-colors">
-            Terms of Service
-          </a>
-          <a href="#" className="hover:text-primary-foreground transition-colors">
-            Contact
-          </a>
-        </div>
-
         {/* Decorative elements */}
         <div className="absolute inset-0 bg-grid-white/[0.05] bg-[size:20px_20px]" />
         <div className="absolute top-1/4 right-1/4 size-64 bg-primary-foreground/10 rounded-full blur-3xl" />
@@ -531,11 +506,14 @@ function LoginPage() {
       <div className="flex items-center justify-center p-8 bg-background">
         <div className="w-full max-w-[420px]">
           {/* Mobile Logo */}
-          <div className="lg:hidden flex items-center justify-center gap-2 text-lg font-semibold mb-12">
-            <div className="size-8 rounded-lg bg-primary/10 flex items-center justify-center">
-              <Sparkles className="size-4 text-primary" />
+          <div className="lg:hidden flex justify-center mb-12">
+            <div className="inline-flex items-center rounded-2xl bg-primary/10 px-5 py-4">
+              <img
+                src={avlokaiLogo}
+                alt="AvlokAI"
+                className="h-16 w-auto object-contain"
+              />
             </div>
-            <span>YourBrand</span>
           </div>
 
           {/* Header */}
@@ -598,12 +576,6 @@ function LoginPage() {
                   Remember for 30 days
                 </Label>
               </div>
-              <a
-                href="#"
-                className="text-sm text-primary hover:underline font-medium"
-              >
-                Forgot password?
-              </a>
             </div>
 
             {error && (
@@ -621,26 +593,6 @@ function LoginPage() {
               {isLoading ? "Signing in..." : "Log in"}
             </Button>
           </form>
-
-          {/* Social Login */}
-          <div className="mt-6">
-            <Button 
-              variant="outline" 
-              className="w-full h-12 bg-background border-border/60 hover:bg-accent"
-              type="button"
-            >
-              <Mail className="mr-2 size-5" />
-              Log in with Google
-            </Button>
-          </div>
-
-          {/* Sign Up Link */}
-          <div className="text-center text-sm text-muted-foreground mt-8">
-            Don't have an account?{" "}
-            <a href="#" className="text-foreground font-medium hover:underline">
-              Sign Up
-            </a>
-          </div>
         </div>
       </div>
     </div>
@@ -649,4 +601,4 @@ function LoginPage() {
 
 
 
-export const Component = LoginPage;
+export default LoginPage;

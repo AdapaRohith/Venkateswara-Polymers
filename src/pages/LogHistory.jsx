@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
+import api from '../utils/api'
 
 // Format kg into a readable string
 function formatKg(kg) {
@@ -7,8 +8,39 @@ function formatKg(kg) {
     return `${kg.toFixed(2)} kg`
 }
 
+// Get status badge styling
+function getStatusBadge(status) {
+    const statusMap = {
+        active: 'bg-amber-500/15 text-amber-400',
+        completed: 'bg-emerald-500/15 text-emerald-400',
+        cancelled: 'bg-red-500/15 text-red-400',
+    }
+    const cls = statusMap[(status || '').toLowerCase()] || 'bg-gray-500/15 text-gray-400'
+    return cls
+}
+
 export default function LogHistory({ rawMaterials = [], manufacturingData = [], tradingData = [], wastageData = [], stockUsage = [] }) {
     const [date, setDate] = useState('')
+    const [orders, setOrders] = useState([])
+
+    useEffect(() => {
+        const fetchOrders = async () => {
+            try {
+                const { data } = await api.get('/orders')
+                setOrders(data)
+            } catch (error) {
+                console.error('Failed to load orders:', error)
+            }
+        }
+        fetchOrders()
+    }, [])
+
+    // Helper to get order status by order number
+    const getOrderStatus = (orderNumber) => {
+        if (orderNumber === '—') return null
+        const order = orders.find(o => o.order_number === orderNumber)
+        return order?.status || null
+    }
 
     // Combine all section data into a single list with a section label
     const allEntries = useMemo(() => {
@@ -230,7 +262,7 @@ export default function LogHistory({ rawMaterials = [], manufacturingData = [], 
                                             <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">S.No</th>
                                             <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Date</th>
                                             {sec !== 'Raw Material' && (
-                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Order</th>
+                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Order & Status</th>
                                             )}
                                             <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Gross</th>
                                             <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Tare</th>
@@ -254,7 +286,16 @@ export default function LogHistory({ rawMaterials = [], manufacturingData = [], 
                                                 <td className="px-6 py-3 text-text-secondary">{idx + 1}</td>
                                                 <td className="px-6 py-3 text-text-primary/90">{row.date}</td>
                                                 {sec !== 'Raw Material' && (
-                                                    <td className="px-6 py-3 text-text-primary/90 font-medium">{row.order_number}</td>
+                                                    <td className="px-6 py-3 text-text-primary/90 font-medium">
+                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                            <span>{row.order_number}</span>
+                                                            {getOrderStatus(row.order_number) && (
+                                                                <span className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${getStatusBadge(getOrderStatus(row.order_number))}`}>
+                                                                    {getOrderStatus(row.order_number)}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </td>
                                                 )}
                                                 <td className="px-6 py-3 text-text-primary/90">{Number(row.grossWeight).toFixed(2)}</td>
                                                 <td className="px-6 py-3 text-text-primary/90">{Number(row.tareWeight).toFixed(2)}</td>

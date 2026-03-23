@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import avlokaiLogo from '../../avlokai_logo.png'
 
 const navItems = [
     {
@@ -138,11 +139,12 @@ export default function Sidebar({ user, onLogout }) {
                         <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
                     </svg>
                 </button>
-                <div className="flex items-center gap-2 ml-3">
-                    <div className="w-7 h-7 rounded-md bg-accent-gold/10 flex items-center justify-center">
-                        <span className="text-accent-gold font-bold text-[10px]">VP</span>
-                    </div>
-                    <span className="text-sm font-semibold text-text-primary tracking-wide">Venkateswara</span>
+                <div className="ml-3 rounded-xl bg-white/[0.03] px-4 py-2.5">
+                    <img
+                        src={avlokaiLogo}
+                        alt="AvlokAI"
+                        className="h-9 w-auto object-contain"
+                    />
                 </div>
             </div>
 
@@ -167,12 +169,13 @@ export default function Sidebar({ user, onLogout }) {
                 <div className="px-6 py-8 border-b border-border-default">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
-                            <div className="w-9 h-9 rounded-lg bg-accent-gold/10 flex items-center justify-center">
-                                <span className="text-accent-gold font-bold text-sm">VP</span>
-                            </div>
                             <div>
-                                <h1 className="text-base font-semibold tracking-wide text-text-primary">Venkateswara</h1>
-                                <p className="text-[11px] text-text-secondary tracking-widest uppercase">Polymers</p>
+                                <img
+                                    src={avlokaiLogo}
+                                    alt="AvlokAI"
+                                    className="h-14 w-auto object-contain"
+                                />
+                                <p className="mt-2 text-[11px] text-text-secondary tracking-widest uppercase">Venkateswara Polymers</p>
                             </div>
                         </div>
                         {/* Close button (mobile only) */}
