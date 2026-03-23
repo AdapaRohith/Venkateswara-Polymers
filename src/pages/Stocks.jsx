@@ -4,6 +4,8 @@ import InputWithCamera from '../components/InputWithCamera'
 import DataTable from '../components/DataTable'
 import api from '../utils/api'
 
+const getTodayDate = () => new Date().toISOString().split('T')[0]
+
 // Convert any unit to kg
 function toKg(value, unit) {
     if (unit === 'tons') return value * 1000
@@ -12,13 +14,14 @@ function toKg(value, unit) {
 
 // Format kg into a readable string
 function formatKg(kg) {
+    if (kg === undefined || kg === null) return '0.00 kg'
     if (Math.abs(kg) >= 1000) return `${(kg / 1000).toFixed(2)} tons`
     return `${kg.toFixed(2)} kg`
 }
 
 export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
     const [form, setForm] = useState({
-        date: '',
+        date: getTodayDate(),
         quantityUsed: '',
         quantityUnit: 'kg',
         fromStockId: '',
@@ -71,8 +74,8 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
         const unit = form.quantityUnit
         const qtyInKg = toKg(qty, unit)
 
-        // Find the selected batch
-        const batch = stockBatches.find((b) => b.id === Number(form.fromStockId))
+        // Find the selected batch - compare as strings since IDs from backend can be strings
+        const batch = stockBatches.find((b) => String(b.id) === String(form.fromStockId))
         if (!batch) return
 
         // Don't allow usage greater than remaining
@@ -104,7 +107,7 @@ export default function Stocks({ rawMaterials, stockUsage, setStockUsage }) {
         }
 
         setStockUsage((prev) => [...prev, entry])
-        setForm({ date: '', quantityUsed: '', quantityUnit: 'kg', fromStockId: '' })
+        setForm({ date: getTodayDate(), quantityUsed: '', quantityUnit: 'kg', fromStockId: '' })
     }
 
     const handleDeleteUsage = (id) => {

@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 
 // Format kg into a readable string
 function formatKg(kg) {
+    if (kg === undefined || kg === null) return '0.00 kg'
     if (Math.abs(kg) >= 1000) return `${(kg / 1000).toFixed(2)} tons`
     return `${kg.toFixed(2)} kg`
 }

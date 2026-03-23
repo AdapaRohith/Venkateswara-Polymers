@@ -5,6 +5,8 @@ import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 
+const getTodayDate = () => new Date().toISOString().split('T')[0]
+
 const columns = [
     { key: 'sno', label: 'S.No' },
     { key: 'date', label: 'Date' },
@@ -24,7 +26,7 @@ const columns = [
 export default function Trading({ data, setData, ordersList = [] }) {
     const toast = useToast()
     const [form, setForm] = useState({
-        date: '',
+        date: getTodayDate(),
         order_number: '',
         netWeight: '',
         rate: '',

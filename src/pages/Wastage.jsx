@@ -5,6 +5,8 @@ import { WastageAreaChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 
+const getTodayDate = () => new Date().toISOString().split('T')[0]
+
 const historyColumns = [
     { key: 'sno', label: 'S.No' },
     { key: 'date', label: 'Date' },
@@ -123,7 +125,8 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
         // Validate stock batch if selected
         let stockEntry = null
         if (form.fromStockId) {
-            const batch = stockBatches.find((b) => b.id === Number(form.fromStockId))
+            // Compare as strings since IDs from backend can be strings
+            const batch = stockBatches.find((b) => String(b.id) === String(form.fromStockId))
             if (!batch) {
                 toast.error('Selected stock batch not found')
                 return
@@ -136,7 +139,7 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
             stockEntry = {
                 id: Date.now() + 1,
                 sno: stockUsage.length + 1,
-                date: new Date().toISOString().split('T')[0],
+                date: getTodayDate(),
                 quantityUsed: actualWeight,
                 quantityUnit: 'kg',
                 quantityInKg: actualWeight,
@@ -152,36 +155,45 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
         setSubmitting(true)
 
         const entryId = Date.now()
+        let stockUsageId = null
+
+        // Create stock usage entry FIRST (if needed) due to foreign key constraint
+        if (stockEntry && setStockUsage) {
+            stockEntry.linkedEntryId = entryId
+            try {
+                const { data: savedStockEntry } = await api.post('/stock-usage', stockEntry)
+                stockUsageId = savedStockEntry?.id || stockEntry.id
+                setStockUsage((prev) => [...prev, savedStockEntry || stockEntry])
+            } catch (err) {
+                console.error('Failed to save stock usage entry', err)
+                toast.error('Failed to save stock usage entry')
+                setSubmitting(false)
+                return
+            }
+        }
+
+        // Then create wastage entry with the stock usage ID
         const entry = {
             id: entryId,
             sno: wastageData.length + 1,
-            date: new Date().toISOString().split('T')[0],
+            date: getTodayDate(),
             order_number: orderNum,
             grossWeight: gross,
             netWeight: net,
             actualWeight: actualWeight,
-            stockUsageId: stockEntry ? stockEntry.id : null,
+            stockUsageId: stockUsageId,
         }
 
         try {
             await api.post('/wastage', entry)
         } catch (err) {
             console.error('Failed to save wastage entry', err)
+            toast.error('Failed to save wastage entry')
+            setSubmitting(false)
+            return
         }
 
         setWastageData((prev) => [...prev, entry].map((item, idx) => ({ ...item, sno: idx + 1 })))
-
-        // Auto-deduct from stock
-        if (stockEntry && setStockUsage) {
-            stockEntry.linkedEntryId = entryId
-            try {
-                await api.post('/stock-usage', stockEntry)
-            } catch (err) {
-                console.error('Failed to save stock usage entry', err)
-            }
-            setStockUsage((prev) => [...prev, stockEntry])
-        }
-
         toast.success('Waste entry added')
         setForm(p => ({ ...p, gross_weight: '', net_weight: '', newOrder: '', newClient: '', fromStockId: '' }))
         setShowNewOrder(false)

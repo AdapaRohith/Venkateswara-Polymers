@@ -5,6 +5,8 @@ import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 
+const getTodayDate = () => new Date().toISOString().split('T')[0]
+
 const columns = [
     { key: 'sno', label: 'S.No' },
     { key: 'date', label: 'Date' },
@@ -30,7 +32,7 @@ function formatKg(kg) {
 export default function Manufacturing({ user, data, setData, rawMaterials = [], stockUsage = [], setStockUsage, ordersList = [] }) {
     const toast = useToast()
     const [form, setForm] = useState({
-        date: '',
+        date: getTodayDate(),
         order_number: '',
         newOrder: '',
         newClient: '',
@@ -113,7 +115,8 @@ export default function Manufacturing({ user, data, setData, rawMaterials = [], 
         // Validate stock batch if selected
         let stockEntry = null
         if (form.fromStockId) {
-            const batch = stockBatches.find((b) => b.id === Number(form.fromStockId))
+            // Compare as strings since IDs from backend can be strings
+            const batch = stockBatches.find((b) => String(b.id) === String(form.fromStockId))
             if (!batch) {
                 toast.error('Selected stock batch not found')
                 return
@@ -144,6 +147,24 @@ export default function Manufacturing({ user, data, setData, rawMaterials = [], 
         setSubmitting(true)
 
         const entryId = Date.now()
+        let stockUsageId = null
+
+        // Create stock usage entry FIRST (if needed) due to foreign key constraint
+        if (stockEntry && setStockUsage) {
+            stockEntry.linkedEntryId = entryId
+            try {
+                const { data: savedStockEntry } = await api.post('/stock-usage', stockEntry)
+                stockUsageId = savedStockEntry?.id || stockEntry.id
+                setStockUsage((prev) => [...prev, savedStockEntry || stockEntry])
+            } catch (err) {
+                console.error('Failed to save stock usage entry', err)
+                toast.error('Failed to save stock usage entry')
+                setSubmitting(false)
+                return
+            }
+        }
+
+        // Then create manufacturing entry with the stock usage ID
         const entry = {
             id: entryId,
             sno: data.length + 1,
@@ -154,30 +175,21 @@ export default function Manufacturing({ user, data, setData, rawMaterials = [], 
             netWeight: net,
             materialUsed: matUsed,
             sizeMic: form.sizeMic,
-            stockUsageId: stockEntry ? stockEntry.id : null,
+            stockUsageId: stockUsageId,
         }
 
         try {
             await api.post('/manufacturing', entry)
         } catch (err) {
             console.error('Failed to save manufacturing entry', err)
+            toast.error('Failed to save manufacturing entry')
+            setSubmitting(false)
+            return
         }
 
         setData((prev) => [...prev, entry])
-
-        // Auto-deduct from stock
-        if (stockEntry && setStockUsage) {
-            stockEntry.linkedEntryId = entryId
-            try {
-                await api.post('/stock-usage', stockEntry)
-            } catch (err) {
-                console.error('Failed to save stock usage entry', err)
-            }
-            setStockUsage((prev) => [...prev, stockEntry])
-        }
-
         toast.success('Manufacturing entry added')
-        setForm({ date: '', order_number: orderNum, newOrder: '', newClient: '', grossWeight: '', tareWeight: '', materialUsed: '', sizeMic: '', fromStockId: '' })
+        setForm({ date: getTodayDate(), order_number: orderNum, newOrder: '', newClient: '', grossWeight: '', tareWeight: '', materialUsed: '', sizeMic: '', fromStockId: '' })
         setSubmitting(false)
     }
 

@@ -16,7 +16,7 @@ export default function Users() {
 
     const fetchUsers = async () => {
         try {
-            const { data } = await api.get('/api/users')
+            const { data } = await api.get('/users')
             setUsers(data)
         } catch (error) {
             toast.error('Failed to load users')
@@ -39,7 +39,7 @@ export default function Users() {
 
         setSubmitting(true)
         try {
-            const { data } = await api.post('/api/users', form)
+            const { data } = await api.post('/users', form)
             setUsers(prev => [data, ...prev])
             toast.success('User created')
             setForm({ username: '', password: '', role: 'Operator' })
@@ -52,7 +52,7 @@ export default function Users() {
 
     const handleDelete = async (id) => {
         try {
-            await api.delete(`/api/users/${id}`)
+            await api.delete(`/users/${id}`)
             setUsers(prev => prev.filter(u => u.id !== id))
             toast.success('User deleted')
         } catch (error) {

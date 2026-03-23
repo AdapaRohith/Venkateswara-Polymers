@@ -4,6 +4,8 @@ import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import api from '../utils/api'
 
+const getTodayDate = () => new Date().toISOString().split('T')[0]
+
 const columns = [
     { key: 'sno', label: 'S.No' },
     { key: 'date', label: 'Date' },
@@ -14,7 +16,7 @@ const columns = [
 
 export default function RawMaterial({ user, data, setData }) {
     const [form, setForm] = useState({
-        date: '',
+        date: getTodayDate(),
         quantityReceived: '',
         quantityUnit: 'kg',
         brandName: '',
@@ -53,7 +55,7 @@ export default function RawMaterial({ user, data, setData }) {
         }
 
         setData((prev) => [...prev, entry])
-        setForm({ date: '', quantityReceived: '', quantityUnit: 'kg', brandName: '', codeName: '' })
+        setForm({ date: getTodayDate(), quantityReceived: '', quantityUnit: 'kg', brandName: '', codeName: '' })
     }
 
     const handleDelete = (id) => {
