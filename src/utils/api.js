@@ -70,18 +70,34 @@ const request = async (endpoint, options = {}) => {
         ...options.headers,
       },
     })
-    const responseData = await response.json()
+    const responseText = await response.text()
+    let responseData = null
+
+    if (responseText) {
+      try {
+        responseData = JSON.parse(responseText)
+      } catch {
+        responseData = responseText
+      }
+    }
+
     if (!response.ok) {
-      console.error(`API Error [${response.status}] ${endpoint}:`, responseData)
-      throw { response: { data: responseData } }
+      const errorData =
+        responseData && typeof responseData === 'object'
+          ? responseData
+          : { error: `Request failed with status ${response.status}` }
+      console.error(`API Error [${response.status}] ${endpoint}:`, errorData)
+      throw { response: { data: errorData } }
     }
     
     // Handle both { data: [...] } and direct [...] responses
     let data = responseData?.data ?? responseData
     
+    const transformerKey = endpoint.split('?')[0]
+
     // Apply transformer if available for this endpoint
-    if (Array.isArray(data) && transformers[endpoint]) {
-      data = transformers[endpoint](data)
+    if (Array.isArray(data) && transformers[transformerKey]) {
+      data = transformers[transformerKey](data)
     }
     
     console.log(`API Success ${endpoint}:`, data)

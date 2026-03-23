@@ -1,9 +1,18 @@
-import { useState, useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { WastageAreaChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
+import { buildStockBatches, formatKg } from '../utils/stock'
+import {
+    createInventoryTransaction,
+    deleteInventoryTransaction,
+    ensureInventoryBalance,
+    INVENTORY_NOTE_CATEGORIES,
+    INVENTORY_TRANSACTION_TYPES,
+    makeInventoryTransaction,
+} from '../utils/inventory'
 
 const getTodayDate = () => new Date().toISOString().split('T')[0]
 
@@ -11,25 +20,23 @@ const historyColumns = [
     { key: 'sno', label: 'S.No' },
     { key: 'date', label: 'Date' },
     { key: 'order_number', label: 'Order' },
-    { key: 'grossWeight', label: 'Gross Weight', render: (v) => Number(v).toFixed(2) },
-    { key: 'netWeight', label: 'Net Weight', render: (v) => Number(v).toFixed(2) },
-    { key: 'actualWeight', label: 'Actual Weight', render: (v) => Number(v).toFixed(2) },
+    { key: 'grossWeight', label: 'Gross Weight', render: (value) => Number(value).toFixed(2) },
+    { key: 'netWeight', label: 'Net Weight', render: (value) => Number(value).toFixed(2) },
+    { key: 'actualWeight', label: 'Actual Weight', render: (value) => Number(value).toFixed(2) },
 ]
 
-// Convert any unit to kg
-function toKg(value, unit) {
-    if (unit === 'tons') return value * 1000
-    return value
-}
-
-function formatKg(kg) {
-    if (Math.abs(kg) >= 1000) return `${(kg / 1000).toFixed(2)} tons`
-    return `${kg.toFixed(2)} kg`
-}
-
-export default function Wastage({ rawMaterials, manufacturingData, wastageData = [], setWastageData, stockUsage = [], setStockUsage }) {
+export default function Wastage({
+    rawMaterials,
+    manufacturingData,
+    wastageData = [],
+    ordersList = [],
+    stockUsage = [],
+    stockIssuances = [],
+    stockBalances = {},
+    refreshInventoryData,
+    refreshOrders,
+}) {
     const toast = useToast()
-    const [orders, setOrders] = useState([])
     const [form, setForm] = useState({
         order_number: '',
         newOrder: '',
@@ -41,25 +48,25 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
     const [submitting, setSubmitting] = useState(false)
     const [showNewOrder, setShowNewOrder] = useState(false)
 
-
-
-    // Fixed: rawMaterials use quantityInKg, not netWeight
-    const totalRawIn = rawMaterials.reduce((s, i) => s + (i.quantityInKg || 0), 0)
-    const totalMfgOutput = manufacturingData.reduce((s, i) => s + (i.netWeight || 0), 0)
-    const totalMfgInput = manufacturingData.reduce((s, i) => s + (i.materialUsed || i.netWeight || 0), 0)
-    const totalWasteLogged = wastageData.reduce((s, i) => s + (i.actualWeight || 0), 0)
+    const totalRawIn = rawMaterials.reduce((sum, item) => sum + (item.quantityInKg || 0), 0)
+    const totalMfgOutput = manufacturingData.reduce((sum, item) => sum + (item.netWeight || 0), 0)
+    const totalMfgInput = manufacturingData.reduce((sum, item) => sum + (item.materialUsed || item.netWeight || 0), 0)
     const autoWastage = Math.max(0, totalMfgInput - totalMfgOutput)
 
-    // ── Per-order wastage breakdown ──
     const perOrderData = useMemo(() => {
         const orderMap = {}
-        manufacturingData.forEach((m) => {
-            const o = m.order_number || 'Unknown'
-            if (!orderMap[o]) orderMap[o] = { order: o, materialUsed: 0, output: 0, rolls: 0 }
-            orderMap[o].materialUsed += (m.materialUsed || m.netWeight || 0)
-            orderMap[o].output += (m.netWeight || 0)
-            orderMap[o].rolls += 1
+
+        manufacturingData.forEach((entry) => {
+            const orderNumber = entry.order_number || 'Unknown'
+            if (!orderMap[orderNumber]) {
+                orderMap[orderNumber] = { order: orderNumber, materialUsed: 0, output: 0, rolls: 0 }
+            }
+
+            orderMap[orderNumber].materialUsed += entry.materialUsed || entry.netWeight || 0
+            orderMap[orderNumber].output += entry.netWeight || 0
+            orderMap[orderNumber].rolls += 1
         })
+
         return Object.values(orderMap).map((row) => ({
             ...row,
             wastage: Math.max(0, row.materialUsed - row.output),
@@ -67,147 +74,163 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
         }))
     }, [manufacturingData])
 
-    const chartData = useMemo(() => [
-        { name: 'Raw Material In', value: totalRawIn },
-        { name: 'Mfg Output', value: totalMfgOutput },
-        { name: 'Process Wastage', value: autoWastage },
-    ], [totalRawIn, totalMfgOutput, autoWastage])
+    const chartData = useMemo(
+        () => [
+            { name: 'Raw Material In', value: totalRawIn },
+            { name: 'Mfg Output', value: totalMfgOutput },
+            { name: 'Process Wastage', value: autoWastage },
+        ],
+        [autoWastage, totalMfgOutput, totalRawIn],
+    )
 
-    // ── Stock batch calculations ──
-    const stockBatches = useMemo(() => {
-        return rawMaterials
-            .filter((r) => r.quantityInKg > 0)
-            .map((r) => {
-                const usedFromThisBatch = stockUsage
-                    .filter((u) => u.fromStockId === r.id)
-                    .reduce((s, u) => s + u.quantityInKg, 0)
-                const remaining = (r.quantityInKg || 0) - usedFromThisBatch
-                return {
-                    ...r,
-                    initialQty: r.quantityInKg || 0,
-                    totalUsed: usedFromThisBatch,
-                    remaining,
-                    label: `${r.date} — ${r.quantityDisplay || formatKg(r.quantityInKg || 0)}`,
-                }
-            })
-    }, [rawMaterials, stockUsage])
+    const stockBatches = useMemo(
+        () => buildStockBatches(rawMaterials, stockUsage, stockIssuances, stockBalances),
+        [rawMaterials, stockBalances, stockIssuances, stockUsage],
+    )
 
-    const availableBatches = stockBatches.filter((b) => b.remaining > 0)
-    const totalStockIn = stockBatches.reduce((s, b) => s + b.initialQty, 0)
-    const totalStockUsed = stockBatches.reduce((s, b) => s + b.totalUsed, 0)
-    const currentStock = totalStockIn - totalStockUsed
+    const availableBatches = stockBatches.filter((batch) => batch.availableToIssue > 0)
 
-    const handleChange = (e) => setForm((p) => ({ ...p, [e.target.name]: e.target.value }))
+    const handleChange = (event) => {
+        const { name, value } = event.target
+        setForm((previous) => ({ ...previous, [name]: value }))
+    }
 
-    const handleSubmit = async (e) => {
-        e.preventDefault()
-        let orderNum = form.order_number
+    const handleSubmit = async (event) => {
+        event.preventDefault()
+
+        let orderNumber = form.order_number
         if (showNewOrder) {
             if (!form.newOrder.trim() || !form.newClient.trim()) {
                 toast.error('Please fill order number and client name')
                 return
             }
-            orderNum = form.newOrder.trim()
-            const alreadyExists = orders.some((o) => o.order_number === orderNum)
+
+            orderNumber = form.newOrder.trim()
+            const alreadyExists = ordersList.some((order) => order.order_number === orderNumber)
             if (!alreadyExists) {
-                setOrders((prev) => [...prev, { order_number: orderNum, client_name: form.newClient.trim() }])
+                try {
+                    await api.post('/orders', {
+                        order_number: orderNumber,
+                        client_name: form.newClient.trim(),
+                    })
+                    await refreshOrders?.()
+                } catch (error) {
+                    toast.error(error.response?.data?.error || 'Failed to create order')
+                    return
+                }
             }
-            toast.success(`Order "${orderNum}" created`)
+            toast.success(`Order "${orderNumber}" created`)
         }
 
         const gross = parseFloat(form.gross_weight)
         const net = parseFloat(form.net_weight)
-        if (!orderNum || isNaN(gross) || isNaN(net)) { toast.error('Fill all required fields'); return }
-        if (gross < net) { toast.error('Gross weight must be ≥ Net weight'); return }
+        if (!orderNumber || Number.isNaN(gross) || Number.isNaN(net)) {
+            toast.error('Fill all required fields')
+            return
+        }
+        if (gross < net) {
+            toast.error('Gross weight must be greater than or equal to net weight')
+            return
+        }
 
         const actualWeight = gross - net
+        let sourceBatch = null
 
-        // Validate stock batch if selected
-        let stockEntry = null
         if (form.fromStockId) {
-            // Compare as strings since IDs from backend can be strings
-            const batch = stockBatches.find((b) => String(b.id) === String(form.fromStockId))
-            if (!batch) {
+            sourceBatch = stockBatches.find((batch) => String(batch.id) === String(form.fromStockId))
+            if (!sourceBatch) {
                 toast.error('Selected stock batch not found')
                 return
             }
-            if (actualWeight > batch.remaining) {
-                toast.error(`Cannot use ${formatKg(actualWeight)} — only ${formatKg(batch.remaining)} remaining in this stock.`)
+            if (actualWeight > sourceBatch.availableToIssue) {
+                toast.error(`Cannot use ${formatKg(actualWeight)}. Only ${formatKg(sourceBatch.availableToIssue)} remains in this stock.`)
                 return
             }
+        }
 
-            stockEntry = {
-                id: Date.now() + 1,
-                sno: stockUsage.length + 1,
-                date: getTodayDate(),
-                quantityUsed: actualWeight,
-                quantityUnit: 'kg',
-                quantityInKg: actualWeight,
-                fromStockId: batch.id,
-                fromStockLabel: batch.label,
-                beforeBalance: batch.remaining,
-                afterBalance: batch.remaining - actualWeight,
-                logMessage: `${formatKg(actualWeight)} wasted (${orderNum}) from stock (${batch.label})`,
-                source: 'Wastage',
-            }
+        if (!sourceBatch) {
+            toast.error('Select a stock batch before logging wastage')
+            return
         }
 
         setSubmitting(true)
 
-        const entryId = Date.now()
-        let stockUsageId = null
-
-        // Create stock usage entry FIRST (if needed) due to foreign key constraint
-        if (stockEntry && setStockUsage) {
-            stockEntry.linkedEntryId = entryId
+        if (sourceBatch) {
             try {
-                const { data: savedStockEntry } = await api.post('/stock-usage', stockEntry)
-                stockUsageId = savedStockEntry?.id || stockEntry.id
-                setStockUsage((prev) => [...prev, savedStockEntry || stockEntry])
-            } catch (err) {
-                console.error('Failed to save stock usage entry', err)
-                toast.error('Failed to save stock usage entry')
+                const { ok, balance } = await ensureInventoryBalance(api, sourceBatch.id, actualWeight)
+                if (!ok) {
+                    toast.error(`Only ${formatKg(balance)} is currently available for this stock`)
+                    setSubmitting(false)
+                    return
+                }
+            } catch (error) {
+                console.error('Failed to validate stock balance', error)
+                toast.error('Unable to verify stock balance right now')
                 setSubmitting(false)
                 return
             }
         }
 
-        // Then create wastage entry with the stock usage ID
-        const entry = {
-            id: entryId,
-            sno: wastageData.length + 1,
-            date: getTodayDate(),
-            order_number: orderNum,
-            grossWeight: gross,
-            netWeight: net,
-            actualWeight: actualWeight,
-            stockUsageId: stockUsageId,
-        }
-
         try {
-            await api.post('/wastage', entry)
-        } catch (err) {
-            console.error('Failed to save wastage entry', err)
-            toast.error('Failed to save wastage entry')
+            await createInventoryTransaction(
+                api,
+                makeInventoryTransaction({
+                    stockId: sourceBatch?.id,
+                    transactionType: INVENTORY_TRANSACTION_TYPES.WASTAGE,
+                    direction: 'OUT',
+                    quantityInKg: actualWeight,
+                    metadata: {
+                        category: INVENTORY_NOTE_CATEGORIES.WASTAGE,
+                        date: getTodayDate(),
+                        order_number: orderNumber,
+                        grossWeight: gross,
+                        netWeight: net,
+                        actualWeight,
+                        quantityUsed: actualWeight,
+                        quantityUnit: 'kg',
+                        source: 'Wastage',
+                        fromStockLabel: sourceBatch?.label || '',
+                        beforeBalance: sourceBatch?.physicalRemaining ?? null,
+                        afterBalance: sourceBatch ? sourceBatch.physicalRemaining - actualWeight : null,
+                        logMessage: `${formatKg(actualWeight)} wasted (${orderNumber}) from stock (${sourceBatch?.label || 'Unknown'})`,
+                    },
+                }),
+            )
+
+            await refreshInventoryData?.()
+        } catch (error) {
+            console.error('Failed to save wastage transaction', error)
+            toast.error(error.response?.data?.error || 'Failed to save wastage entry')
             setSubmitting(false)
             return
         }
 
-        setWastageData((prev) => [...prev, entry].map((item, idx) => ({ ...item, sno: idx + 1 })))
         toast.success('Waste entry added')
-        setForm(p => ({ ...p, gross_weight: '', net_weight: '', newOrder: '', newClient: '', fromStockId: '' }))
+        setForm((previous) => ({
+            ...previous,
+            gross_weight: '',
+            net_weight: '',
+            newOrder: '',
+            newClient: '',
+            fromStockId: '',
+        }))
         setShowNewOrder(false)
         setSubmitting(false)
     }
 
-    const handleDelete = (id) => {
-        // Find and remove corresponding stock usage entry
+    const handleDelete = async (id) => {
         const entry = wastageData.find((item) => item.id === id)
-        if (entry?.stockUsageId && setStockUsage) {
-            setStockUsage((prev) => prev.filter((u) => u.id !== entry.stockUsageId).map((u, idx) => ({ ...u, sno: idx + 1 })))
+        const transactionId = entry?.transactionId || entry?.id
+        if (!transactionId) return
+
+        try {
+            await deleteInventoryTransaction(api, transactionId)
+            await refreshInventoryData?.()
+            toast.success('Waste entry deleted')
+        } catch (error) {
+            console.error('Failed to delete wastage entry', error)
+            toast.error('Failed to delete wastage entry')
         }
-        setWastageData((prev) => prev.filter((item) => item.id !== id).map((item, idx) => ({ ...item, sno: idx + 1 })))
-        toast.success('Waste entry deleted')
     }
 
     const inputClass =
@@ -217,10 +240,9 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
         <div className="space-y-8">
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Wastage</h2>
-                <p className="text-sm text-text-secondary mt-1">Per-order wastage breakdown &amp; waste roll logging</p>
+                <p className="text-sm text-text-secondary mt-1">Per-order wastage breakdown and waste roll logging</p>
             </div>
 
-            {/* Summary cards */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
@@ -250,11 +272,10 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
                 </div>
             </div>
 
-            {/* Per-Order Wastage Breakdown Table */}
             <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
                 <div className="px-6 pt-6 pb-4">
                     <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">Per-Order Wastage Breakdown</h3>
-                    <p className="text-xs text-text-secondary/40 mt-1">Material Used vs. Manufacturing Output per order</p>
+                    <p className="text-xs text-text-secondary/40 mt-1">Material used vs manufacturing output per order</p>
                 </div>
                 {perOrderData.length > 0 ? (
                     <div className="overflow-x-auto">
@@ -292,7 +313,7 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
                             <tfoot>
                                 <tr className="border-t-2 border-border-default bg-bg-input/30">
                                     <td className="px-6 py-3 text-text-primary font-semibold">Total</td>
-                                    <td className="text-right px-6 py-3 text-text-primary font-semibold">{perOrderData.reduce((s, r) => s + r.rolls, 0)}</td>
+                                    <td className="text-right px-6 py-3 text-text-primary font-semibold">{perOrderData.reduce((sum, row) => sum + row.rolls, 0)}</td>
                                     <td className="text-right px-6 py-3 text-accent-gold font-semibold">{totalMfgInput.toFixed(2)} kg</td>
                                     <td className="text-right px-6 py-3 text-emerald-400 font-semibold">{totalMfgOutput.toFixed(2)} kg</td>
                                     <td className="text-right px-6 py-3 text-red-400 font-bold">{autoWastage.toFixed(2)} kg</td>
@@ -310,16 +331,15 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
                     </div>
                 ) : (
                     <div className="px-6 pb-6">
-                        <p className="text-sm text-text-secondary/50 italic">No manufacturing data yet. Add manufacturing entries with "Material Used" to see per-order wastage.</p>
+                        <p className="text-sm text-text-secondary/50 italic">No manufacturing data yet. Add manufacturing entries with material used to see per-order wastage.</p>
                     </div>
                 )}
             </div>
 
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                {/* Log Waste Form */}
                 <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6">
                     <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">
-                        Log Waste Roll to Backend
+                        Log Waste Roll
                     </h3>
                     <form onSubmit={handleSubmit} className="space-y-5">
                         <div className="space-y-2">
@@ -337,14 +357,13 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
                             ) : (
                                 <select name="order_number" value={form.order_number} onChange={handleChange} className={`${inputClass} appearance-none cursor-pointer`} required={!showNewOrder}>
                                     <option value="">Select order...</option>
-                                    {orders.map((o) => (
-                                        <option key={o.order_number} value={o.order_number}>{o.order_number}</option>
+                                    {ordersList.map((order) => (
+                                        <option key={order.order_number} value={order.order_number}>{order.order_number}</option>
                                     ))}
                                 </select>
                             )}
                         </div>
 
-                        {/* From Stock Batch */}
                         <div className="space-y-2">
                             <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">From Stock Batch</label>
                             <select
@@ -352,11 +371,12 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
                                 value={form.fromStockId}
                                 onChange={handleChange}
                                 className={`${inputClass} cursor-pointer`}
+                                required
                             >
-                                <option value="">Select stock batch (optional)...</option>
-                                {availableBatches.map((b) => (
-                                    <option key={b.id} value={b.id}>
-                                        {b.label} — {formatKg(b.remaining)} remaining
+                                <option value="">Select stock batch...</option>
+                                {availableBatches.map((batch) => (
+                                    <option key={batch.id} value={batch.id}>
+                                        {batch.label} - {formatKg(batch.availableToIssue)} remaining
                                     </option>
                                 ))}
                             </select>
@@ -391,11 +411,9 @@ export default function Wastage({ rawMaterials, manufacturingData, wastageData =
                     </form>
                 </div>
 
-                {/* Chart */}
                 <WastageAreaChart data={chartData} />
             </div>
 
-            {/* Wastage History Table */}
             <DataTable columns={historyColumns} data={wastageData} emptyMessage="No wastage entries logged yet." onDelete={handleDelete} />
         </div>
     )

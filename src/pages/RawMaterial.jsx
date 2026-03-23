@@ -2,7 +2,16 @@ import { useState, useMemo } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
+import { useToast } from '../components/Toast'
 import api from '../utils/api'
+import {
+    createInventoryTransaction,
+    deleteInventoryTransaction,
+    INVENTORY_NOTE_CATEGORIES,
+    INVENTORY_TRANSACTION_TYPES,
+    makeInventoryTransaction,
+} from '../utils/inventory'
+import { getNextStockId } from '../utils/stock'
 
 const getTodayDate = () => new Date().toISOString().split('T')[0]
 
@@ -14,7 +23,9 @@ const columns = [
     { key: 'codeName', label: 'Code Name' },
 ]
 
-export default function RawMaterial({ user, data, setData }) {
+export default function RawMaterial({ user, data, refreshInventoryData, stockBalances = {} }) {
+    const isWorker = user?.role === 'worker'
+    const toast = useToast()
     const [form, setForm] = useState({
         date: getTodayDate(),
         quantityReceived: '',
@@ -36,30 +47,53 @@ export default function RawMaterial({ user, data, setData }) {
         // Convert to kg for calculations
         const qtyInKg = unit === 'tons' ? qty * 1000 : unit === 'grams' ? qty / 1000 : qty
 
-        const entry = {
-            id: Date.now(),
-            sno: data.length + 1,
-            date: form.date,
-            quantityReceived: qty,
-            quantityUnit: unit,
-            quantityInKg: qtyInKg,
-            quantityDisplay: `${qty} ${unit}`,
-            brandName: form.brandName,
-            codeName: form.codeName,
-        }
+        const stockId = getNextStockId({
+            stockBalances,
+            collections: [data],
+        })
 
         try {
-            await api.post('/raw-materials', entry)
+            await createInventoryTransaction(
+                api,
+                makeInventoryTransaction({
+                    stockId,
+                    transactionType: INVENTORY_TRANSACTION_TYPES.IN,
+                    direction: 'IN',
+                    quantityInKg: qtyInKg,
+                    metadata: {
+                        category: INVENTORY_NOTE_CATEGORIES.RAW_MATERIAL,
+                        date: form.date,
+                        quantityReceived: qty,
+                        quantityUnit: unit,
+                        quantityDisplay: `${qty} ${unit}`,
+                        brandName: form.brandName.trim(),
+                        codeName: form.codeName.trim(),
+                    },
+                }),
+            )
+            await refreshInventoryData?.()
+            toast.success('Raw material entry added')
         } catch (err) {
             console.error('Failed to save raw material entry', err)
+            toast.error(err.response?.data?.error || 'Failed to save raw material entry')
+            return
         }
 
-        setData((prev) => [...prev, entry])
         setForm({ date: getTodayDate(), quantityReceived: '', quantityUnit: 'kg', brandName: '', codeName: '' })
     }
 
-    const handleDelete = (id) => {
-        setData((prev) => prev.filter((item) => item.id !== id).map((item, idx) => ({ ...item, sno: idx + 1 })))
+    const handleDelete = async (id) => {
+        const target = data.find((item) => item.id === id)
+        if (!target?.transactionId) return
+
+        try {
+            await deleteInventoryTransaction(api, target.transactionId)
+            await refreshInventoryData?.()
+            toast.success('Raw material entry deleted')
+        } catch (error) {
+            console.error('Failed to delete raw material entry', error)
+            toast.error('Failed to delete raw material entry')
+        }
     }
 
     // ── Summary calculations ──
@@ -100,33 +134,37 @@ export default function RawMaterial({ user, data, setData }) {
                 <p className="text-sm text-text-secondary mt-1">Track incoming raw material entries</p>
             </div>
 
-            {/* Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
-                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
-                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Entries</p>
-                    <p className="text-3xl font-semibold text-text-primary">{totalEntries}</p>
-                </div>
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
-                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
-                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Qty Received</p>
-                    <p className="text-3xl font-semibold text-blue-400">{formatKg(totalQtyKg)}</p>
-                </div>
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
-                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
-                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Today's Entries</p>
-                    <p className="text-3xl font-semibold text-text-primary">{todayCount}</p>
-                </div>
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
-                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
-                    <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Today's Qty</p>
-                    <p className="text-3xl font-semibold text-accent-gold">{formatKg(todayQtyKg)}</p>
-                </div>
-            </div>
+            {!isWorker && (
+                <>
+                    {/* Summary Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
+                            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Entries</p>
+                            <p className="text-3xl font-semibold text-text-primary">{totalEntries}</p>
+                        </div>
+                        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
+                            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Qty Received</p>
+                            <p className="text-3xl font-semibold text-blue-400">{formatKg(totalQtyKg)}</p>
+                        </div>
+                        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
+                            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Today's Entries</p>
+                            <p className="text-3xl font-semibold text-text-primary">{todayCount}</p>
+                        </div>
+                        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
+                            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Today's Qty</p>
+                            <p className="text-3xl font-semibold text-accent-gold">{formatKg(todayQtyKg)}</p>
+                        </div>
+                    </div>
 
-            {/* Chart */}
-            {chartData.length > 0 && (
-                <SectionBarChart data={chartData} title="Daily Raw Material Received (tons)" color="#60a5fa" />
+                    {/* Chart */}
+                    {chartData.length > 0 && (
+                        <SectionBarChart data={chartData} title="Daily Raw Material Received (tons)" color="#60a5fa" />
+                    )}
+                </>
             )}
 
             {/* Form */}
@@ -204,8 +242,9 @@ export default function RawMaterial({ user, data, setData }) {
                 </form>
             </div>
 
-            {/* Table */}
-            <DataTable columns={columns} data={data} emptyMessage="No raw material entries yet. Add one above." onDelete={user?.role === 'owner' ? handleDelete : undefined} />
+            {!isWorker && (
+                <DataTable columns={columns} data={data} emptyMessage="No raw material entries yet. Add one above." onDelete={user?.role === 'owner' ? handleDelete : undefined} />
+            )}
         </div>
     )
 }

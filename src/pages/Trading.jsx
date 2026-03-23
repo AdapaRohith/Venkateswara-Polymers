@@ -3,7 +3,6 @@ import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
-import api from '../utils/api'
 
 const getTodayDate = () => new Date().toISOString().split('T')[0]
 
@@ -71,14 +70,8 @@ export default function Trading({ data, setData, ordersList = [] }) {
             type: form.type,
         }
 
-        try {
-            await api.post('/trading', entry)
-        } catch (err) {
-            console.error('Failed to save trading entry', err)
-        }
-
         setData((prev) => [...prev, entry])
-        toast.success('Trading entry added')
+        toast.success('Trading entry added locally')
         setForm((prev) => ({ ...prev, netWeight: '', rate: '', sizeMic: '' }))
         setSubmitting(false)
     }
@@ -116,7 +109,7 @@ export default function Trading({ data, setData, ordersList = [] }) {
         <div className="space-y-8">
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Trading</h2>
-                <p className="text-sm text-text-secondary mt-1">Track stock bought and sold</p>
+                <p className="text-sm text-text-secondary mt-1">Track stock bought and sold locally in this session</p>
             </div>
 
             {/* Summary Cards */}
@@ -206,6 +199,9 @@ export default function Trading({ data, setData, ordersList = [] }) {
                         </button>
                     </div>
                 </form>
+                <p className="mt-4 text-[11px] text-text-secondary/50">
+                    Trading is currently frontend-only because the live API does not expose a trading endpoint.
+                </p>
             </div>
 
             <DataTable columns={columns} data={data} emptyMessage="No trading entries yet." onDelete={handleDelete} />
