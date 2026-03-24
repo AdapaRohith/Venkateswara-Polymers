@@ -1,8 +1,9 @@
-import { useState, useMemo } from 'react'
+import { useMemo } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
+import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 import {
     createInventoryTransaction,
@@ -26,7 +27,7 @@ const columns = [
 export default function RawMaterial({ user, data, refreshInventoryData, stockBalances = {} }) {
     const isWorker = user?.role === 'worker'
     const toast = useToast()
-    const [form, setForm] = useState({
+    const [form, setForm] = usePersistentState('vp_raw_material_form', {
         date: getTodayDate(),
         quantityReceived: '',
         quantityUnit: 'kg',

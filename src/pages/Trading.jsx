@@ -1,8 +1,9 @@
-import { useState, useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
+import usePersistentState from '../hooks/usePersistentState'
 
 const getTodayDate = () => new Date().toISOString().split('T')[0]
 
@@ -24,7 +25,7 @@ const columns = [
 
 export default function Trading({ data, setData, ordersList = [] }) {
     const toast = useToast()
-    const [form, setForm] = useState({
+    const [form, setForm] = usePersistentState('vp_trading_form', {
         date: getTodayDate(),
         order_number: '',
         netWeight: '',
@@ -37,6 +38,13 @@ export default function Trading({ data, setData, ordersList = [] }) {
 
 
     const totalValue = (parseFloat(form.netWeight) || 0) * (parseFloat(form.rate) || 0)
+    const hasOrders = ordersList.length > 0
+    const orderSelectPlaceholder = hasOrders
+        ? 'Select order...'
+        : 'No orders available'
+    const orderHelperText = hasOrders
+        ? 'Choose an existing order for this trading entry.'
+        : 'No orders are available yet. Create one in Orders before logging trading.'
 
     const handleChange = (e) => {
         setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }))
@@ -154,11 +162,12 @@ export default function Trading({ data, setData, ordersList = [] }) {
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Order</label>
                         <select name="order_number" value={form.order_number} onChange={handleChange} className={`${inputClass} appearance-none cursor-pointer`} required>
-                            <option value="">Select order...</option>
+                            <option value="">{orderSelectPlaceholder}</option>
                             {ordersList.map((o) => (
                                 <option key={o.order_number} value={o.order_number}>{o.order_number} {o.client_name ? `(${o.client_name})` : ''}</option>
                             ))}
                         </select>
+                        <p className="text-[11px] text-text-secondary/60">{orderHelperText}</p>
                     </div>
 
                     <div className="space-y-2">

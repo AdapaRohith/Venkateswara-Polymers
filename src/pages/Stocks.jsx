@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { SectionBarChart } from '../components/Charts'
 import InputWithCamera from '../components/InputWithCamera'
 import { useToast } from '../components/Toast'
+import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 import { buildStockBatches, buildStockIssuances, formatKg, getNextStockId, toKg } from '../utils/stock'
 import {
@@ -32,15 +33,15 @@ export default function Stocks({
   const toast = useToast()
   const isOwner = user?.role === 'owner'
 
-  const [filterBrand, setFilterBrand] = useState('')
-  const [filterCode, setFilterCode] = useState('')
-  const [usageForm, setUsageForm] = useState({
+  const [filterBrand, setFilterBrand] = usePersistentState('vp_stocks_filter_brand', '')
+  const [filterCode, setFilterCode] = usePersistentState('vp_stocks_filter_code', '')
+  const [usageForm, setUsageForm] = usePersistentState('vp_stocks_usage_form', {
     date: getTodayDate(),
     quantityUsed: '',
     quantityUnit: 'kg',
     fromStockId: '',
   })
-  const [issuanceForm, setIssuanceForm] = useState({
+  const [issuanceForm, setIssuanceForm] = usePersistentState('vp_stocks_issuance_form', {
     date: getTodayDate(),
     quantityIssued: '',
     quantityUnit: 'kg',
@@ -77,6 +78,14 @@ export default function Stocks({
   const issuableBatches = filteredBatches.filter((batch) => batch.availableToIssue > 0)
   const selectedUsageBatch = stockBatches.find((batch) => String(batch.id) === String(usageForm.fromStockId))
   const selectedIssuanceBatch = stockBatches.find((batch) => String(batch.id) === String(issuanceForm.fromStockId))
+  const stockSelectPlaceholder = issuableBatches.length > 0 ? 'Select stock batch...' : 'No free stock available'
+  const stockSelectHelper = issuableBatches.length > 0
+    ? 'Only stock with free balance is shown here.'
+    : stockBatches.length === 0
+      ? 'No stock batches exist yet. Add raw material first.'
+      : (filterBrand || filterCode)
+        ? 'No stock batch matches the current brand/code filters.'
+        : 'All stock is either already used or reserved in issued balances.'
 
   const totalStockIn = stockBatches.reduce((sum, batch) => sum + batch.initialQty, 0)
   const totalUsed = stockBatches.reduce((sum, batch) => sum + batch.totalUsed, 0)
@@ -531,13 +540,14 @@ export default function Stocks({
                   className={`${inputClass} cursor-pointer`}
                   required
                 >
-                  <option value="">Select stock batch...</option>
+                  <option value="">{stockSelectPlaceholder}</option>
                   {issuableBatches.map((batch) => (
                     <option key={batch.id} value={batch.id}>
                       {batch.label} - {formatKg(batch.availableToIssue)} free
                     </option>
                   ))}
                 </select>
+                <p className="text-[11px] text-text-secondary/60">{stockSelectHelper}</p>
                 {selectedIssuanceBatch && (
                   <p className="text-[11px] text-amber-400/80">
                     {formatKg(selectedIssuanceBatch.availableToIssue)} can still be issued from this batch.
@@ -592,13 +602,14 @@ export default function Stocks({
                   className={`${inputClass} cursor-pointer`}
                   required
                 >
-                  <option value="">Select free stock batch...</option>
+                  <option value="">{issuableBatches.length > 0 ? 'Select free stock batch...' : 'No free stock available'}</option>
                   {issuableBatches.map((batch) => (
                     <option key={batch.id} value={batch.id}>
                       {batch.label} - {formatKg(batch.availableToIssue)} free
                     </option>
                   ))}
                 </select>
+                <p className="text-[11px] text-text-secondary/60">{stockSelectHelper}</p>
                 {selectedUsageBatch && (
                   <p className="text-[11px] text-emerald-400/80">
                     {formatKg(selectedUsageBatch.availableToIssue)} is free for direct use.

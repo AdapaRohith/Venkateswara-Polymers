@@ -3,6 +3,7 @@ import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
+import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 import { buildStockBatches, buildStockIssuances, formatKg } from '../utils/stock'
 import {
@@ -46,7 +47,7 @@ export default function Manufacturing({
   const toast = useToast()
   const isWorker = user?.role === 'worker'
 
-  const [form, setForm] = useState({
+  const [form, setForm] = usePersistentState(`vp_manufacturing_form_${isWorker ? 'worker' : 'owner'}`, {
     date: getTodayDate(),
     order_number: '',
     grossWeight: '',
@@ -55,8 +56,8 @@ export default function Manufacturing({
     materialSources: createInitialMaterialSources(),
   })
   const [submitting, setSubmitting] = useState(false)
-  const [filterBrand, setFilterBrand] = useState('')
-  const [filterCode, setFilterCode] = useState('')
+  const [filterBrand, setFilterBrand] = usePersistentState(`vp_manufacturing_filter_brand_${isWorker ? 'worker' : 'owner'}`, '')
+  const [filterCode, setFilterCode] = usePersistentState(`vp_manufacturing_filter_code_${isWorker ? 'worker' : 'owner'}`, '')
 
   const uniqueBrands = useMemo(
     () => [...new Set(rawMaterials.map((item) => item.brandName).filter(Boolean))].sort(),
@@ -127,6 +128,36 @@ export default function Manufacturing({
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([dateValue, value]) => ({ name: dateValue, value }))
   }, [data])
+  const hasOrders = ordersList.length > 0
+  const orderSelectPlaceholder = hasOrders ? 'Select order...' : 'No active orders available'
+  const orderHelperText = hasOrders
+    ? 'Choose an active order for this manufacturing entry.'
+    : 'No active orders are available. Create one in Orders or reopen an existing one.'
+  const sourceHelperText = useMemo(() => {
+    if (isWorker) {
+      if (availableIssuances.length > 0) {
+        return 'Choose from issued stock that still has remaining balance.'
+      }
+      if (stockIssuanceRows.length === 0) {
+        return 'No issued stock exists yet. Ask admin to issue stock first.'
+      }
+      if (filterBrand || filterCode) {
+        return 'No issued stock matches the current brand/code filters.'
+      }
+      return 'All issued stock has already been consumed.'
+    }
+
+    if (availableOwnerBatches.length > 0) {
+      return 'Choose from stock batches that still have free balance.'
+    }
+    if (stockBatches.length === 0) {
+      return 'No raw material stock exists yet. Add raw material first.'
+    }
+    if (filterBrand || filterCode) {
+      return 'No stock batch matches the current brand/code filters.'
+    }
+    return 'All stock batches are fully used or already reserved.'
+  }, [availableIssuances.length, availableOwnerBatches.length, filterBrand, filterCode, isWorker, stockBatches.length, stockIssuanceRows.length])
 
   const handleChange = (event) => {
     const { name, value } = event.target
@@ -478,13 +509,14 @@ export default function Manufacturing({
               className={`${inputClass} appearance-none cursor-pointer`}
               required
             >
-              <option value="">Select order...</option>
+              <option value="">{orderSelectPlaceholder}</option>
               {ordersList.map((order) => (
                 <option key={order.order_number} value={order.order_number}>
                   {order.order_number} {order.client_name ? `(${order.client_name})` : ''}
                 </option>
               ))}
             </select>
+            <p className="text-[11px] text-text-secondary/60">{orderHelperText}</p>
           </div>
 
           {!isWorker && (
@@ -549,7 +581,11 @@ export default function Manufacturing({
                         className={`${inputClass} cursor-pointer`}
                         required={sourceNumber === 1}
                       >
-                        <option value="">Select source...</option>
+                        <option value="">
+                          {isWorker
+                            ? (availableIssuances.length > 0 ? 'Select source...' : 'No issued stock available')
+                            : (availableOwnerBatches.length > 0 ? 'Select source...' : 'No stock available')}
+                        </option>
                         {(isWorker ? availableIssuances : availableOwnerBatches).map((item) => (
                           <option key={item.id} value={item.id}>
                             {item.fromStockLabel || item.label} - {formatKg(item.remainingInKg ?? item.availableToIssue)} available
@@ -557,7 +593,9 @@ export default function Manufacturing({
                         ))}
                       </select>
                       <p className="text-[11px] text-text-secondary/60">
-                        {isWorker
+                        {!selectedWorkerSource && !selectedOwnerSource && !source.selectionId
+                          ? sourceHelperText
+                          : isWorker
                           ? selectedWorkerSource
                             ? `${selectedWorkerSource.fromStockLabel} has ${formatKg(selectedWorkerSource.remainingInKg)} remaining`
                             : 'Choose an issued stock allocation for this source'

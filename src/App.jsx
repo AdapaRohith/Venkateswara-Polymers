@@ -13,6 +13,7 @@ import Stocks from './pages/Stocks'
 import Login from './components/ui/animated-characters-login-page.jsx'
 import Users from './pages/Users'
 import Orders from './pages/Orders'
+import WorkerHome from './pages/WorkerHome'
 import { getInventoryBalances, getInventoryTransactions, inventoryTransactionsToState } from './utils/inventory'
 import avlokaiLogo from '../avlokai_logo.png'
 
@@ -21,7 +22,7 @@ const STOCK_ISSUANCES_STORAGE_KEY = 'vp_stock_issuances'
 function ProtectedRoute({ element, allowedRoles, user }) {
   if (!user) return <Navigate to="/login" />
   if (!allowedRoles.includes(user.role)) {
-    return <Navigate to={user.role === 'worker' ? '/raw-material' : '/'} />
+    return <Navigate to={user.role === 'worker' ? '/worker-home' : '/'} />
   }
   return element
 }
@@ -39,6 +40,7 @@ function App() {
   const [stockUsage, setStockUsage] = useState([])
   const [stockBalances, setStockBalances] = useState({})
   const [ordersList, setOrdersList] = useState([])
+  const [ordersLoading, setOrdersLoading] = useState(true)
   const [stockIssuances, setStockIssuances] = useState(() => {
     try {
       const saved = localStorage.getItem(STOCK_ISSUANCES_STORAGE_KEY)
@@ -56,8 +58,13 @@ function App() {
   const hasLoadedFromServerRef = useRef(false)
 
   const refreshOrders = useCallback(async () => {
-    const { data } = await api.get('/orders')
-    setOrdersList(Array.isArray(data) ? data : [])
+    setOrdersLoading(true)
+    try {
+      const { data } = await api.get('/orders')
+      setOrdersList(Array.isArray(data) ? data : [])
+    } finally {
+      setOrdersLoading(false)
+    }
   }, [])
 
   const refreshInventoryData = useCallback(async () => {
@@ -144,16 +151,30 @@ function App() {
                       <Route
                         path="/"
                         element={
+                          user?.role === 'worker' ? (
+                            <Navigate to="/worker-home" />
+                          ) : (
+                            <ProtectedRoute
+                              user={user}
+                              allowedRoles={['owner']}
+                              element={
+                                <Dashboard
+                                  rawMaterials={rawMaterials}
+                                  manufacturingData={manufacturingData}
+                                  tradingData={tradingData}
+                                />
+                              }
+                            />
+                          )
+                        }
+                      />
+                      <Route
+                        path="/worker-home"
+                        element={
                           <ProtectedRoute
                             user={user}
-                            allowedRoles={['owner']}
-                            element={
-                              <Dashboard
-                                rawMaterials={rawMaterials}
-                                manufacturingData={manufacturingData}
-                                tradingData={tradingData}
-                              />
-                            }
+                            allowedRoles={['worker']}
+                            element={<WorkerHome stockIssuances={stockIssuances} ordersList={activeOrdersList} />}
                           />
                         }
                       />
@@ -262,7 +283,7 @@ function App() {
                           />
                         }
                       />
-                      <Route path="/orders" element={<Orders orders={ordersList} refreshOrders={refreshOrders} />} />
+                      <Route path="/orders" element={<Orders user={user} orders={ordersList} loading={ordersLoading} refreshOrders={refreshOrders} />} />
                     </Routes>
                     <div className="mt-16 pt-8 border-t border-border-default text-center text-text-secondary/50 text-xs relative z-10">
                       <div className="mb-3 flex justify-center">

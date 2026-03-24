@@ -1,4 +1,4 @@
-import { useState, useCallback, createContext, useContext } from 'react'
+import { useState, useCallback, useMemo, createContext, useContext } from 'react'
 
 const ToastContext = createContext(null)
 
@@ -17,10 +17,10 @@ export function ToastProvider({ children }) {
         }, 4000)
     }, [])
 
-    const toastObj = {
+    const toastObj = useMemo(() => ({
         success: (msg) => addToast(msg, 'success'),
         error: (msg) => addToast(msg, 'error'),
-    }
+    }), [addToast])
 
     return (
         <ToastContext.Provider value={toastObj}>

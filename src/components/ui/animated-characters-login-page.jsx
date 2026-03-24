@@ -304,7 +304,7 @@ function LoginPage({ onLogin }) {
     if (userData) {
       console.log("✅ Login successful!");
       onLogin(userData);
-      navigate(userData.role === "worker" ? "/raw-material" : "/");
+      navigate(userData.role === "worker" ? "/worker-home" : "/");
     } else {
       setError("Invalid email or password. Try owner@demo.com/owner123 or worker@demo.com/worker123");
       setIsLoading(false);

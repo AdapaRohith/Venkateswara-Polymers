@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react'
 import DataTable from '../components/DataTable'
 import { useToast } from '../components/Toast'
+import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 
 export default function Users() {
     const toast = useToast()
     const [users, setUsers] = useState([])
     const [loading, setLoading] = useState(true)
-    const [form, setForm] = useState({ email: '', password: '', name: '', role: 'worker' })
+    const [form, setForm] = usePersistentState('vp_users_form', { email: '', password: '', name: '', role: 'worker' })
     const [submitting, setSubmitting] = useState(false)
 
     useEffect(() => {

@@ -3,6 +3,7 @@ import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { WastageAreaChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
+import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 import { buildStockBatches, formatKg } from '../utils/stock'
 import {
@@ -37,7 +38,7 @@ export default function Wastage({
     refreshOrders,
 }) {
     const toast = useToast()
-    const [form, setForm] = useState({
+    const [form, setForm] = usePersistentState('vp_wastage_form', {
         order_number: '',
         newOrder: '',
         newClient: '',
@@ -46,7 +47,7 @@ export default function Wastage({
         fromStockId: '',
     })
     const [submitting, setSubmitting] = useState(false)
-    const [showNewOrder, setShowNewOrder] = useState(false)
+    const [showNewOrder, setShowNewOrder] = usePersistentState('vp_wastage_show_new_order', false)
 
     const totalRawIn = rawMaterials.reduce((sum, item) => sum + (item.quantityInKg || 0), 0)
     const totalMfgOutput = manufacturingData.reduce((sum, item) => sum + (item.netWeight || 0), 0)
@@ -89,6 +90,16 @@ export default function Wastage({
     )
 
     const availableBatches = stockBatches.filter((batch) => batch.availableToIssue > 0)
+    const hasOrders = ordersList.length > 0
+    const hasAvailableBatches = availableBatches.length > 0
+    const orderSelectPlaceholder = hasOrders ? 'Select order...' : 'No orders available'
+    const orderHelperText = hasOrders
+        ? 'Choose an existing order, or switch to "New order".'
+        : 'No orders are available yet. Use "New order" to create one first.'
+    const batchSelectPlaceholder = hasAvailableBatches ? 'Select stock batch...' : 'No stock batches available'
+    const batchHelperText = hasAvailableBatches
+        ? 'Pick the stock batch that this wastage should be deducted from.'
+        : 'No stock batches have free balance right now. Add raw material or free up stock first.'
 
     const handleChange = (event) => {
         const { name, value } = event.target
@@ -356,11 +367,14 @@ export default function Wastage({
                                 </div>
                             ) : (
                                 <select name="order_number" value={form.order_number} onChange={handleChange} className={`${inputClass} appearance-none cursor-pointer`} required={!showNewOrder}>
-                                    <option value="">Select order...</option>
+                                    <option value="">{orderSelectPlaceholder}</option>
                                     {ordersList.map((order) => (
                                         <option key={order.order_number} value={order.order_number}>{order.order_number}</option>
                                     ))}
                                 </select>
+                            )}
+                            {!showNewOrder && (
+                                <p className="text-[11px] text-text-secondary/60">{orderHelperText}</p>
                             )}
                         </div>
 
@@ -373,13 +387,14 @@ export default function Wastage({
                                 className={`${inputClass} cursor-pointer`}
                                 required
                             >
-                                <option value="">Select stock batch...</option>
+                                <option value="">{batchSelectPlaceholder}</option>
                                 {availableBatches.map((batch) => (
                                     <option key={batch.id} value={batch.id}>
                                         {batch.label} - {formatKg(batch.availableToIssue)} remaining
                                     </option>
                                 ))}
                             </select>
+                            <p className="text-[11px] text-text-secondary/60">{batchHelperText}</p>
                             {form.fromStockId && (
                                 <p className="text-[10px] text-emerald-400/70">Stock will be auto-deducted on submit</p>
                             )}
