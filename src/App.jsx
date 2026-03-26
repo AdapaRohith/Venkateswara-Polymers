@@ -14,6 +14,7 @@ import Login from './components/ui/animated-characters-login-page.jsx'
 import Users from './pages/Users'
 import Orders from './pages/Orders'
 import WorkerHome from './pages/WorkerHome'
+import ProductionTracker from './pages/ProductionTracker'
 import { getInventoryBalances, getInventoryTransactions, inventoryTransactionsToState } from './utils/inventory'
 import avlokaiLogo from '../avlokai_logo.png'
 
@@ -177,6 +178,10 @@ function App() {
                             element={<WorkerHome stockIssuances={stockIssuances} ordersList={activeOrdersList} />}
                           />
                         }
+                      />
+                      <Route
+                        path="/production-tracker"
+                        element={<ProductionTracker user={user} />}
                       />
                       <Route
                         path="/raw-material"
