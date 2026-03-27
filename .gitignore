@@ -24,3 +24,4 @@ dist-ssr
 *.sln
 *.sw?
 server.js
+server_bak.js
