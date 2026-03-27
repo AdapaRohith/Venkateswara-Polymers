@@ -19,7 +19,14 @@ function getStatusBadge(status) {
     return cls
 }
 
-export default function LogHistory({ rawMaterials = [], manufacturingData = [], tradingData = [], wastageData = [], stockUsage = [] }) {
+export default function LogHistory({ 
+    rawMaterials = [], 
+    manufacturingData = [], 
+    tradingData = [], 
+    wastageData = [], 
+    stockUsage = [],
+    productionTrackerEntries = []
+}) {
     const [date, setDate] = useState('')
     const [orders, setOrders] = useState([])
 
@@ -119,8 +126,24 @@ export default function LogHistory({ rawMaterials = [], manufacturingData = [], 
             })
         })
 
+        productionTrackerEntries.forEach((p) => {
+            entries.push({
+                id: p.id,
+                section: 'Production',
+                date: p.date,
+                workerName: p.workerName,
+                machine: p.machine,
+                productionQuantity: p.productionQuantity,
+                wasteGenerated: p.wasteGenerated,
+                grossWeight: p.productionQuantity,
+                tareWeight: p.wasteGenerated,
+                netWeight: p.productionQuantity, // Main metric for production
+                sizeMic: '',
+            })
+        })
+
         return entries
-    }, [rawMaterials, manufacturingData, tradingData, wastageData, stockUsage])
+    }, [rawMaterials, manufacturingData, tradingData, wastageData, stockUsage, productionTrackerEntries])
 
     // Filter by selected date (if set)
     const filtered = useMemo(() => {
@@ -138,13 +161,14 @@ export default function LogHistory({ rawMaterials = [], manufacturingData = [], 
         return map
     }, [filtered])
 
-    const sectionOrder = ['Raw Material', 'Manufacturing', 'Trading', 'Wastage', 'Stock Usage']
+    const sectionOrder = ['Raw Material', 'Manufacturing', 'Trading', 'Wastage', 'Stock Usage', 'Production']
     const sectionColors = {
         'Raw Material': 'bg-blue-500/15 text-blue-400',
         Manufacturing: 'bg-accent-gold/15 text-accent-gold',
         Trading: 'bg-emerald-500/15 text-emerald-400',
         Wastage: 'bg-red-500/15 text-red-400',
         'Stock Usage': 'bg-violet-500/15 text-violet-400',
+        Production: 'bg-orange-500/15 text-orange-400',
     }
 
     const inputClass =
@@ -156,7 +180,7 @@ export default function LogHistory({ rawMaterials = [], manufacturingData = [], 
             <div className="flex items-end justify-between gap-4 flex-wrap">
                 <div>
                     <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Log History</h2>
-                    <p className="text-sm text-text-secondary mt-1">View records from Raw Material, Manufacturing, Trading, Wastage &amp; Stock Usage sections</p>
+                    <p className="text-sm text-text-secondary mt-1">View records from Raw Material, Manufacturing, Trading, Wastage, Stock Usage &amp; Production sections</p>
                 </div>
                 <div className="flex items-end gap-3">
                     <div className="space-y-1">
@@ -180,7 +204,7 @@ export default function LogHistory({ rawMaterials = [], manufacturingData = [], 
             </div>
 
             {/* Stats */}
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-6">
                 {sectionOrder.map((sec) => (
                     <div key={sec} className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
                         <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
@@ -195,7 +219,7 @@ export default function LogHistory({ rawMaterials = [], manufacturingData = [], 
             {filtered.length === 0 ? (
                 <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
                     <p className="text-text-secondary/50 text-sm text-center py-12">
-                        No records found{date ? ` for ${date}` : ''}. Add entries in Raw Material, Manufacturing or Trading sections first.
+                        No records found{date ? ` for ${date}` : ''}. Add entries in the respective sections first.
                     </p>
                 </div>
             ) : (
@@ -240,6 +264,61 @@ export default function LogHistory({ rawMaterials = [], manufacturingData = [], 
                                             </div>
                                         </div>
                                     ))}
+                                </div>
+                            </div>
+                        )
+                    }
+
+                    // Special layout for Production section
+                    if (sec === 'Production') {
+                        const totalProd = rows.reduce((sum, r) => sum + Number(r.productionQuantity || 0), 0)
+                        const totalWst = rows.reduce((sum, r) => sum + Number(r.wasteGenerated || 0), 0)
+
+                        return (
+                            <div key={sec} className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
+                                <div className="px-6 py-4 border-b border-border-default flex items-center gap-3">
+                                    <span className={`px-2.5 py-1 rounded text-xs font-medium ${sectionColors[sec]}`}>
+                                        {sec}
+                                    </span>
+                                    <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">
+                                        — {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
+                                    </h3>
+                                </div>
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="border-b border-border-default">
+                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">S.No</th>
+                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Date</th>
+                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Worker Name</th>
+                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Machine</th>
+                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Production</th>
+                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Waste</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {rows.map((row, idx) => (
+                                                <tr
+                                                    key={row.id}
+                                                    className={`border-b border-border-subtle transition-colors hover:bg-white/[0.02] ${idx % 2 === 0 ? '' : 'bg-white/[0.01]'}`}
+                                                >
+                                                    <td className="px-6 py-3 text-text-secondary">{idx + 1}</td>
+                                                    <td className="px-6 py-3 text-text-primary/90">{row.date}</td>
+                                                    <td className="px-6 py-3 text-text-primary/90 font-medium">{row.workerName}</td>
+                                                    <td className="px-6 py-3 text-text-primary/90">{row.machine}</td>
+                                                    <td className="px-6 py-3 text-accent-gold font-medium">{Number(row.productionQuantity).toFixed(2)}</td>
+                                                    <td className="px-6 py-3 text-text-secondary">{Number(row.wasteGenerated).toFixed(2)}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                        <tfoot className="bg-white/[0.02]">
+                                            <tr>
+                                                <td colSpan="4" className="px-6 py-3 text-right text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Totals</td>
+                                                <td className="px-6 py-3 text-accent-gold font-bold">{totalProd.toFixed(2)}</td>
+                                                <td className="px-6 py-3 text-text-secondary font-medium">{totalWst.toFixed(2)}</td>
+                                            </tr>
+                                        </tfoot>
+                                    </table>
                                 </div>
                             </div>
                         )

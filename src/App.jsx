@@ -15,10 +15,12 @@ import Users from './pages/Users'
 import Orders from './pages/Orders'
 import WorkerHome from './pages/WorkerHome'
 import ProductionTracker from './pages/ProductionTracker'
+import usePersistentState from './hooks/usePersistentState'
 import { getInventoryBalances, getInventoryTransactions, inventoryTransactionsToState } from './utils/inventory'
 import avlokaiLogo from '../avlokai_logo.png'
 
 const STOCK_ISSUANCES_STORAGE_KEY = 'vp_stock_issuances'
+const PRODUCTION_TRACKER_STORAGE_KEY = 'vp_production_tracker_entries'
 
 function ProtectedRoute({ element, allowedRoles, user }) {
   if (!user) return <Navigate to="/login" />
@@ -51,6 +53,8 @@ function App() {
       return []
     }
   })
+
+  const [productionTrackerEntries, setProductionTrackerEntries] = usePersistentState(PRODUCTION_TRACKER_STORAGE_KEY, [])
 
   const activeOrdersList = ordersList.filter((order) => {
     const normalizedStatus = String(order.status || 'active').toLowerCase()
@@ -181,7 +185,7 @@ function App() {
                       />
                       <Route
                         path="/production-tracker"
-                        element={<ProductionTracker user={user} />}
+                        element={<ProductionTracker user={user} setProductionTrackerEntries={setProductionTrackerEntries} />}
                       />
                       <Route
                         path="/raw-material"
@@ -259,6 +263,7 @@ function App() {
                                 tradingData={tradingData}
                                 wastageData={wastageData}
                                 stockUsage={stockUsage}
+                                productionTrackerEntries={productionTrackerEntries}
                               />
                             }
                           />
