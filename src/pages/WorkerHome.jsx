@@ -32,7 +32,7 @@ export default function WorkerHome({ stockIssuances = [], ordersList = [] }) {
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-gold">Worker Home</p>
         <h1 className="mt-3 text-3xl font-semibold text-text-primary">Just two things to do.</h1>
         <p className="mt-3 max-w-2xl text-base leading-7 text-text-secondary">
-          First check your stock. Then open manufacturing and enter the roll details. If something looks wrong, stop and ask admin.
+          First check your stock. Then open the production session console and keep logging the batch there until it is complete. If something looks wrong, stop and ask admin.
         </p>
       </div>
 
@@ -53,7 +53,7 @@ export default function WorkerHome({ stockIssuances = [], ordersList = [] }) {
           <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary/70">Open Orders</p>
           <p className="mt-3 text-2xl font-semibold text-text-primary">{ordersList.length}</p>
           <p className="mt-2 text-sm text-text-secondary">
-            Active orders are already available inside the manufacturing page.
+            Production work now runs through the production session page.
           </p>
         </div>
       </div>
@@ -68,9 +68,9 @@ export default function WorkerHome({ stockIssuances = [], ordersList = [] }) {
         />
         <QuickCard
           step="Step 2"
-          title="Start Manufacturing"
-          description="Choose the order, enter the weights, and save the roll. Use only the stock already issued to you."
-          to="/manufacturing"
+          title="Run Session"
+          description="Start one session, choose the machine and materials, then keep adding weight logs until the batch is complete."
+          to="/production-session"
         />
       </div>
 

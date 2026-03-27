@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import api from './utils/api'
 import { ToastProvider } from './components/Toast'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
 import RawMaterial from './pages/RawMaterial'
-import Manufacturing from './pages/Manufacturing'
 import Trading from './pages/Trading'
 import Wastage from './pages/Wastage'
 import LogHistory from './pages/LogHistory'
@@ -14,13 +13,11 @@ import Login from './components/ui/animated-characters-login-page.jsx'
 import Users from './pages/Users'
 import Orders from './pages/Orders'
 import WorkerHome from './pages/WorkerHome'
-import ProductionTracker from './pages/ProductionTracker'
-import usePersistentState from './hooks/usePersistentState'
+import ProductionSession from './pages/ProductionSession'
 import { getInventoryBalances, getInventoryTransactions, inventoryTransactionsToState } from './utils/inventory'
 import avlokaiLogo from '../avlokai_logo.png'
 
 const STOCK_ISSUANCES_STORAGE_KEY = 'vp_stock_issuances'
-const PRODUCTION_TRACKER_STORAGE_KEY = 'vp_production_tracker_entries'
 const AUTH_TOKEN_KEY = 'token'
 const AUTH_USER_ID_KEY = 'user_id'
 const AUTH_ROLE_KEY = 'role'
@@ -82,8 +79,6 @@ function App() {
       return []
     }
   })
-
-  const [productionTrackerEntries, setProductionTrackerEntries] = usePersistentState(PRODUCTION_TRACKER_STORAGE_KEY, [])
 
   const activeOrdersList = ordersList.filter((order) => {
     const normalizedStatus = String(order.status || 'active').toLowerCase()
@@ -184,27 +179,6 @@ function App() {
     loadAll().catch((error) => console.error('Failed to load initial data', error))
   }, [user, refreshInventoryData, refreshOrders, refreshTradingData])
 
-  const logHistoryRefreshers = useMemo(() => ({
-    'Raw Material': async () => {
-      await Promise.all([refreshInventoryData(), refreshOrders()])
-    },
-    Manufacturing: async () => {
-      await Promise.all([refreshInventoryData(), refreshOrders()])
-    },
-    Trading: async () => {
-      await Promise.all([refreshTradingData(), refreshOrders()])
-    },
-    Wastage: async () => {
-      await Promise.all([refreshInventoryData(), refreshOrders()])
-    },
-    'Stock Usage': async () => {
-      await Promise.all([refreshInventoryData(), refreshOrders()])
-    },
-    Production: async () => {
-      await refreshOrders()
-    },
-  }), [refreshInventoryData, refreshOrders, refreshTradingData])
-
   useEffect(() => {
     try {
       localStorage.setItem(STOCK_ISSUANCES_STORAGE_KEY, JSON.stringify(stockIssuances))
@@ -269,8 +243,16 @@ function App() {
                         }
                       />
                       <Route
-                        path="/production-tracker"
-                        element={<ProductionTracker user={user} setProductionTrackerEntries={setProductionTrackerEntries} />}
+                        path="/production-session"
+                        element={
+                          <ProductionSession
+                            rawMaterials={rawMaterials}
+                            stockUsage={stockUsage}
+                            stockIssuances={stockIssuances}
+                            stockBalances={stockBalances}
+                            refreshInventoryData={refreshInventoryData}
+                          />
+                        }
                       />
                       <Route
                         path="/raw-material"
@@ -285,20 +267,11 @@ function App() {
                       />
                       <Route
                         path="/manufacturing"
-                        element={
-                          <Manufacturing
-                            user={user}
-                            data={manufacturingData}
-                            setData={setManufacturingData}
-                            rawMaterials={rawMaterials}
-                            stockUsage={stockUsage}
-                            stockIssuances={stockIssuances}
-                            stockBalances={stockBalances}
-                            setStockUsage={setStockUsage}
-                            ordersList={activeOrdersList}
-                            refreshInventoryData={refreshInventoryData}
-                          />
-                        }
+                        element={<Navigate to="/production-session" replace />}
+                      />
+                      <Route
+                        path="/production-tracker"
+                        element={<Navigate to="/production-session" replace />}
                       />
                       <Route
                         path="/trading"
@@ -348,8 +321,6 @@ function App() {
                                 tradingData={tradingData}
                                 wastageData={wastageData}
                                 stockUsage={stockUsage}
-                                productionTrackerEntries={productionTrackerEntries}
-                                sectionRefreshers={logHistoryRefreshers}
                               />
                             }
                           />
