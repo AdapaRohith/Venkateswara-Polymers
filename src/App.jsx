@@ -23,22 +23,21 @@ const AUTH_USER_ID_KEY = 'user_id'
 const AUTH_ROLE_KEY = 'role'
 
 const loadStoredUser = () => {
-  const token = localStorage.getItem(AUTH_TOKEN_KEY)
-  const role = localStorage.getItem(AUTH_ROLE_KEY)
-  const userId = localStorage.getItem(AUTH_USER_ID_KEY)
+  const token = sessionStorage.getItem(AUTH_TOKEN_KEY)
+  const role = sessionStorage.getItem(AUTH_ROLE_KEY)
+  const userId = sessionStorage.getItem(AUTH_USER_ID_KEY)
 
   if (token && role && userId) {
     return {
-      token,
       role,
       id: userId,
     }
   }
 
   if (token || role || userId) {
-    localStorage.removeItem(AUTH_TOKEN_KEY)
-    localStorage.removeItem(AUTH_ROLE_KEY)
-    localStorage.removeItem(AUTH_USER_ID_KEY)
+    sessionStorage.removeItem(AUTH_TOKEN_KEY)
+    sessionStorage.removeItem(AUTH_ROLE_KEY)
+    sessionStorage.removeItem(AUTH_USER_ID_KEY)
   }
 
   return null
@@ -117,12 +116,11 @@ function App() {
       return
     }
 
-    localStorage.setItem(AUTH_TOKEN_KEY, authData.token)
-    localStorage.setItem(AUTH_USER_ID_KEY, String(authData.user_id))
-    localStorage.setItem(AUTH_ROLE_KEY, authData.role)
+    sessionStorage.setItem(AUTH_TOKEN_KEY, authData.token)
+    sessionStorage.setItem(AUTH_USER_ID_KEY, String(authData.user_id))
+    sessionStorage.setItem(AUTH_ROLE_KEY, authData.role)
 
     const normalizedUser = {
-      token: authData.token,
       role: authData.role,
       id: String(authData.user_id),
       name: authData.name || authData.user?.name || '',
@@ -135,9 +133,9 @@ function App() {
 
   const handleLogout = () => {
     setUser(null)
-    localStorage.removeItem(AUTH_TOKEN_KEY)
-    localStorage.removeItem(AUTH_USER_ID_KEY)
-    localStorage.removeItem(AUTH_ROLE_KEY)
+    sessionStorage.removeItem(AUTH_TOKEN_KEY)
+    sessionStorage.removeItem(AUTH_USER_ID_KEY)
+    sessionStorage.removeItem(AUTH_ROLE_KEY)
     localStorage.removeItem('demo_user')
     hasLoadedFromServerRef.current = false
   }

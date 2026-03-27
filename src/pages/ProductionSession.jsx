@@ -176,7 +176,7 @@ export default function ProductionSession({
 
         setMachines(loadedMachines)
 
-        // Backend exposes active session lookup per machine, so bootstrap checks each known machine.
+        // Backend exposes a per-user /production/active lookup; fetch machines first for friendly labels.
         const activeSession = await findActiveProductionSession(loadedMachines)
         if (!mounted) return
 

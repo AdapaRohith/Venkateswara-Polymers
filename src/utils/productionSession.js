@@ -185,12 +185,26 @@ export async function endProductionSession(sessionId) {
     raw: data,
   }
 }
-
-async function getActiveSessionByMachine(machineId, machines = []) {
+export async function findActiveProductionSession(machines = []) {
   try {
-    const { data } = await api.get(`/production/active/${encodeURIComponent(machineId)}`)
-    const normalized = deriveProductionSessionState(data, machines)
-    return normalized.session?.id ? normalized : null
+    const { data } = await api.get('/production/active')
+
+    if (!data) {
+      return null
+    }
+
+    const sessionId =
+      data.id ??
+      data.session_id ??
+      data.session?.id ??
+      data.production_session?.id ??
+      null
+
+    if (!sessionId) {
+      return deriveProductionSessionState(data, machines)
+    }
+
+    return await getProductionSession(sessionId, machines)
   } catch (error) {
     if (error?.response?.status === 404) {
       return null
@@ -198,14 +212,4 @@ async function getActiveSessionByMachine(machineId, machines = []) {
 
     throw error
   }
-}
-
-export async function findActiveProductionSession(machines = []) {
-  if (!Array.isArray(machines) || machines.length === 0) return null
-
-  const results = await Promise.all(
-    machines.map((machine) => getActiveSessionByMachine(machine.id, machines)),
-  )
-
-  return results.find(Boolean) ?? null
 }

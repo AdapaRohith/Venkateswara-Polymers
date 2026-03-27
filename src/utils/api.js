@@ -17,7 +17,7 @@ const apiClient = axios.create({
 apiClient.interceptors.request.use(
   (config) => {
     const skipAuth = config.skipAuth === true
-    const token = localStorage.getItem(AUTH_TOKEN_KEY)
+    const token = sessionStorage.getItem(AUTH_TOKEN_KEY)
 
     if (!skipAuth) {
       if (!token) {
@@ -123,7 +123,7 @@ apiClient.interceptors.response.use(
   },
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem(AUTH_TOKEN_KEY)
+      sessionStorage.removeItem(AUTH_TOKEN_KEY)
       ensureLoginRedirect()
     }
     return Promise.reject(error)
@@ -143,7 +143,7 @@ const api = {
 }
 
 export function getAuthHeaders() {
-  const token = localStorage.getItem(AUTH_TOKEN_KEY)
+  const token = sessionStorage.getItem(AUTH_TOKEN_KEY)
   return token
     ? {
         Authorization: `Bearer ${token}`,
@@ -154,7 +154,7 @@ export function getAuthHeaders() {
 export const fetchPendingUsers = () => api.get('/admin/pending-users')
 
 export const clearAuthToken = () => {
-  localStorage.removeItem(AUTH_TOKEN_KEY)
+  sessionStorage.removeItem(AUTH_TOKEN_KEY)
 }
 
 export default api

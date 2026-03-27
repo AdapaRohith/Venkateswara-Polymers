@@ -333,7 +333,7 @@ function LoginPage({ onLogin }) {
           throw new Error('Invalid response from server');
         }
 
-        localStorage.setItem('token', data.token);
+        sessionStorage.setItem('token', data.token);
 
         onLogin({
           token: data.token,
