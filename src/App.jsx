@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import api from './utils/api'
 import { ToastProvider } from './components/Toast'
@@ -101,6 +101,15 @@ function App() {
     }
   }, [])
 
+  const refreshTradingData = useCallback(async () => {
+    try {
+      const { data } = await api.get('/trading')
+      setTradingData(Array.isArray(data) ? data : [])
+    } catch (error) {
+      console.warn('Failed to load trading data:', error)
+    }
+  }, [])
+
   const refreshInventoryData = useCallback(async () => {
     const [transactions, balances] = await Promise.all([
       getInventoryTransactions(api),
@@ -156,6 +165,7 @@ function App() {
       const results = await Promise.allSettled([
         refreshInventoryData(),
         refreshOrders(),
+        refreshTradingData(),
       ])
 
       const [inventoryResult, ordersResult] = results
@@ -166,10 +176,34 @@ function App() {
       if (ordersResult.status !== 'fulfilled') {
         console.warn('Failed to load orders:', ordersResult.reason)
       }
+      if (results[2]?.status !== 'fulfilled') {
+        console.warn('Failed to load trading data:', results[2]?.reason)
+      }
     }
 
     loadAll().catch((error) => console.error('Failed to load initial data', error))
-  }, [user, refreshInventoryData, refreshOrders])
+  }, [user, refreshInventoryData, refreshOrders, refreshTradingData])
+
+  const logHistoryRefreshers = useMemo(() => ({
+    'Raw Material': async () => {
+      await Promise.all([refreshInventoryData(), refreshOrders()])
+    },
+    Manufacturing: async () => {
+      await Promise.all([refreshInventoryData(), refreshOrders()])
+    },
+    Trading: async () => {
+      await Promise.all([refreshTradingData(), refreshOrders()])
+    },
+    Wastage: async () => {
+      await Promise.all([refreshInventoryData(), refreshOrders()])
+    },
+    'Stock Usage': async () => {
+      await Promise.all([refreshInventoryData(), refreshOrders()])
+    },
+    Production: async () => {
+      await refreshOrders()
+    },
+  }), [refreshInventoryData, refreshOrders, refreshTradingData])
 
   useEffect(() => {
     try {
@@ -315,6 +349,7 @@ function App() {
                                 wastageData={wastageData}
                                 stockUsage={stockUsage}
                                 productionTrackerEntries={productionTrackerEntries}
+                                sectionRefreshers={logHistoryRefreshers}
                               />
                             }
                           />

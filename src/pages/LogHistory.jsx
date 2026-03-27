@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import api from '../utils/api'
 
 // Format kg into a readable string
@@ -25,22 +25,66 @@ export default function LogHistory({
     tradingData = [], 
     wastageData = [], 
     stockUsage = [],
-    productionTrackerEntries = []
+    productionTrackerEntries = [],
+    sectionRefreshers = {},
 }) {
     const [date, setDate] = useState('')
     const [orders, setOrders] = useState([])
+    const [refreshingSections, setRefreshingSections] = useState({})
+
+    const fetchOrders = useCallback(async () => {
+        try {
+            const { data } = await api.get('/orders')
+            setOrders(data)
+        } catch (error) {
+            console.error('Failed to load orders:', error)
+        }
+    }, [])
 
     useEffect(() => {
-        const fetchOrders = async () => {
-            try {
-                const { data } = await api.get('/orders')
-                setOrders(data)
-            } catch (error) {
-                console.error('Failed to load orders:', error)
-            }
-        }
         fetchOrders()
-    }, [])
+    }, [fetchOrders])
+
+    const handleRefresh = useCallback(async (section) => {
+        const handler = typeof sectionRefreshers?.[section] === 'function' ? sectionRefreshers[section] : null
+
+        if (!handler) {
+            await fetchOrders()
+            return
+        }
+
+        setRefreshingSections((prev) => ({ ...prev, [section]: true }))
+        try {
+            await handler()
+            await fetchOrders()
+        } catch (error) {
+            console.error(`Failed to refresh ${section} entries:`, error)
+        } finally {
+            setRefreshingSections((prev) => {
+                const next = { ...prev }
+                delete next[section]
+                return next
+            })
+        }
+    }, [sectionRefreshers, fetchOrders])
+
+    const renderRefreshButton = useCallback((section) => {
+        const isRefreshing = Boolean(refreshingSections[section])
+        const hasHandler = typeof sectionRefreshers?.[section] === 'function'
+        return (
+            <button
+                type="button"
+                onClick={() => handleRefresh(section)}
+                disabled={!hasHandler || isRefreshing}
+                className="ml-auto inline-flex items-center gap-2 rounded-lg border border-border-default/60 px-3 py-1.5 text-[11px] font-semibold text-accent-gold transition-colors hover:border-accent-gold/60 hover:text-accent-gold disabled:cursor-not-allowed disabled:opacity-50"
+            >
+                {isRefreshing && (
+                    <span className="inline-block h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
+                )}
+                {isRefreshing ? 'Refreshing…' : 'Refresh'}
+            </button>
+        )
+    }, [handleRefresh, refreshingSections, sectionRefreshers])
 
     // Helper to get order status by order number
     const getOrderStatus = (orderNumber) => {
@@ -54,14 +98,16 @@ export default function LogHistory({
         const entries = []
 
         rawMaterials.forEach((r) => {
+            const weightInKg = Number(r.quantityInKg ?? r.netWeight ?? 0)
             entries.push({
                 id: r.id,
                 section: 'Raw Material',
                 date: r.date,
                 order_number: r.order_number || '—',
-                grossWeight: r.grossWeight,
-                tareWeight: r.tareWeight,
-                netWeight: r.netWeight,
+                grossWeight: weightInKg,
+                tareWeight: 0,
+                netWeight: weightInKg,
+                weight: weightInKg,
                 sizeMic: r.sizeMic || '',
             })
         })
@@ -238,6 +284,7 @@ export default function LogHistory({
                                     <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">
                                         — {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
                                     </h3>
+                                    {renderRefreshButton(sec)}
                                 </div>
                                 <div className="px-4 pb-4 pt-2 space-y-2">
                                     {rows.map((row, idx) => (
@@ -283,6 +330,7 @@ export default function LogHistory({
                                     <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">
                                         — {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
                                     </h3>
+                                    {renderRefreshButton(sec)}
                                 </div>
                                 <div className="overflow-x-auto">
                                     <table className="w-full text-sm">
@@ -333,6 +381,7 @@ export default function LogHistory({
                                 <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">
                                     — {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
                                 </h3>
+                                {renderRefreshButton(sec)}
                             </div>
                             <div className="overflow-x-auto">
                                 <table className="w-full text-sm">
@@ -343,9 +392,15 @@ export default function LogHistory({
                                             {sec !== 'Raw Material' && (
                                                 <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Order & Status</th>
                                             )}
-                                            <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Gross</th>
-                                            <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Tare</th>
-                                            <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Net</th>
+                                            {sec === 'Raw Material' ? (
+                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Weight</th>
+                                            ) : (
+                                                <>
+                                                    <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Gross</th>
+                                                    <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Tare</th>
+                                                    <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Net</th>
+                                                </>
+                                            )}
                                             {sec === 'Trading' && (
                                                 <>
                                                     <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Rate</th>
@@ -353,7 +408,9 @@ export default function LogHistory({
                                                     <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Type</th>
                                                 </>
                                             )}
-                                            <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Size & Mic</th>
+                                            {sec !== 'Raw Material' && (
+                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Size & Mic</th>
+                                            )}
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -376,9 +433,15 @@ export default function LogHistory({
                                                         </div>
                                                     </td>
                                                 )}
-                                                <td className="px-6 py-3 text-text-primary/90">{Number(row.grossWeight).toFixed(2)}</td>
-                                                <td className="px-6 py-3 text-text-primary/90">{Number(row.tareWeight).toFixed(2)}</td>
-                                                <td className="px-6 py-3 text-accent-gold font-medium">{Number(row.netWeight).toFixed(2)}</td>
+                                                {sec === 'Raw Material' ? (
+                                                    <td className="px-6 py-3 text-accent-gold font-medium">{formatKg(row.weight ?? row.netWeight)}</td>
+                                                ) : (
+                                                    <>
+                                                        <td className="px-6 py-3 text-text-primary/90">{Number(row.grossWeight).toFixed(2)}</td>
+                                                        <td className="px-6 py-3 text-text-primary/90">{Number(row.tareWeight).toFixed(2)}</td>
+                                                        <td className="px-6 py-3 text-accent-gold font-medium">{Number(row.netWeight).toFixed(2)}</td>
+                                                    </>
+                                                )}
                                                 {sec === 'Trading' && (
                                                     <>
                                                         <td className="px-6 py-3 text-text-primary/90">₹{Number(row.rate).toFixed(2)}</td>
@@ -390,7 +453,9 @@ export default function LogHistory({
                                                         </td>
                                                     </>
                                                 )}
-                                                <td className="px-6 py-3 text-text-secondary">{row.sizeMic || '—'}</td>
+                                                {sec !== 'Raw Material' && (
+                                                    <td className="px-6 py-3 text-text-secondary">{row.sizeMic || '—'}</td>
+                                                )}
                                             </tr>
                                         ))}
                                     </tbody>
