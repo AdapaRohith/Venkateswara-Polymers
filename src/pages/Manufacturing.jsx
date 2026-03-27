@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
@@ -6,14 +6,7 @@ import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 import { buildStockBatches, buildStockIssuances, formatKg } from '../utils/stock'
-import {
-  createInventoryTransaction,
-  deleteInventoryTransaction,
-  ensureInventoryBalance,
-  INVENTORY_NOTE_CATEGORIES,
-  INVENTORY_TRANSACTION_TYPES,
-  makeInventoryTransaction,
-} from '../utils/inventory'
+import { deleteInventoryTransaction } from '../utils/inventory'
 
 const MATERIAL_SOURCE_LIMIT = 3
 
@@ -21,6 +14,67 @@ const getTodayDate = () => new Date().toISOString().split('T')[0]
 const createEmptyMaterialSource = () => ({ stockId: '', issuanceId: '', quantityUsed: '' })
 const createInitialMaterialSources = () =>
   Array.from({ length: MATERIAL_SOURCE_LIMIT }, () => createEmptyMaterialSource())
+const createEmptyRoll = () => ({
+  id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  machine_id: '',
+  quantity_kg: '',
+})
+
+const toNumber = (value) => {
+  const parsed = parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const normalizeIssuance = (item, index) => {
+  const remainingKg = toNumber(
+    item.remaining_kg ??
+      item.remainingInKg ??
+      item.remainingKg ??
+      item.remaining ??
+      item.available_kg ??
+      item.availableKg,
+  )
+  const quantityKg = toNumber(item.quantity_kg ?? item.quantityInKg ?? item.quantity ?? item.quantity_used)
+  const issuanceId = item.issuance_id ?? item.issuanceId ?? item.id ?? `issuance_${index}`
+  const sourceLabel =
+    item.fromStockLabel ??
+    item.from_stock_label ??
+    item.stock_label ??
+    item.stockLabel ??
+    item.material_name ??
+    item.materialName ??
+    item.label ??
+    item.batch_name ??
+    item.batchName ??
+    `Issuance ${issuanceId}`
+
+  return {
+    ...item,
+    id: issuanceId,
+    issuance_id: issuanceId,
+    remainingKg: remainingKg || quantityKg,
+    label: sourceLabel,
+  }
+}
+
+const normalizeMachine = (item, index) => {
+  const machineId = item.machine_id ?? item.machineId ?? item.id ?? `machine_${index}`
+  const machineLabel =
+    item.machine_name ??
+    item.machineName ??
+    item.name ??
+    item.code ??
+    item.machine_code ??
+    item.machineCode ??
+    `Machine ${machineId}`
+
+  return {
+    ...item,
+    id: machineId,
+    machine_id: machineId,
+    label: machineLabel,
+  }
+}
 
 const columns = [
   { key: 'sno', label: 'S.No' },
@@ -53,11 +107,19 @@ export default function Manufacturing({
     grossWeight: '',
     tareWeight: '',
     sizeMic: '',
+    note: '',
     materialSources: createInitialMaterialSources(),
   })
+  const [rolls, setRolls] = useState(() => [createEmptyRoll()])
   const [submitting, setSubmitting] = useState(false)
+  const [workerIssuances, setWorkerIssuances] = useState([])
+  const [machines, setMachines] = useState([])
+  const [referenceLoading, setReferenceLoading] = useState(false)
+  const [referenceError, setReferenceError] = useState('')
+  const [inlineErrors, setInlineErrors] = useState({})
   const [filterBrand, setFilterBrand] = usePersistentState(`vp_manufacturing_filter_brand_${isWorker ? 'worker' : 'owner'}`, '')
   const [filterCode, setFilterCode] = usePersistentState(`vp_manufacturing_filter_code_${isWorker ? 'worker' : 'owner'}`, '')
+  const workerId = user?.worker_id ?? user?.workerId ?? user?.id ?? user?.email ?? ''
 
   const uniqueBrands = useMemo(
     () => [...new Set(rawMaterials.map((item) => item.brandName).filter(Boolean))].sort(),
@@ -87,27 +149,37 @@ export default function Manufacturing({
   }, [filterBrand, filterCode, stockBatches])
 
   const availableIssuances = useMemo(() => {
-    return stockIssuanceRows.filter((issuance) => {
-      if (issuance.remainingInKg <= 0) return false
+    const sourceRows = isWorker ? workerIssuances : stockIssuanceRows
+    return sourceRows.filter((issuance) => {
+      const remainingStock = issuance.remainingKg ?? issuance.remainingInKg ?? 0
+      if (remainingStock <= 0) return false
       if (filterBrand && issuance.brandName !== filterBrand) return false
       if (filterCode && issuance.codeName !== filterCode) return false
       return true
     })
-  }, [filterBrand, filterCode, stockIssuanceRows])
+  }, [filterBrand, filterCode, isWorker, stockIssuanceRows, workerIssuances])
 
   const selectedOwnerSources = form.materialSources.map((source) =>
     stockBatches.find((batch) => String(batch.id) === String(source.stockId)),
   )
   const selectedWorkerSources = form.materialSources.map((source) =>
-    stockIssuanceRows.find((issuance) => String(issuance.id) === String(source.issuanceId)),
+    availableIssuances.find((issuance) => String(issuance.id) === String(source.issuanceId)),
   )
 
-  const workerBlocked = isWorker && availableIssuances.length === 0
+  const workerBlocked = isWorker && (!workerId || referenceLoading || availableIssuances.length === 0)
   const netWeight = (parseFloat(form.grossWeight) || 0) - (parseFloat(form.tareWeight) || 0)
   const totalMaterialUsed = useMemo(
     () => form.materialSources.reduce((sum, source) => sum + (parseFloat(source.quantityUsed) || 0), 0),
     [form.materialSources],
   )
+  const totalOutput = useMemo(
+    () => rolls.reduce((sum, roll) => sum + toNumber(roll.quantity_kg), 0),
+    [rolls],
+  )
+  const selectedIssuance = availableIssuances.find(
+    (issuance) => String(issuance.id) === String(form.materialSources[0]?.issuanceId),
+  )
+  const selectedIssuanceRemaining = selectedIssuance?.remainingKg ?? 0
 
   const totalEntries = data.length
   const totalNetWeight = data.reduce((sum, item) => sum + (item.netWeight || 0), 0)
@@ -138,7 +210,10 @@ export default function Manufacturing({
       if (availableIssuances.length > 0) {
         return 'Choose from issued stock that still has remaining balance.'
       }
-      if (stockIssuanceRows.length === 0) {
+      if (!workerId) {
+        return 'Worker session is missing an id. Sign in again to load issued stock.'
+      }
+      if (!referenceLoading && workerIssuances.length === 0) {
         return 'No issued stock exists yet. Ask admin to issue stock first.'
       }
       if (filterBrand || filterCode) {
@@ -157,7 +232,58 @@ export default function Manufacturing({
       return 'No stock batch matches the current brand/code filters.'
     }
     return 'All stock batches are fully used or already reserved.'
-  }, [availableIssuances.length, availableOwnerBatches.length, filterBrand, filterCode, isWorker, stockBatches.length, stockIssuanceRows.length])
+  }, [availableIssuances.length, availableOwnerBatches.length, filterBrand, filterCode, isWorker, referenceLoading, stockBatches.length, workerId, workerIssuances.length])
+
+  useEffect(() => {
+    if (!isWorker || !workerId) {
+      if (isWorker && !workerId) {
+        setReferenceError('Worker session is missing an id, so issued stock cannot be loaded.')
+      }
+      return
+    }
+
+    const loadReferenceData = async () => {
+      setReferenceLoading(true)
+      setReferenceError('')
+
+      try {
+        const [stockResponse, machinesResponse] = await Promise.all([
+          api.get(`/worker/stock/${encodeURIComponent(workerId)}`),
+          api.get('/machines'),
+        ])
+
+        const nextIssuances = Array.isArray(stockResponse.data)
+          ? stockResponse.data.map(normalizeIssuance)
+          : []
+        const nextMachines = Array.isArray(machinesResponse.data)
+          ? machinesResponse.data.map(normalizeMachine)
+          : []
+
+        setWorkerIssuances(nextIssuances)
+        setMachines(nextMachines)
+      } catch (error) {
+        console.error('Failed to load manufacturing references', error)
+        setReferenceError(error.response?.data?.error || 'Failed to load issued stock or machines')
+      } finally {
+        setReferenceLoading(false)
+      }
+    }
+
+    loadReferenceData()
+  }, [isWorker, workerId])
+
+  useEffect(() => {
+    setRolls((prev) =>
+      prev.map((roll) =>
+        roll.machine_id || machines.length === 0
+          ? roll
+          : {
+              ...roll,
+              machine_id: '',
+            },
+      ),
+    )
+  }, [machines])
 
   const handleChange = (event) => {
     const { name, value } = event.target
@@ -185,8 +311,11 @@ export default function Manufacturing({
       grossWeight: '',
       tareWeight: '',
       sizeMic: '',
+      note: '',
       materialSources: createInitialMaterialSources(),
     })
+    setRolls([createEmptyRoll()])
+    setInlineErrors({})
   }
 
   const resetMaterialSources = () => {
@@ -196,52 +325,38 @@ export default function Manufacturing({
     }))
   }
 
-  const buildMaterialSourcesForSubmit = () => {
-    return form.materialSources.map((source, index) => {
-      const quantityUsed = parseFloat(source.quantityUsed)
+  const addRoll = () => {
+    setRolls((prev) => [...prev, createEmptyRoll()])
+  }
 
-      if (isWorker) {
-        const issuance = stockIssuanceRows.find((item) => String(item.id) === String(source.issuanceId))
-        const batch = issuance
-          ? stockBatches.find((item) => String(item.id) === String(issuance.fromStockId))
-          : null
+  const updateRoll = (rollId, field, value) => {
+    setRolls((prev) =>
+      prev.map((roll) => (roll.id === rollId ? { ...roll, [field]: value } : roll)),
+    )
+  }
 
-        return {
-          slot: index + 1,
-          selectionId: source.issuanceId,
-          quantityUsed,
-          issuance,
-          batch,
-          balanceStockId: issuance ? issuance.issuedStockId || issuance.stockId : null,
-          displayLabel: issuance ? `${issuance.fromStockLabel} (Issued)` : '',
-          sourceStockId: batch?.id ?? '',
-          beforeBalance: issuance?.remainingInKg ?? null,
-          afterBalance: issuance ? issuance.remainingInKg - quantityUsed : null,
-          issueBalanceBefore: issuance?.remainingInKg ?? null,
-          issueBalanceAfter: issuance ? issuance.remainingInKg - quantityUsed : null,
-        }
+  const removeRoll = (rollId) => {
+    setRolls((prev) => {
+      const nextRolls = prev.filter((roll) => roll.id !== rollId)
+      return nextRolls.length > 0 ? nextRolls : [createEmptyRoll()]
+    })
+  }
+
+  const prefillFromNetWeight = () => {
+    if (netWeight <= 0) return
+    setRolls((prev) => {
+      if (prev.length === 0) {
+        return [{ ...createEmptyRoll(), quantity_kg: netWeight.toFixed(2) }]
       }
 
-      const batch = stockBatches.find((item) => String(item.id) === String(source.stockId))
-      return {
-        slot: index + 1,
-        selectionId: source.stockId,
-        quantityUsed,
-        issuance: null,
-        batch,
-        balanceStockId: batch?.id ?? null,
-        displayLabel: batch?.label || '',
-        sourceStockId: batch?.id ?? '',
-        beforeBalance: batch?.physicalRemaining ?? null,
-        afterBalance: batch ? batch.physicalRemaining - quantityUsed : null,
-        issueBalanceBefore: null,
-        issueBalanceAfter: null,
-      }
+      const [firstRoll, ...rest] = prev
+      return [{ ...firstRoll, quantity_kg: netWeight.toFixed(2) }, ...rest]
     })
   }
 
   const handleSubmit = async (event) => {
     event.preventDefault()
+    setInlineErrors({})
 
     if (!form.order_number || !form.date || !form.grossWeight || !form.tareWeight) {
       toast.error('Please fill all required fields')
@@ -255,161 +370,63 @@ export default function Manufacturing({
       return
     }
 
-    const net = gross - tare
-    const sourceEntries = buildMaterialSourcesForSubmit()
+    const sourceOne = form.materialSources[0]
+    const nextErrors = {}
 
-    for (const sourceEntry of sourceEntries) {
-      const hasSelection = Boolean(sourceEntry.selectionId)
-      const hasQuantity = Boolean(sourceEntry.quantityUsed)
-      const isRequiredSource = sourceEntry.slot === 1
-
-      if (isRequiredSource && (!hasSelection || !hasQuantity)) {
-        toast.error('Raw material source 1 is required')
-        return
-      }
-
-      if (!isRequiredSource && (hasSelection || hasQuantity) && (!hasSelection || !hasQuantity)) {
-        toast.error(`Complete both stock and quantity for raw material source ${sourceEntry.slot}`)
-        return
-      }
-
-      if (hasQuantity && sourceEntry.quantityUsed <= 0) {
-        toast.error(`Raw material source ${sourceEntry.slot} quantity must be greater than zero`)
-        return
-      }
+    if (!isWorker) {
+      nextErrors.reference = 'This production logging flow requires a worker session.'
     }
 
-    const activeSources = sourceEntries.filter((sourceEntry) => sourceEntry.selectionId && sourceEntry.quantityUsed)
-    const uniqueSelectionIds = new Set(activeSources.map((sourceEntry) => String(sourceEntry.selectionId)))
-    if (uniqueSelectionIds.size !== activeSources.length) {
-      toast.error('Please choose different raw materials for each source')
+    if (isWorker && !workerId) {
+      nextErrors.reference = 'Worker session is missing an id. Sign in again before logging production.'
+    }
+
+    if (isWorker && !sourceOne?.issuanceId) {
+      nextErrors.issuance = 'Raw material source 1 is required.'
+    }
+
+    const cleanedRolls = rolls
+      .map((roll) => ({
+        machine_id: roll.machine_id,
+        quantity_kg: toNumber(roll.quantity_kg),
+      }))
+      .filter((roll) => roll.machine_id || roll.quantity_kg > 0)
+
+    if (cleanedRolls.length === 0) {
+      nextErrors.rolls = 'At least one roll output is required.'
+    } else if (cleanedRolls.some((roll) => !roll.machine_id || roll.quantity_kg <= 0)) {
+      nextErrors.rolls = 'Each roll must include a machine and a quantity greater than zero.'
+    }
+
+    if (selectedIssuance && totalOutput > selectedIssuance.remainingKg) {
+      nextErrors.totalOutput = `Total output cannot exceed remaining stock of ${formatKg(selectedIssuance.remainingKg)}.`
+    }
+
+    if (Object.keys(nextErrors).length > 0) {
+      setInlineErrors(nextErrors)
+      toast.error('Please correct the highlighted fields')
       return
-    }
-
-    const materialUsed = activeSources.reduce((sum, sourceEntry) => sum + sourceEntry.quantityUsed, 0)
-    if (materialUsed < net) {
-      toast.error('Total raw material used cannot be less than net weight output')
-      return
-    }
-
-    for (const sourceEntry of activeSources) {
-      if (isWorker) {
-        if (!sourceEntry.issuance) {
-          toast.error(`Issued stock for source ${sourceEntry.slot} was not found`)
-          return
-        }
-        if (sourceEntry.quantityUsed > sourceEntry.issuance.remainingInKg) {
-          toast.error(`Only ${formatKg(sourceEntry.issuance.remainingInKg)} remains in issued source ${sourceEntry.slot}`)
-          return
-        }
-      } else {
-        if (!sourceEntry.batch) {
-          toast.error(`Stock batch for source ${sourceEntry.slot} was not found`)
-          return
-        }
-        if (sourceEntry.quantityUsed > sourceEntry.batch.availableToIssue) {
-          toast.error(`Only ${formatKg(sourceEntry.batch.availableToIssue)} is free in source ${sourceEntry.slot}`)
-          return
-        }
-      }
     }
 
     setSubmitting(true)
 
-    for (const sourceEntry of activeSources) {
-      try {
-        const { ok, balance } = await ensureInventoryBalance(api, sourceEntry.balanceStockId, sourceEntry.quantityUsed)
-        if (!ok) {
-          toast.error(`Only ${formatKg(balance)} is currently available for raw material source ${sourceEntry.slot}`)
-          setSubmitting(false)
-          return
-        }
-      } catch (error) {
-        console.error('Failed to validate stock balance', error)
-        toast.error('Unable to verify stock balance right now')
-        setSubmitting(false)
-        return
-      }
-    }
-
-    const materialSourcesMetadata = activeSources.map((sourceEntry) => ({
-      slot: sourceEntry.slot,
-      sourceLabel: sourceEntry.displayLabel,
-      quantityUsed: sourceEntry.quantityUsed,
-      stockId: sourceEntry.balanceStockId,
-      sourceStockId: sourceEntry.sourceStockId,
-      issuanceId: sourceEntry.issuance?.id ?? null,
-    }))
-
     try {
-      const [primarySource, ...additionalSources] = activeSources
-      const primaryTransaction = await createInventoryTransaction(
-        api,
-        makeInventoryTransaction({
-          stockId: primarySource.balanceStockId,
-          transactionType: INVENTORY_TRANSACTION_TYPES.MANUFACTURING,
-          direction: 'OUT',
-          quantityInKg: primarySource.quantityUsed,
-          metadata: {
-            category: INVENTORY_NOTE_CATEGORIES.MANUFACTURING,
-            date: form.date,
-            order_number: form.order_number,
-            grossWeight: gross,
-            tareWeight: tare,
-            netWeight: net,
-            materialUsed,
-            quantityUsed: primarySource.quantityUsed,
-            quantityUnit: 'kg',
-            sizeMic: form.sizeMic,
-            source: 'Manufacturing',
-            fromStockLabel: primarySource.displayLabel,
-            beforeBalance: primarySource.beforeBalance,
-            afterBalance: primarySource.afterBalance,
-            sourceStockId: primarySource.sourceStockId,
-            issuanceId: primarySource.issuance?.id ?? null,
-            issueBalanceBefore: primarySource.issueBalanceBefore,
-            issueBalanceAfter: primarySource.issueBalanceAfter,
-            materialSources: materialSourcesMetadata,
-            logMessage:
-              activeSources.length > 1
-                ? `${formatKg(materialUsed)} used for Manufacturing (${form.order_number}) from ${activeSources.length} raw material sources`
-                : `${formatKg(materialUsed)} used for Manufacturing (${form.order_number}) from ${primarySource.displayLabel || 'selected stock'}`,
-          },
-        }),
-      )
+      await api.post('/production/log-rolls', {
+        issuance_id: sourceOne.issuanceId,
+        worker_id: workerId,
+        order_number: form.order_number,
+        rolls: cleanedRolls,
+        note: form.note?.trim() || undefined,
+        created_by: user?.name || user?.email || undefined,
+      })
 
-      for (const sourceEntry of additionalSources) {
-        await createInventoryTransaction(
-          api,
-          makeInventoryTransaction({
-            stockId: sourceEntry.balanceStockId,
-            transactionType: INVENTORY_TRANSACTION_TYPES.ADJUSTMENT,
-            direction: 'OUT',
-            quantityInKg: sourceEntry.quantityUsed,
-            metadata: {
-              category: INVENTORY_NOTE_CATEGORIES.MANUFACTURING_COMPONENT,
-              date: form.date,
-              order_number: form.order_number,
-              quantityUsed: sourceEntry.quantityUsed,
-              quantityUnit: 'kg',
-              source: 'Manufacturing',
-              fromStockLabel: sourceEntry.displayLabel,
-              beforeBalance: sourceEntry.beforeBalance,
-              afterBalance: sourceEntry.afterBalance,
-              sourceStockId: sourceEntry.sourceStockId,
-              issuanceId: sourceEntry.issuance?.id ?? null,
-              issueBalanceBefore: sourceEntry.issueBalanceBefore,
-              issueBalanceAfter: sourceEntry.issueBalanceAfter,
-              linkedEntryId: primaryTransaction.id,
-              logMessage: `${formatKg(sourceEntry.quantityUsed)} used for Manufacturing (${form.order_number}) from source ${sourceEntry.slot} (${sourceEntry.displayLabel})`,
-            },
-          }),
-        )
+      if (isWorker && workerId) {
+        const { data: refreshedStock } = await api.get(`/worker/stock/${encodeURIComponent(workerId)}`)
+        setWorkerIssuances(Array.isArray(refreshedStock) ? refreshedStock.map(normalizeIssuance) : [])
       }
-
       await refreshInventoryData?.()
     } catch (error) {
-      console.error('Failed to save manufacturing transaction', error)
+      console.error('Failed to save manufacturing entry', error)
       toast.error(error.response?.data?.error || 'Failed to save manufacturing entry')
       setSubmitting(false)
       return
@@ -453,7 +470,7 @@ export default function Manufacturing({
         <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Manufacturing</h2>
         <p className="text-sm text-text-secondary mt-1">
           {isWorker
-            ? 'Log manufactured rolls using up to 3 issued raw material sources'
+            ? 'Log manufactured rolls using issued raw material stock'
             : 'Log manufactured rolls using up to 3 raw material sources'}
         </p>
       </div>
@@ -562,6 +579,12 @@ export default function Manufacturing({
               <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Raw Material Sources</label>
               <span className="text-[11px] text-text-secondary/60">Source 1 is required. Sources 2 and 3 are optional.</span>
             </div>
+            {referenceError && (
+              <p className="text-[11px] text-red-400">{referenceError}</p>
+            )}
+            {inlineErrors.issuance && (
+              <p className="text-[11px] text-red-400">{inlineErrors.issuance}</p>
+            )}
 
             {form.materialSources.map((source, index) => {
               const sourceNumber = index + 1
@@ -588,16 +611,16 @@ export default function Manufacturing({
                         </option>
                         {(isWorker ? availableIssuances : availableOwnerBatches).map((item) => (
                           <option key={item.id} value={item.id}>
-                            {item.fromStockLabel || item.label} - {formatKg(item.remainingInKg ?? item.availableToIssue)} available
+                            {item.fromStockLabel || item.label} - {formatKg(item.remainingKg ?? item.remainingInKg ?? item.availableToIssue)} available
                           </option>
                         ))}
                       </select>
                       <p className="text-[11px] text-text-secondary/60">
-                        {!selectedWorkerSource && !selectedOwnerSource && !source.selectionId
+                        {!selectedWorkerSource && !selectedOwnerSource && !source.issuanceId && !source.stockId
                           ? sourceHelperText
                           : isWorker
                           ? selectedWorkerSource
-                            ? `${selectedWorkerSource.fromStockLabel} has ${formatKg(selectedWorkerSource.remainingInKg)} remaining`
+                            ? `${selectedWorkerSource.label} has ${formatKg(selectedWorkerSource.remainingKg)} remaining`
                             : 'Choose an issued stock allocation for this source'
                           : selectedOwnerSource
                             ? `${selectedOwnerSource.label} has ${formatKg(selectedOwnerSource.availableToIssue)} free`
@@ -648,16 +671,109 @@ export default function Manufacturing({
             <div className="w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm font-semibold">
               {totalMaterialUsed.toFixed(2)} kg
             </div>
-            {totalMaterialUsed > netWeight && netWeight > 0 && (
-              <p className="text-[10px] text-red-400/70">
-                Wastage: {(totalMaterialUsed - netWeight).toFixed(2)} kg
-              </p>
-            )}
+          </div>
+
+          <div className="space-y-4 md:col-span-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">ROLL OUTPUTS</label>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={prefillFromNetWeight}
+                  className="text-[11px] font-medium text-accent-gold hover:text-accent-gold-hover transition-colors"
+                >
+                  Use Net Weight
+                </button>
+                <button
+                  type="button"
+                  onClick={addRoll}
+                  className="text-[11px] font-medium text-accent-gold hover:text-accent-gold-hover transition-colors"
+                >
+                  + Add Roll
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border-default/80 bg-bg-input/40 p-4 space-y-4">
+              {rolls.map((roll) => (
+                <div key={roll.id} className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_160px_88px] gap-4 items-end">
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">
+                      Machine
+                    </label>
+                    <select
+                      value={roll.machine_id}
+                      onChange={(event) => updateRoll(roll.id, 'machine_id', event.target.value)}
+                      className={`${inputClass} cursor-pointer`}
+                    >
+                      <option value="">
+                        {referenceLoading ? 'Loading machines...' : machines.length > 0 ? 'Select machine...' : 'No machines available'}
+                      </option>
+                      {machines.map((machine) => (
+                        <option key={machine.id} value={machine.machine_id}>
+                          {machine.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">
+                      Quantity (kg)
+                    </label>
+                    <InputWithCamera
+                      type="number"
+                      value={roll.quantity_kg}
+                      onChange={(event) => updateRoll(roll.id, 'quantity_kg', event.target.value)}
+                      step="0.01"
+                      placeholder="0.00"
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => removeRoll(roll.id)}
+                    className="h-[42px] rounded-lg border border-gray-700 px-3 text-sm text-text-secondary hover:text-red-400 transition-colors"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">
+                    Total Output <span className="text-accent-gold/70">(auto)</span>
+                  </label>
+                  <div className="w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm font-semibold">
+                    {totalOutput.toFixed(2)} kg
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">
+                    Remaining Stock
+                  </label>
+                  <div className="w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm font-semibold">
+                    {selectedIssuance ? formatKg(selectedIssuanceRemaining) : 'Select source 1'}
+                  </div>
+                </div>
+              </div>
+
+              {inlineErrors.rolls && <p className="text-[11px] text-red-400">{inlineErrors.rolls}</p>}
+              {inlineErrors.totalOutput && <p className="text-[11px] text-red-400">{inlineErrors.totalOutput}</p>}
+              {inlineErrors.reference && <p className="text-[11px] text-red-400">{inlineErrors.reference}</p>}
+            </div>
           </div>
 
           <div className="space-y-2 md:col-span-2">
             <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Size & Mic</label>
             <InputWithCamera type="text" name="sizeMic" value={form.sizeMic} onChange={handleChange} placeholder="e.g. 12mm / 3.5 mic" />
+          </div>
+
+          <div className="space-y-2 md:col-span-2">
+            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Note</label>
+            <InputWithCamera type="text" name="note" value={form.note} onChange={handleChange} placeholder="Optional note" />
           </div>
 
           <div className="flex items-end md:col-span-2">
