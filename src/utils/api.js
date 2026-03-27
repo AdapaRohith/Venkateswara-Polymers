@@ -1,4 +1,51 @@
-const BASE_URL = 'https://vp-api.avlokai.com'
+import axios from 'axios'
+
+export const BASE_URL = 'https://vp-api.avlokai.com'
+const AUTH_TOKEN_KEY = 'token'
+
+const ensureLoginRedirect = () => {
+  if (typeof window === 'undefined') return
+  if (window.location.pathname !== '/login') {
+    window.location.href = '/login'
+  }
+}
+
+const apiClient = axios.create({
+  baseURL: BASE_URL,
+})
+
+apiClient.interceptors.request.use(
+  (config) => {
+    const skipAuth = config.skipAuth === true
+    const token = localStorage.getItem(AUTH_TOKEN_KEY)
+
+    if (!skipAuth) {
+      if (!token) {
+        ensureLoginRedirect()
+      } else {
+        config.headers = {
+          ...(config.headers ?? {}),
+          Authorization: `Bearer ${token}`,
+        }
+      }
+    }
+
+    config.headers = {
+      Accept: 'application/json',
+      ...(config.headers ?? {}),
+    }
+
+    const method = (config.method ?? 'get').toLowerCase()
+    if (!config.headers['Content-Type'] && ['post', 'put', 'patch'].includes(method)) {
+      config.headers['Content-Type'] = 'application/json'
+    }
+
+    delete config.skipAuth
+
+    return config
+  },
+  (error) => Promise.reject(error),
+)
 
 // Helper: Convert seconds/tons to kg
 function toKg(value, unit) {
@@ -61,59 +108,53 @@ const transformers = {
   })),
 }
 
-const request = async (endpoint, options = {}) => {
-  try {
-    const response = await fetch(`${BASE_URL}${endpoint}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-    })
-    const responseText = await response.text()
-    let responseData = null
+apiClient.interceptors.response.use(
+  (response) => {
+    const rawData = response.data?.data ?? response.data
+    const transformerKey = (response.config?.url ?? '').split('?')[0]
+    let data = rawData
 
-    if (responseText) {
-      try {
-        responseData = JSON.parse(responseText)
-      } catch {
-        responseData = responseText
-      }
-    }
-
-    if (!response.ok) {
-      const errorData =
-        responseData && typeof responseData === 'object'
-          ? responseData
-          : { error: `Request failed with status ${response.status}` }
-      console.error(`API Error [${response.status}] ${endpoint}:`, errorData)
-      throw { response: { data: errorData } }
-    }
-    
-    // Handle both { data: [...] } and direct [...] responses
-    let data = responseData?.data ?? responseData
-    
-    const transformerKey = endpoint.split('?')[0]
-
-    // Apply transformer if available for this endpoint
     if (Array.isArray(data) && transformers[transformerKey]) {
       data = transformers[transformerKey](data)
     }
-    
-    console.log(`API Success ${endpoint}:`, data)
-    return { data }
-  } catch (error) {
-    console.error(`API Request Failed ${endpoint}:`, error)
-    if (error.response) throw error
-    throw { response: { data: { error: error.message } } }
-  }
-}
+
+    response.data = data
+    return response
+  },
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem(AUTH_TOKEN_KEY)
+      ensureLoginRedirect()
+    }
+    return Promise.reject(error)
+  },
+)
+
+const withData = (promise) =>
+  promise.then((response) => ({
+    data: response.data,
+  }))
 
 const api = {
-  get: (endpoint) => request(endpoint),
-  post: (endpoint, body) => request(endpoint, { method: 'POST', body: JSON.stringify(body) }),
-  put: (endpoint, body) => request(endpoint, { method: 'PUT', body: JSON.stringify(body) }),
-  delete: (endpoint) => request(endpoint, { method: 'DELETE' }),
+  get: (endpoint, config = {}) => withData(apiClient.get(endpoint, config)),
+  post: (endpoint, body, config = {}) => withData(apiClient.post(endpoint, body, config)),
+  put: (endpoint, body, config = {}) => withData(apiClient.put(endpoint, body, config)),
+  delete: (endpoint, config = {}) => withData(apiClient.delete(endpoint, config)),
+}
+
+export function getAuthHeaders() {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY)
+  return token
+    ? {
+        Authorization: `Bearer ${token}`,
+      }
+    : {}
+}
+
+export const fetchPendingUsers = () => api.get('/admin/pending-users')
+
+export const clearAuthToken = () => {
+  localStorage.removeItem(AUTH_TOKEN_KEY)
 }
 
 export default api

@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { formatKg } from '../utils/stock'
+import ChangePasswordForm from '../components/ChangePasswordForm'
 
 function QuickCard({ step, title, description, to, tone = 'gold' }) {
   const toneClasses =
@@ -71,6 +72,17 @@ export default function WorkerHome({ stockIssuances = [], ordersList = [] }) {
           description="Choose the order, enter the weights, and save the roll. Use only the stock already issued to you."
           to="/manufacturing"
         />
+      </div>
+
+      <div className="rounded-2xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/20">
+        <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary/70">Account Settings</p>
+        <h3 className="mt-2 text-xl font-semibold text-text-primary">Change password</h3>
+        <p className="mt-2 text-sm text-text-secondary">
+          Update your password regularly to keep your account secure.
+        </p>
+        <div className="mt-4">
+          <ChangePasswordForm className="space-y-4" />
+        </div>
       </div>
     </div>
   )

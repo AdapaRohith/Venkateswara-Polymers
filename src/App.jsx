@@ -21,6 +21,31 @@ import avlokaiLogo from '../avlokai_logo.png'
 
 const STOCK_ISSUANCES_STORAGE_KEY = 'vp_stock_issuances'
 const PRODUCTION_TRACKER_STORAGE_KEY = 'vp_production_tracker_entries'
+const AUTH_TOKEN_KEY = 'token'
+const AUTH_USER_ID_KEY = 'user_id'
+const AUTH_ROLE_KEY = 'role'
+
+const loadStoredUser = () => {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY)
+  const role = localStorage.getItem(AUTH_ROLE_KEY)
+  const userId = localStorage.getItem(AUTH_USER_ID_KEY)
+
+  if (token && role && userId) {
+    return {
+      token,
+      role,
+      id: userId,
+    }
+  }
+
+  if (token || role || userId) {
+    localStorage.removeItem(AUTH_TOKEN_KEY)
+    localStorage.removeItem(AUTH_ROLE_KEY)
+    localStorage.removeItem(AUTH_USER_ID_KEY)
+  }
+
+  return null
+}
 
 function ProtectedRoute({ element, allowedRoles, user }) {
   if (!user) return <Navigate to="/login" />
@@ -32,8 +57,12 @@ function ProtectedRoute({ element, allowedRoles, user }) {
 
 function App() {
   const [user, setUser] = useState(() => {
-    const savedUser = localStorage.getItem('demo_user')
-    return savedUser ? JSON.parse(savedUser) : null
+    try {
+      localStorage.removeItem('demo_user')
+    } catch (error) {
+      console.warn('Failed to clear demo user data', error)
+    }
+    return loadStoredUser()
   })
 
   const [rawMaterials, setRawMaterials] = useState([])
@@ -87,17 +116,39 @@ function App() {
     setStockBalances(inventoryState.stockBalances)
   }, [])
 
-  const handleLogin = (userData) => {
-    setUser(userData)
-    localStorage.setItem('demo_user', JSON.stringify(userData))
+  const handleLogin = (authData) => {
+    if (!authData?.token || !authData?.user_id || !authData?.role) {
+      console.error('Invalid authentication payload received', authData)
+      return
+    }
+
+    localStorage.setItem(AUTH_TOKEN_KEY, authData.token)
+    localStorage.setItem(AUTH_USER_ID_KEY, String(authData.user_id))
+    localStorage.setItem(AUTH_ROLE_KEY, authData.role)
+
+    const normalizedUser = {
+      token: authData.token,
+      role: authData.role,
+      id: String(authData.user_id),
+      name: authData.name || authData.user?.name || '',
+      email: authData.email || authData.user?.email || '',
+    }
+
+    setUser(normalizedUser)
+    hasLoadedFromServerRef.current = false
   }
 
   const handleLogout = () => {
     setUser(null)
+    localStorage.removeItem(AUTH_TOKEN_KEY)
+    localStorage.removeItem(AUTH_USER_ID_KEY)
+    localStorage.removeItem(AUTH_ROLE_KEY)
     localStorage.removeItem('demo_user')
+    hasLoadedFromServerRef.current = false
   }
 
   useEffect(() => {
+    if (!user) return
     if (hasLoadedFromServerRef.current) return
     hasLoadedFromServerRef.current = true
 
@@ -118,7 +169,7 @@ function App() {
     }
 
     loadAll().catch((error) => console.error('Failed to load initial data', error))
-  }, [refreshInventoryData, refreshOrders])
+  }, [user, refreshInventoryData, refreshOrders])
 
   useEffect(() => {
     try {

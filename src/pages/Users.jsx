@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import DataTable from '../components/DataTable'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
-import api from '../utils/api'
+import api, { fetchPendingUsers as fetchPendingUsersRequest } from '../utils/api'
+import ChangePasswordForm from '../components/ChangePasswordForm'
 
 export default function Users() {
     const toast = useToast()
@@ -10,9 +11,14 @@ export default function Users() {
     const [loading, setLoading] = useState(true)
     const [form, setForm] = usePersistentState('vp_users_form', { email: '', password: '', name: '', role: 'worker' })
     const [submitting, setSubmitting] = useState(false)
+    const [pendingUsers, setPendingUsers] = useState([])
+    const [pendingLoading, setPendingLoading] = useState(true)
+    const [pendingError, setPendingError] = useState('')
+    const [pendingAction, setPendingAction] = useState(null)
 
     useEffect(() => {
         fetchUsers()
+        loadPendingUsers()
     }, [])
 
     const fetchUsers = async () => {
@@ -23,6 +29,23 @@ export default function Users() {
             toast.error('Failed to load users')
         } finally {
             setLoading(false)
+        }
+    }
+
+    const loadPendingUsers = async () => {
+        setPendingLoading(true)
+        setPendingError('')
+
+        try {
+            const { data } = await fetchPendingUsersRequest()
+            setPendingUsers(Array.isArray(data) ? data : [])
+        } catch (error) {
+            const message = error.response?.data?.error || 'Failed to load pending users'
+            setPendingError(message)
+            setPendingUsers([])
+            toast.error(message)
+        } finally {
+            setPendingLoading(false)
         }
     }
 
@@ -51,6 +74,21 @@ export default function Users() {
         }
     }
 
+    const handlePendingAction = async (userId, action) => {
+        const actionKey = `${action}-${userId}`
+        setPendingAction(actionKey)
+
+        try {
+            await api.post(`/admin/${action}-user`, { user_id: userId })
+            toast.success(action === 'approve' ? 'User approved' : 'User rejected')
+            await Promise.all([loadPendingUsers(), fetchUsers()])
+        } catch (error) {
+            toast.error(error.response?.data?.error || `Failed to ${action} user`)
+        } finally {
+            setPendingAction(null)
+        }
+    }
+
     const columns = [
         { key: 'name', label: 'Name' },
         { key: 'email', label: 'Email' },
@@ -71,6 +109,70 @@ export default function Users() {
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary">User Management</h2>
                 <p className="text-sm text-text-secondary mt-1">Manage system access</p>
+            </div>
+
+            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-6 space-y-4">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <h3 className="text-sm font-medium text-text-secondary/70 uppercase tracking-wide">Pending Approvals</h3>
+                        <p className="text-sm text-text-secondary">Review new worker registration requests.</p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={loadPendingUsers}
+                        className="inline-flex items-center gap-2 rounded-lg border border-border-default px-3 py-2 text-xs font-semibold text-text-secondary hover:text-text-primary hover:border-accent-gold/50 transition-colors"
+                        disabled={pendingLoading}
+                    >
+                        {pendingLoading ? 'Refreshing…' : 'Refresh'}
+                    </button>
+                </div>
+
+                {pendingLoading ? (
+                    <div className="rounded-lg border border-border-default bg-bg-input/40 px-4 py-3 text-sm text-text-secondary">Loading pending users…</div>
+                ) : pendingError ? (
+                    <div className="rounded-lg border border-red-500/40 bg-red-500/15 px-4 py-3 text-sm text-red-300">{pendingError}</div>
+                ) : pendingUsers.length === 0 ? (
+                    <div className="rounded-lg border border-border-default bg-bg-input/40 px-4 py-3 text-sm text-text-secondary">No pending approvals right now.</div>
+                ) : (
+                    <ul className="space-y-3">
+                        {pendingUsers.map((user) => {
+                            const approveKey = `approve-${user.id}`
+                            const rejectKey = `reject-${user.id}`
+                            const isApproving = pendingAction === approveKey
+                            const isRejecting = pendingAction === rejectKey
+
+                            return (
+                                <li
+                                    key={user.id}
+                                    className="flex flex-col gap-3 rounded-lg border border-border-default bg-bg-input/30 px-4 py-3 md:flex-row md:items-center md:justify-between"
+                                >
+                                    <div>
+                                        <p className="text-sm font-semibold text-text-primary">{user.name}</p>
+                                        <p className="text-xs text-text-secondary">{user.email}</p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => handlePendingAction(user.id, 'approve')}
+                                            disabled={isApproving || isRejecting}
+                                            className="inline-flex items-center rounded-lg bg-accent-gold px-3 py-2 text-xs font-semibold text-black transition-colors hover:bg-accent-gold-hover disabled:cursor-not-allowed disabled:opacity-70"
+                                        >
+                                            {isApproving ? 'Approving…' : 'Approve'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => handlePendingAction(user.id, 'reject')}
+                                            disabled={isApproving || isRejecting}
+                                            className="inline-flex items-center rounded-lg border border-red-500/40 px-3 py-2 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                            {isRejecting ? 'Rejecting…' : 'Reject'}
+                                        </button>
+                                    </div>
+                                </li>
+                            )
+                        })}
+                    </ul>
+                )}
             </div>
 
             <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-6">
@@ -102,6 +204,11 @@ export default function Users() {
                 <p className="mt-4 text-[11px] text-text-secondary/50">
                     The live API currently supports creating and listing users only. Delete is not available yet.
                 </p>
+            </div>
+
+            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-6">
+                <h3 className="text-sm font-medium text-text-secondary/70 uppercase mb-4">Change Password</h3>
+                <ChangePasswordForm />
             </div>
 
             {loading ? (

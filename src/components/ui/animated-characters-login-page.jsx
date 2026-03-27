@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Eye, EyeOff } from "lucide-react";
 import avlokaiLogo from "../../../avlokai_logo.png";
+import api from "@/utils/api";
 
 
 const Pupil = ({ 
@@ -160,10 +161,13 @@ const EyeBall = ({
 
 function LoginPage({ onLogin }) {
   const navigate = useNavigate();
+  const [authMode, setAuthMode] = useState('login');
   const [showPassword, setShowPassword] = useState(false);
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [mouseX, setMouseX] = useState(0);
   const [mouseY, setMouseY] = useState(0);
@@ -285,31 +289,84 @@ function LoginPage({ onLogin }) {
   const yellowPos = calculatePosition(yellowRef);
   const orangePos = calculatePosition(orangeRef);
 
+  const isRegistering = authMode === 'register';
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    setSuccessMessage("");
     setIsLoading(true);
 
-    // Simulate API delay (quick)
-    await new Promise(resolve => setTimeout(resolve, 300));
+    const trimmedEmail = email.trim();
 
-    // Mock authentication - validate against demo credentials
-    let userData = null;
-    if (email === "owner@demo.com" && password === "owner123") {
-      userData = { email, role: "owner", name: "Admin" };
-    } else if (email === "worker@demo.com" && password === "worker123") {
-      userData = { email, role: "worker", name: "Staff" };
-    }
+    try {
+      if (isRegistering) {
+        if (!name.trim()) {
+          throw new Error("Name is required");
+        }
 
-    if (userData) {
-      console.log("✅ Login successful!");
-      onLogin(userData);
-      navigate(userData.role === "worker" ? "/worker-home" : "/");
-    } else {
-      setError("Invalid email or password. Try owner@demo.com/owner123 or worker@demo.com/worker123");
+        const { data } = await api.post(
+          '/auth/register',
+          {
+            name: name.trim(),
+            email: trimmedEmail,
+            password,
+          },
+          { skipAuth: true },
+        );
+
+        setSuccessMessage(data?.message || 'Account created. Awaiting admin approval.');
+        setAuthMode('login');
+        setPassword('');
+        setShowPassword(false);
+      } else {
+        const { data } = await api.post(
+          '/auth/login',
+          {
+            email: trimmedEmail,
+            password,
+          },
+          { skipAuth: true },
+        );
+
+        if (!data?.token || !data?.user_id || !data?.role) {
+          throw new Error('Invalid response from server');
+        }
+
+        localStorage.setItem('token', data.token);
+
+        onLogin({
+          token: data.token,
+          user_id: data.user_id,
+          role: data.role,
+          name: data.name,
+          email: trimmedEmail,
+        });
+
+        navigate(data.role === 'worker' ? '/worker-home' : '/');
+      }
+    } catch (err) {
+      const message = err?.response?.data?.error || err?.message || 'Something went wrong';
+      setError(message);
+    } finally {
       setIsLoading(false);
     }
   };
+
+  const toggleAuthMode = () => {
+    setAuthMode((prev) => (prev === 'login' ? 'register' : 'login'));
+    setName("");
+    setPassword("");
+    setShowPassword(false);
+    setError("");
+    setSuccessMessage("");
+    setIsTyping(false);
+  };
+
+  const headingText = isRegistering ? 'Create your account' : 'Welcome back!';
+  const subheadingText = isRegistering
+    ? 'Submit your details to request access'
+    : 'Please enter your details';
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
@@ -518,12 +575,30 @@ function LoginPage({ onLogin }) {
 
           {/* Header */}
           <div className="text-center mb-10">
-            <h1 className="text-3xl font-bold tracking-tight mb-2">Welcome back!</h1>
-            <p className="text-muted-foreground text-sm">Please enter your details</p>
+            <h1 className="text-3xl font-bold tracking-tight mb-2">{headingText}</h1>
+            <p className="text-muted-foreground text-sm">{subheadingText}</p>
           </div>
 
-          {/* Login Form */}
+          {/* Auth Form */}
           <form onSubmit={handleSubmit} className="space-y-5">
+            {isRegistering && (
+              <div className="space-y-2">
+                <Label htmlFor="name" className="text-sm font-medium">Full name</Label>
+                <Input
+                  id="name"
+                  type="text"
+                  placeholder="Anna Vinod"
+                  value={name}
+                  autoComplete="name"
+                  onChange={(e) => setName(e.target.value)}
+                  onFocus={() => setIsTyping(true)}
+                  onBlur={() => setIsTyping(false)}
+                  required
+                  className="h-12 bg-background border-border/60 focus:border-primary"
+                />
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="email" className="text-sm font-medium">Email</Label>
               <Input
@@ -531,7 +606,7 @@ function LoginPage({ onLogin }) {
                 type="email"
                 placeholder="anna@gmail.com"
                 value={email}
-                autoComplete="off"
+                autoComplete="email"
                 onChange={(e) => setEmail(e.target.value)}
                 onFocus={() => setIsTyping(true)}
                 onBlur={() => setIsTyping(false)}
@@ -548,6 +623,7 @@ function LoginPage({ onLogin }) {
                   type={showPassword ? "text" : "password"}
                   placeholder="••••••••"
                   value={password}
+                  autoComplete={isRegistering ? 'new-password' : 'current-password'}
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   className="h-12 pr-10 bg-background border-border/60 focus:border-primary"
@@ -566,21 +642,29 @@ function LoginPage({ onLogin }) {
               </div>
             </div>
 
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <Checkbox id="remember" />
-                <Label
-                  htmlFor="remember"
-                  className="text-sm font-normal cursor-pointer"
-                >
-                  Remember for 30 days
-                </Label>
+            {!isRegistering && (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Checkbox id="remember" />
+                  <Label
+                    htmlFor="remember"
+                    className="text-sm font-normal cursor-pointer"
+                  >
+                    Remember for 30 days
+                  </Label>
+                </div>
               </div>
-            </div>
+            )}
 
             {error && (
               <div className="p-3 text-sm text-red-400 bg-red-950/20 border border-red-900/30 rounded-lg">
                 {error}
+              </div>
+            )}
+
+            {successMessage && (
+              <div className="p-3 text-sm text-emerald-400 bg-emerald-950/20 border border-emerald-900/30 rounded-lg">
+                {successMessage}
               </div>
             )}
 
@@ -590,8 +674,21 @@ function LoginPage({ onLogin }) {
               size="lg" 
               disabled={isLoading}
             >
-              {isLoading ? "Signing in..." : "Log in"}
+              {isLoading
+                ? (isRegistering ? 'Submitting...' : 'Signing in...')
+                : (isRegistering ? 'Create account' : 'Log in')}
             </Button>
+
+            <div className="text-center text-sm text-muted-foreground">
+              {isRegistering ? 'Already have an account?' : "Don't have an account?"}{' '}
+              <button
+                type="button"
+                onClick={toggleAuthMode}
+                className="font-medium text-primary hover:text-primary/80 transition-colors"
+              >
+                {isRegistering ? 'Sign in' : 'Register'}
+              </button>
+            </div>
           </form>
         </div>
       </div>
