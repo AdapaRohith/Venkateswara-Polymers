@@ -31,22 +31,12 @@ const ownerNavItems = [
     ),
   },
   {
-    name: 'Manufacturing',
-    path: '/manufacturing',
+    name: 'Production Session',
+    path: '/production-session',
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17l-5.1-3.06a1.5 1.5 0 01-.54-2.05l4.5-7.09a1.5 1.5 0 012.36-.11l4.59 5.28a1.5 1.5 0 01-.3 2.2l-5.51 4.83z" />
         <path strokeLinecap="round" strokeLinejoin="round" d="M3 21h18" />
-      </svg>
-    ),
-  },
-  {
-    name: 'Production Tracker',
-    path: '/production-tracker',
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3v18M8.25 15.75l3-3 2.25 2.25 4.5-6" />
-        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 18h9" />
       </svg>
     ),
   },
@@ -118,22 +108,12 @@ const workerNavItems = [
     ),
   },
   {
-    name: 'Start Work',
-    path: '/manufacturing',
+    name: 'Production Session',
+    path: '/production-session',
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17l-5.1-3.06a1.5 1.5 0 01-.54-2.05l4.5-7.09a1.5 1.5 0 012.36-.11l4.59 5.28a1.5 1.5 0 01-.3 2.2l-5.51 4.83z" />
         <path strokeLinecap="round" strokeLinejoin="round" d="M3 21h18" />
-      </svg>
-    ),
-  },
-  {
-    name: 'Production Tracker',
-    path: '/production-tracker',
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3v18M8.25 15.75l3-3 2.25 2.25 4.5-6" />
-        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 18h9" />
       </svg>
     ),
   },
@@ -226,7 +206,7 @@ export default function Sidebar({ user, onLogout }) {
               <p className="mt-2 text-xs leading-5 text-text-secondary">
                 1. Check stock
                 <br />
-                2. Start work
+                2. Run production session
               </p>
             </div>
           )}

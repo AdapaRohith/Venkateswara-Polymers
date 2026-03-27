@@ -1,405 +1,326 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import api from '../utils/api'
 
-// Format kg into a readable string
 function formatKg(kg) {
-    if (kg === undefined || kg === null) return '0.00 kg'
-    if (Math.abs(kg) >= 1000) return `${(kg / 1000).toFixed(2)} tons`
-    return `${kg.toFixed(2)} kg`
+  if (kg === undefined || kg === null) return '0.00 kg'
+  if (Math.abs(kg) >= 1000) return `${(kg / 1000).toFixed(2)} tons`
+  return `${kg.toFixed(2)} kg`
 }
 
-// Get status badge styling
 function getStatusBadge(status) {
-    const statusMap = {
-        active: 'bg-amber-500/15 text-amber-400',
-        completed: 'bg-emerald-500/15 text-emerald-400',
-        cancelled: 'bg-red-500/15 text-red-400',
-    }
-    const cls = statusMap[(status || '').toLowerCase()] || 'bg-gray-500/15 text-gray-400'
-    return cls
+  const statusMap = {
+    active: 'bg-amber-500/15 text-amber-400',
+    completed: 'bg-emerald-500/15 text-emerald-400',
+    cancelled: 'bg-red-500/15 text-red-400',
+  }
+
+  return statusMap[(status || '').toLowerCase()] || 'bg-gray-500/15 text-gray-400'
 }
 
-export default function LogHistory({ 
-    rawMaterials = [], 
-    manufacturingData = [], 
-    tradingData = [], 
-    wastageData = [], 
-    stockUsage = [],
-    productionTrackerEntries = []
+export default function LogHistory({
+  rawMaterials = [],
+  manufacturingData = [],
+  tradingData = [],
+  wastageData = [],
+  stockUsage = [],
 }) {
-    const [date, setDate] = useState('')
-    const [orders, setOrders] = useState([])
+  const [date, setDate] = useState('')
+  const [orders, setOrders] = useState([])
 
-    useEffect(() => {
-        const fetchOrders = async () => {
-            try {
-                const { data } = await api.get('/orders')
-                setOrders(data)
-            } catch (error) {
-                console.error('Failed to load orders:', error)
-            }
-        }
-        fetchOrders()
-    }, [])
-
-    // Helper to get order status by order number
-    const getOrderStatus = (orderNumber) => {
-        if (orderNumber === '—') return null
-        const order = orders.find(o => o.order_number === orderNumber)
-        return order?.status || null
+  useEffect(() => {
+    const fetchOrders = async () => {
+      try {
+        const { data } = await api.get('/orders')
+        setOrders(data)
+      } catch (error) {
+        console.error('Failed to load orders:', error)
+      }
     }
 
-    // Combine all section data into a single list with a section label
-    const allEntries = useMemo(() => {
-        const entries = []
+    fetchOrders()
+  }, [])
 
-        rawMaterials.forEach((r) => {
-            entries.push({
-                id: r.id,
-                section: 'Raw Material',
-                date: r.date,
-                order_number: r.order_number || '—',
-                grossWeight: r.grossWeight,
-                tareWeight: r.tareWeight,
-                netWeight: r.netWeight,
-                sizeMic: r.sizeMic || '',
-            })
-        })
+  const getOrderStatus = (orderNumber) => {
+    if (orderNumber === '—') return null
+    const order = orders.find((item) => item.order_number === orderNumber)
+    return order?.status || null
+  }
 
-        manufacturingData.forEach((m) => {
-            entries.push({
-                id: m.id,
-                section: 'Manufacturing',
-                date: m.date,
-                order_number: m.order_number || '—',
-                grossWeight: m.grossWeight,
-                tareWeight: m.tareWeight,
-                netWeight: m.netWeight,
-                sizeMic: m.sizeMic || '',
-            })
-        })
+  const allEntries = useMemo(() => {
+    const entries = []
 
-        tradingData.forEach((t) => {
-            entries.push({
-                id: t.id,
-                section: 'Trading',
-                date: t.date,
-                order_number: t.order_number || '—',
-                grossWeight: t.netWeight,
-                tareWeight: 0,
-                netWeight: t.netWeight,
-                sizeMic: t.sizeMic || '',
-                rate: t.rate,
-                totalValue: t.totalValue,
-                type: t.type,
-            })
-        })
+    rawMaterials.forEach((item) => {
+      entries.push({
+        id: item.id,
+        section: 'Raw Material',
+        date: item.date,
+        order_number: item.order_number || '—',
+        grossWeight: item.grossWeight,
+        tareWeight: item.tareWeight,
+        netWeight: item.netWeight,
+        sizeMic: item.sizeMic || '',
+      })
+    })
 
-        wastageData.forEach((w) => {
-            entries.push({
-                id: w.id,
-                section: 'Wastage',
-                date: w.date,
-                order_number: w.order_number || '—',
-                grossWeight: w.grossWeight,
-                tareWeight: w.netWeight,
-                netWeight: w.actualWeight || (w.grossWeight - w.netWeight),
-                sizeMic: '',
-            })
-        })
+    manufacturingData.forEach((item) => {
+      entries.push({
+        id: item.id,
+        section: 'Manufacturing',
+        date: item.date,
+        order_number: item.order_number || '—',
+        grossWeight: item.grossWeight,
+        tareWeight: item.tareWeight,
+        netWeight: item.netWeight,
+        sizeMic: item.sizeMic || '',
+      })
+    })
 
-        stockUsage.forEach((u) => {
-            entries.push({
-                id: u.id,
-                section: 'Stock Usage',
-                date: u.date,
-                order_number: '—',
-                grossWeight: 0,
-                tareWeight: 0,
-                netWeight: u.quantityInKg,
-                sizeMic: '',
-                stockBatch: u.fromStockLabel,
-                beforeBalance: u.beforeBalance,
-                afterBalance: u.afterBalance,
-                source: u.source || 'Manual',
-                logMessage: u.logMessage,
-            })
-        })
+    tradingData.forEach((item) => {
+      entries.push({
+        id: item.id,
+        section: 'Trading',
+        date: item.date,
+        order_number: item.order_number || '—',
+        grossWeight: item.netWeight,
+        tareWeight: 0,
+        netWeight: item.netWeight,
+        sizeMic: item.sizeMic || '',
+        rate: item.rate,
+        totalValue: item.totalValue,
+        type: item.type,
+      })
+    })
 
-        productionTrackerEntries.forEach((p) => {
-            entries.push({
-                id: p.id,
-                section: 'Production',
-                date: p.date,
-                workerName: p.workerName,
-                machine: p.machine,
-                productionQuantity: p.productionQuantity,
-                wasteGenerated: p.wasteGenerated,
-                grossWeight: p.productionQuantity,
-                tareWeight: p.wasteGenerated,
-                netWeight: p.productionQuantity, // Main metric for production
-                sizeMic: '',
-            })
-        })
+    wastageData.forEach((item) => {
+      entries.push({
+        id: item.id,
+        section: 'Wastage',
+        date: item.date,
+        order_number: item.order_number || '—',
+        grossWeight: item.grossWeight,
+        tareWeight: item.netWeight,
+        netWeight: item.actualWeight || (item.grossWeight - item.netWeight),
+        sizeMic: '',
+      })
+    })
 
-        return entries
-    }, [rawMaterials, manufacturingData, tradingData, wastageData, stockUsage, productionTrackerEntries])
+    stockUsage.forEach((item) => {
+      entries.push({
+        id: item.id,
+        section: 'Stock Usage',
+        date: item.date,
+        order_number: '—',
+        grossWeight: 0,
+        tareWeight: 0,
+        netWeight: item.quantityInKg,
+        sizeMic: '',
+        stockBatch: item.fromStockLabel,
+        beforeBalance: item.beforeBalance,
+        afterBalance: item.afterBalance,
+        source: item.source || 'Manual',
+      })
+    })
 
-    // Filter by selected date (if set)
-    const filtered = useMemo(() => {
-        if (!date) return allEntries
-        return allEntries.filter((e) => e.date === date)
-    }, [allEntries, date])
+    return entries
+  }, [manufacturingData, rawMaterials, stockUsage, tradingData, wastageData])
 
-    // Group by section for display
-    const grouped = useMemo(() => {
-        const map = {}
-        filtered.forEach((e) => {
-            if (!map[e.section]) map[e.section] = []
-            map[e.section].push(e)
-        })
-        return map
-    }, [filtered])
+  const filtered = useMemo(() => {
+    if (!date) return allEntries
+    return allEntries.filter((item) => item.date === date)
+  }, [allEntries, date])
 
-    const sectionOrder = ['Raw Material', 'Manufacturing', 'Trading', 'Wastage', 'Stock Usage', 'Production']
-    const sectionColors = {
-        'Raw Material': 'bg-blue-500/15 text-blue-400',
-        Manufacturing: 'bg-accent-gold/15 text-accent-gold',
-        Trading: 'bg-emerald-500/15 text-emerald-400',
-        Wastage: 'bg-red-500/15 text-red-400',
-        'Stock Usage': 'bg-violet-500/15 text-violet-400',
-        Production: 'bg-orange-500/15 text-orange-400',
-    }
+  const grouped = useMemo(() => {
+    const map = {}
+    filtered.forEach((item) => {
+      if (!map[item.section]) map[item.section] = []
+      map[item.section].push(item)
+    })
+    return map
+  }, [filtered])
 
-    const inputClass =
-        'bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold'
+  const sectionOrder = ['Raw Material', 'Manufacturing', 'Trading', 'Wastage', 'Stock Usage']
+  const sectionColors = {
+    'Raw Material': 'bg-blue-500/15 text-blue-400',
+    Manufacturing: 'bg-accent-gold/15 text-accent-gold',
+    Trading: 'bg-emerald-500/15 text-emerald-400',
+    Wastage: 'bg-red-500/15 text-red-400',
+    'Stock Usage': 'bg-violet-500/15 text-violet-400',
+  }
 
-    return (
-        <div className="space-y-8">
-            {/* Header */}
-            <div className="flex items-end justify-between gap-4 flex-wrap">
-                <div>
-                    <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Log History</h2>
-                    <p className="text-sm text-text-secondary mt-1">View records from Raw Material, Manufacturing, Trading, Wastage, Stock Usage &amp; Production sections</p>
-                </div>
-                <div className="flex items-end gap-3">
-                    <div className="space-y-1">
-                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Filter by Date</label>
-                        <input
-                            type="date"
-                            value={date}
-                            onChange={(e) => setDate(e.target.value)}
-                            className={inputClass}
-                        />
-                    </div>
-                    {date && (
-                        <button
-                            onClick={() => setDate('')}
-                            className="text-xs text-accent-gold hover:underline pb-2.5"
-                        >
-                            Clear
-                        </button>
-                    )}
-                </div>
-            </div>
+  const inputClass =
+    'bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold'
 
-            {/* Stats */}
-            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-6">
-                {sectionOrder.map((sec) => (
-                    <div key={sec} className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
-                        <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
-                        <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">{sec}</p>
-                        <p className="text-3xl font-semibold text-text-primary">{(grouped[sec] || []).length}</p>
-                        <p className="text-xs text-text-secondary/50 mt-1">entries{date ? ` on ${date}` : ''}</p>
-                    </div>
-                ))}
-            </div>
-
-            {/* Tables per section */}
-            {filtered.length === 0 ? (
-                <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
-                    <p className="text-text-secondary/50 text-sm text-center py-12">
-                        No records found{date ? ` for ${date}` : ''}. Add entries in the respective sections first.
-                    </p>
-                </div>
-            ) : (
-                sectionOrder.map((sec) => {
-                    const rows = grouped[sec]
-                    if (!rows || rows.length === 0) return null
-
-                    // Special layout for Stock Usage section
-                    if (sec === 'Stock Usage') {
-                        return (
-                            <div key={sec} className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
-                                <div className="px-6 py-4 border-b border-border-default flex items-center gap-3">
-                                    <span className={`px-2.5 py-1 rounded text-xs font-medium ${sectionColors[sec]}`}>
-                                        {sec}
-                                    </span>
-                                    <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">
-                                        — {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
-                                    </h3>
-                                </div>
-                                <div className="px-4 pb-4 pt-2 space-y-2">
-                                    {rows.map((row, idx) => (
-                                        <div
-                                            key={row.id}
-                                            className="flex items-start gap-3 px-4 py-3 rounded-lg border border-border-default/50 bg-white/[0.01] hover:bg-white/[0.03] transition-colors"
-                                        >
-                                            <div className="mt-1.5 w-2 h-2 rounded-full bg-violet-400 shrink-0" />
-                                            <div className="flex-1 min-w-0">
-                                                <p className="text-sm text-text-primary leading-relaxed">
-                                                    <span className="font-semibold text-violet-400">{formatKg(row.netWeight)}</span>
-                                                    {' '}used from stock{' '}
-                                                    <span className="font-medium text-accent-gold">({row.stockBatch})</span>
-                                                    {row.source && row.source !== 'Manual' && (
-                                                        <span className={`ml-2 px-2 py-0.5 rounded text-[10px] font-medium ${row.source === 'Manufacturing' ? 'bg-accent-gold/15 text-accent-gold' : 'bg-red-500/15 text-red-400'}`}>
-                                                            {row.source}
-                                                        </span>
-                                                    )}
-                                                </p>
-                                                <p className="text-xs text-text-secondary/60 mt-0.5">
-                                                    {formatKg(row.beforeBalance)} → {formatKg(row.afterBalance)} remaining
-                                                </p>
-                                                <p className="text-[10px] text-text-secondary/40 mt-1">{row.date}</p>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )
-                    }
-
-                    // Special layout for Production section
-                    if (sec === 'Production') {
-                        const totalProd = rows.reduce((sum, r) => sum + Number(r.productionQuantity || 0), 0)
-                        const totalWst = rows.reduce((sum, r) => sum + Number(r.wasteGenerated || 0), 0)
-
-                        return (
-                            <div key={sec} className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
-                                <div className="px-6 py-4 border-b border-border-default flex items-center gap-3">
-                                    <span className={`px-2.5 py-1 rounded text-xs font-medium ${sectionColors[sec]}`}>
-                                        {sec}
-                                    </span>
-                                    <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">
-                                        — {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
-                                    </h3>
-                                </div>
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-sm">
-                                        <thead>
-                                            <tr className="border-b border-border-default">
-                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">S.No</th>
-                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Date</th>
-                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Worker Name</th>
-                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Machine</th>
-                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Production</th>
-                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Waste</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {rows.map((row, idx) => (
-                                                <tr
-                                                    key={row.id}
-                                                    className={`border-b border-border-subtle transition-colors hover:bg-white/[0.02] ${idx % 2 === 0 ? '' : 'bg-white/[0.01]'}`}
-                                                >
-                                                    <td className="px-6 py-3 text-text-secondary">{idx + 1}</td>
-                                                    <td className="px-6 py-3 text-text-primary/90">{row.date}</td>
-                                                    <td className="px-6 py-3 text-text-primary/90 font-medium">{row.workerName}</td>
-                                                    <td className="px-6 py-3 text-text-primary/90">{row.machine}</td>
-                                                    <td className="px-6 py-3 text-accent-gold font-medium">{Number(row.productionQuantity).toFixed(2)}</td>
-                                                    <td className="px-6 py-3 text-text-secondary">{Number(row.wasteGenerated).toFixed(2)}</td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                        <tfoot className="bg-white/[0.02]">
-                                            <tr>
-                                                <td colSpan="4" className="px-6 py-3 text-right text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Totals</td>
-                                                <td className="px-6 py-3 text-accent-gold font-bold">{totalProd.toFixed(2)}</td>
-                                                <td className="px-6 py-3 text-text-secondary font-medium">{totalWst.toFixed(2)}</td>
-                                            </tr>
-                                        </tfoot>
-                                    </table>
-                                </div>
-                            </div>
-                        )
-                    }
-
-                    return (
-                        <div key={sec} className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
-                            <div className="px-6 py-4 border-b border-border-default flex items-center gap-3">
-                                <span className={`px-2.5 py-1 rounded text-xs font-medium ${sectionColors[sec]}`}>
-                                    {sec}
-                                </span>
-                                <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">
-                                    — {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
-                                </h3>
-                            </div>
-                            <div className="overflow-x-auto">
-                                <table className="w-full text-sm">
-                                    <thead>
-                                        <tr className="border-b border-border-default">
-                                            <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">S.No</th>
-                                            <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Date</th>
-                                            {sec !== 'Raw Material' && (
-                                                <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Order & Status</th>
-                                            )}
-                                            <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Gross</th>
-                                            <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Tare</th>
-                                            <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Net</th>
-                                            {sec === 'Trading' && (
-                                                <>
-                                                    <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Rate</th>
-                                                    <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Total</th>
-                                                    <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Type</th>
-                                                </>
-                                            )}
-                                            <th className="text-left px-6 py-3 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">Size & Mic</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {rows.map((row, idx) => (
-                                            <tr
-                                                key={row.id}
-                                                className={`border-b border-border-subtle transition-colors hover:bg-white/[0.02] ${idx % 2 === 0 ? '' : 'bg-white/[0.01]'}`}
-                                            >
-                                                <td className="px-6 py-3 text-text-secondary">{idx + 1}</td>
-                                                <td className="px-6 py-3 text-text-primary/90">{row.date}</td>
-                                                {sec !== 'Raw Material' && (
-                                                    <td className="px-6 py-3 text-text-primary/90 font-medium">
-                                                        <div className="flex items-center gap-2 flex-wrap">
-                                                            <span>{row.order_number}</span>
-                                                            {getOrderStatus(row.order_number) && (
-                                                                <span className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${getStatusBadge(getOrderStatus(row.order_number))}`}>
-                                                                    {getOrderStatus(row.order_number)}
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                    </td>
-                                                )}
-                                                <td className="px-6 py-3 text-text-primary/90">{Number(row.grossWeight).toFixed(2)}</td>
-                                                <td className="px-6 py-3 text-text-primary/90">{Number(row.tareWeight).toFixed(2)}</td>
-                                                <td className="px-6 py-3 text-accent-gold font-medium">{Number(row.netWeight).toFixed(2)}</td>
-                                                {sec === 'Trading' && (
-                                                    <>
-                                                        <td className="px-6 py-3 text-text-primary/90">₹{Number(row.rate).toFixed(2)}</td>
-                                                        <td className="px-6 py-3 text-text-primary/90">₹{Number(row.totalValue).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                                        <td className="px-6 py-3">
-                                                            <span className={`px-2 py-0.5 rounded text-xs font-medium ${row.type === 'Buy' ? 'bg-accent-gold/15 text-accent-gold' : 'bg-emerald-500/15 text-emerald-400'}`}>
-                                                                {row.type}
-                                                            </span>
-                                                        </td>
-                                                    </>
-                                                )}
-                                                <td className="px-6 py-3 text-text-secondary">{row.sizeMic || '—'}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    )
-                })
-            )}
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Log History</h2>
+          <p className="mt-1 text-sm text-text-secondary">
+            View records from Raw Material, Manufacturing, Trading, Wastage, and Stock Usage sections.
+          </p>
         </div>
-    )
+        <div className="flex items-end gap-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">Filter by Date</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(event) => setDate(event.target.value)}
+              className={inputClass}
+            />
+          </div>
+          {date && (
+            <button
+              onClick={() => setDate('')}
+              className="pb-2.5 text-xs text-accent-gold hover:underline"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-3 lg:grid-cols-5">
+        {sectionOrder.map((section) => (
+          <div key={section} className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-6 shadow-lg shadow-black/30">
+            <div className="absolute left-0 right-0 top-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
+            <p className="mb-1 text-xs font-medium uppercase tracking-widest text-text-secondary/70">{section}</p>
+            <p className="text-3xl font-semibold text-text-primary">{(grouped[section] || []).length}</p>
+            <p className="mt-1 text-xs text-text-secondary/50">entries{date ? ` on ${date}` : ''}</p>
+          </div>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="overflow-hidden rounded-xl border border-border-default bg-bg-card shadow-lg shadow-black/30">
+          <p className="py-12 text-center text-sm text-text-secondary/50">
+            No records found{date ? ` for ${date}` : ''}. Add entries in the respective sections first.
+          </p>
+        </div>
+      ) : (
+        sectionOrder.map((section) => {
+          const rows = grouped[section]
+          if (!rows || rows.length === 0) return null
+
+          if (section === 'Stock Usage') {
+            return (
+              <div key={section} className="overflow-hidden rounded-xl border border-border-default bg-bg-card shadow-lg shadow-black/30">
+                <div className="flex items-center gap-3 border-b border-border-default px-6 py-4">
+                  <span className={`rounded px-2.5 py-1 text-xs font-medium ${sectionColors[section]}`}>
+                    {section}
+                  </span>
+                  <h3 className="text-sm font-medium uppercase tracking-widest text-text-secondary/70">
+                    - {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
+                  </h3>
+                </div>
+                <div className="space-y-2 px-4 pb-4 pt-2">
+                  {rows.map((row) => (
+                    <div
+                      key={row.id}
+                      className="flex items-start gap-3 rounded-lg border border-border-default/50 bg-white/[0.01] px-4 py-3 transition-colors hover:bg-white/[0.03]"
+                    >
+                      <div className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-violet-400" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm leading-relaxed text-text-primary">
+                          <span className="font-semibold text-violet-400">{formatKg(row.netWeight)}</span>{' '}
+                          used from stock{' '}
+                          <span className="font-medium text-accent-gold">({row.stockBatch})</span>
+                          {row.source && row.source !== 'Manual' && (
+                            <span className={`ml-2 rounded px-2 py-0.5 text-[10px] font-medium ${row.source === 'Manufacturing' ? 'bg-accent-gold/15 text-accent-gold' : 'bg-red-500/15 text-red-400'}`}>
+                              {row.source}
+                            </span>
+                          )}
+                        </p>
+                        <p className="mt-0.5 text-xs text-text-secondary/60">
+                          {formatKg(row.beforeBalance)} → {formatKg(row.afterBalance)} remaining
+                        </p>
+                        <p className="mt-1 text-[10px] text-text-secondary/40">{row.date}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          }
+
+          return (
+            <div key={section} className="overflow-hidden rounded-xl border border-border-default bg-bg-card shadow-lg shadow-black/30">
+              <div className="flex items-center gap-3 border-b border-border-default px-6 py-4">
+                <span className={`rounded px-2.5 py-1 text-xs font-medium ${sectionColors[section]}`}>
+                  {section}
+                </span>
+                <h3 className="text-sm font-medium uppercase tracking-widest text-text-secondary/70">
+                  - {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
+                </h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border-default">
+                      <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">S.No</th>
+                      <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Date</th>
+                      {section !== 'Raw Material' && (
+                        <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Order &amp; Status</th>
+                      )}
+                      <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Gross</th>
+                      <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Tare</th>
+                      <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Net</th>
+                      {section === 'Trading' && (
+                        <>
+                          <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Rate</th>
+                          <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Total</th>
+                          <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Type</th>
+                        </>
+                      )}
+                      <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Size &amp; Mic</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, index) => (
+                      <tr
+                        key={row.id}
+                        className={`border-b border-border-subtle transition-colors hover:bg-white/[0.02] ${index % 2 === 0 ? '' : 'bg-white/[0.01]'}`}
+                      >
+                        <td className="px-6 py-3 text-text-secondary">{index + 1}</td>
+                        <td className="px-6 py-3 text-text-primary/90">{row.date}</td>
+                        {section !== 'Raw Material' && (
+                          <td className="px-6 py-3 font-medium text-text-primary/90">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span>{row.order_number}</span>
+                              {getOrderStatus(row.order_number) && (
+                                <span className={`whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium ${getStatusBadge(getOrderStatus(row.order_number))}`}>
+                                  {getOrderStatus(row.order_number)}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        )}
+                        <td className="px-6 py-3 text-text-primary/90">{Number(row.grossWeight).toFixed(2)}</td>
+                        <td className="px-6 py-3 text-text-primary/90">{Number(row.tareWeight).toFixed(2)}</td>
+                        <td className="px-6 py-3 font-medium text-accent-gold">{Number(row.netWeight).toFixed(2)}</td>
+                        {section === 'Trading' && (
+                          <>
+                            <td className="px-6 py-3 text-text-primary/90">₹{Number(row.rate).toFixed(2)}</td>
+                            <td className="px-6 py-3 text-text-primary/90">
+                              ₹{Number(row.totalValue).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td className="px-6 py-3">
+                              <span className={`rounded px-2 py-0.5 text-xs font-medium ${row.type === 'Buy' ? 'bg-accent-gold/15 text-accent-gold' : 'bg-emerald-500/15 text-emerald-400'}`}>
+                                {row.type}
+                              </span>
+                            </td>
+                          </>
+                        )}
+                        <td className="px-6 py-3 text-text-secondary">{row.sizeMic || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )
+        })
+      )}
+    </div>
+  )
 }
