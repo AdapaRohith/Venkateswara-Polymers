@@ -256,7 +256,6 @@ export function mapTransactionToManufacturing(transaction) {
     tareWeight: toNumber(metadata.tareWeight),
     netWeight: toNumber(metadata.netWeight),
     materialUsed: toNumber(metadata.materialUsed, normalized.quantityInKg),
-    sizeMic: metadata.sizeMic || '',
     issuanceId: metadata.issuanceId ?? null,
     materialSources,
     materialSourcesSummary: materialSources.length > 0

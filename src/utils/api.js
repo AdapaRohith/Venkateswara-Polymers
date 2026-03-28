@@ -72,7 +72,6 @@ const transformers = {
     tareWeight: item.tare_weight !== undefined ? parseFloat(item.tare_weight) : 0,
     netWeight: item.net_weight !== undefined ? parseFloat(item.net_weight) : 0,
     materialUsed: item.material_used !== undefined ? parseFloat(item.material_used) : 0,
-    sizeMic: item.size_mic || item.sizeMic || '',
   })),
   '/trading': (items) => items.map(item => ({
     ...item,
@@ -80,7 +79,6 @@ const transformers = {
     netWeight: item.net_weight !== undefined ? parseFloat(item.net_weight) : 0,
     rate: item.rate !== undefined ? parseFloat(item.rate) : 0,
     totalValue: item.total_value !== undefined ? parseFloat(item.total_value) : 0,
-    sizeMic: item.size_mic || item.sizeMic || '',
     type: item.type || 'Buy',
   })),
   '/wastage': (items) => items.map(item => ({

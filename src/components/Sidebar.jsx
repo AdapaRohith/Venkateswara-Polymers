@@ -119,6 +119,17 @@ const workerNavItems = [
   },
 ]
 
+const ownerQuickNavPaths = ['/', '/production-session', '/orders', '/stocks']
+const workerQuickNavPaths = ['/worker-home', '/production-session', '/stocks']
+
+const quickNavLabels = {
+  '/': 'Home',
+  '/worker-home': 'Home',
+  '/production-session': 'Session',
+  '/orders': 'Orders',
+  '/stocks': 'Stocks',
+}
+
 export default function Sidebar({ user, onLogout }) {
   const [open, setOpen] = useState(false)
   const [isDarkMode, setIsDarkMode] = useState(true)
@@ -126,6 +137,19 @@ export default function Sidebar({ user, onLogout }) {
   const isWorker = user?.role === 'worker'
 
   const filteredNavItems = isWorker ? workerNavItems : ownerNavItems
+  const quickNavPaths = isWorker ? workerQuickNavPaths : ownerQuickNavPaths
+  const quickNavItems = quickNavPaths
+    .map((path) => filteredNavItems.find((item) => item.path === path))
+    .filter(Boolean)
+
+  const currentNavItem = [...filteredNavItems]
+    .sort((a, b) => b.path.length - a.path.length)
+    .find((item) => {
+      if (item.path === '/') return location.pathname === '/'
+      return location.pathname.startsWith(item.path)
+    })
+
+  const currentNavLabel = currentNavItem?.name || (isWorker ? 'Worker Home' : 'Dashboard')
 
   useEffect(() => {
     setIsDarkMode(document.documentElement.classList.contains('dark'))
@@ -147,7 +171,7 @@ export default function Sidebar({ user, onLogout }) {
 
   return (
     <>
-      <div className="lg:hidden fixed top-0 left-0 right-0 h-14 bg-bg-card border-b border-border-default flex items-center px-4 z-50">
+      <div className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-bg-card/95 backdrop-blur border-b border-border-default flex items-center justify-between px-3 z-50">
         <button
           onClick={() => setOpen(true)}
           className="text-text-primary p-2 -ml-2 rounded-lg hover:bg-white/[0.05] transition-colors"
@@ -157,8 +181,50 @@ export default function Sidebar({ user, onLogout }) {
             <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
           </svg>
         </button>
-        <div className="ml-3 rounded-xl bg-white/[0.03] px-4 py-2.5">
-          <img src={avlokaiLogo} alt="AvlokAI" className="h-9 w-auto object-contain" />
+        <div className="min-w-0 px-3">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-secondary/65">
+            {isWorker ? 'Worker Mode' : 'Owner Mode'}
+          </p>
+          <p className="truncate text-sm font-semibold text-text-primary">{currentNavLabel}</p>
+        </div>
+        <div className="rounded-lg bg-white/[0.03] px-2 py-1.5">
+          <img src={avlokaiLogo} alt="AvlokAI" className="h-7 w-auto object-contain" />
+        </div>
+      </div>
+
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-border-default bg-bg-card/95 backdrop-blur">
+        <div className="flex items-center gap-1 px-2 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          {quickNavItems.map((item) => (
+            <NavLink
+              key={item.path}
+              to={item.path}
+              end={item.path === '/'}
+              className={({ isActive }) =>
+                `flex-1 rounded-xl px-2 py-2 text-center transition-colors ${
+                  isActive ? 'bg-accent-gold/15 text-accent-gold' : 'text-text-secondary hover:bg-white/[0.03]'
+                }`
+              }
+            >
+              <span className="mx-auto flex w-5 h-5 items-center justify-center">{item.icon}</span>
+              <span className="mt-1 block text-[11px] font-medium">
+                {quickNavLabels[item.path] || item.name}
+              </span>
+            </NavLink>
+          ))}
+
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="flex-1 rounded-xl px-2 py-2 text-center text-text-secondary transition-colors hover:bg-white/[0.03]"
+            aria-label="Open full menu"
+          >
+            <span className="mx-auto flex w-5 h-5 items-center justify-center">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+              </svg>
+            </span>
+            <span className="mt-1 block text-[11px] font-medium">Menu</span>
+          </button>
         </div>
       </div>
 

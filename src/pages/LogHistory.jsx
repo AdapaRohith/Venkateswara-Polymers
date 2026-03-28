@@ -58,7 +58,6 @@ export default function LogHistory({
         grossWeight: item.grossWeight,
         tareWeight: item.tareWeight,
         netWeight: item.netWeight,
-        sizeMic: item.sizeMic || '',
       })
     })
 
@@ -71,7 +70,6 @@ export default function LogHistory({
         grossWeight: item.grossWeight,
         tareWeight: item.tareWeight,
         netWeight: item.netWeight,
-        sizeMic: item.sizeMic || '',
       })
     })
 
@@ -84,7 +82,6 @@ export default function LogHistory({
         grossWeight: item.netWeight,
         tareWeight: 0,
         netWeight: item.netWeight,
-        sizeMic: item.sizeMic || '',
         rate: item.rate,
         totalValue: item.totalValue,
         type: item.type,
@@ -100,7 +97,6 @@ export default function LogHistory({
         grossWeight: item.grossWeight,
         tareWeight: item.netWeight,
         netWeight: item.actualWeight || item.grossWeight - item.netWeight,
-        sizeMic: '',
       })
     })
 
@@ -113,7 +109,6 @@ export default function LogHistory({
         grossWeight: 0,
         tareWeight: 0,
         netWeight: item.quantityInKg,
-        sizeMic: '',
         stockBatch: item.fromStockLabel,
         beforeBalance: item.beforeBalance,
         afterBalance: item.afterBalance,
@@ -274,7 +269,6 @@ export default function LogHistory({
                           <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Type</th>
                         </>
                       )}
-                      <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Size &amp; Mic</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -313,7 +307,6 @@ export default function LogHistory({
                             </td>
                           </>
                         )}
-                        <td className="px-6 py-3 text-text-secondary">{row.sizeMic || '—'}</td>
                       </tr>
                     ))}
                   </tbody>

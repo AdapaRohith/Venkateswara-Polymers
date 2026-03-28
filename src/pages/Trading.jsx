@@ -30,7 +30,6 @@ export default function Trading({ data, setData, ordersList = [] }) {
         order_number: '',
         netWeight: '',
         rate: '',
-        sizeMic: '',
         type: 'Buy',
     })
     const [submitting, setSubmitting] = useState(false)
@@ -74,13 +73,12 @@ export default function Trading({ data, setData, ordersList = [] }) {
             netWeight: net,
             rate: rate,
             totalValue: net * rate,
-            sizeMic: form.sizeMic,
             type: form.type,
         }
 
         setData((prev) => [...prev, entry])
         toast.success('Trading entry added locally')
-        setForm((prev) => ({ ...prev, netWeight: '', rate: '', sizeMic: '' }))
+        setForm((prev) => ({ ...prev, netWeight: '', rate: '' }))
         setSubmitting(false)
     }
 
@@ -195,11 +193,6 @@ export default function Trading({ data, setData, ordersList = [] }) {
                         <div className="w-full bg-bg-input text-accent-gold border border-gray-700 rounded-lg px-4 py-2.5 text-sm font-semibold">
                             ₹{totalValue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                         </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Size & Mic</label>
-                        <InputWithCamera type="text" name="sizeMic" value={form.sizeMic} onChange={handleChange} placeholder="e.g. 10mm / 2.8 mic" />
                     </div>
 
                     <div className="flex items-end">

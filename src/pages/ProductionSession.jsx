@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useToast } from '../components/Toast'
+import DataTable from '../components/DataTable'
 import SessionSetup from '../components/SessionSetup'
 import SessionActive from '../components/SessionActive'
 import {
   MAX_SESSION_MATERIALS,
   endProductionSession,
   fetchMachines,
+  fetchProductionSessionHistory,
   findActiveProductionSession,
   logProductionEntry,
   startProductionSession,
 } from '../utils/productionSession'
-import { buildStockBatches } from '../utils/stock'
+import { buildStockBatches, formatKg } from '../utils/stock'
 
 const createEmptyMaterial = () => ({
   stockId: '',
@@ -86,6 +88,21 @@ function validateLogForm(grossWeight, tareWeight) {
   return ''
 }
 
+function formatDateTime(value) {
+  if (!value) return '—'
+
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return String(value)
+
+  return parsed.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 function SummaryModal({ summary, onClose }) {
   if (!summary) return null
 
@@ -117,6 +134,7 @@ function SummaryModal({ summary, onClose }) {
 }
 
 export default function ProductionSession({
+  user,
   rawMaterials = [],
   stockUsage = [],
   stockIssuances = [],
@@ -124,6 +142,7 @@ export default function ProductionSession({
   refreshInventoryData,
 }) {
   const toast = useToast()
+  const isOwner = user?.role === 'owner'
   const [machines, setMachines] = useState([])
   const [loadingBootstrap, setLoadingBootstrap] = useState(true)
   const [busyState, setBusyState] = useState({
@@ -149,6 +168,17 @@ export default function ProductionSession({
     logs: [],
     totalOutput: 0,
   })
+  const [historyRows, setHistoryRows] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState('')
+  const [historyFilters, setHistoryFilters] = useState({
+    sessionId: '',
+    machineId: '',
+    worker: '',
+    status: 'all',
+    dateFrom: '',
+    dateTo: '',
+  })
 
   const materialOptions = useMemo(
     () =>
@@ -162,6 +192,38 @@ export default function ProductionSession({
     toNumber(entryForm.grossWeight) - toNumber(entryForm.tareWeight),
     0,
   )
+
+  const loadOwnerHistory = async ({ showSpinner = true } = {}) => {
+    if (!isOwner) return
+
+    if (showSpinner) setHistoryLoading(true)
+    setHistoryError('')
+
+    try {
+      const rows = await fetchProductionSessionHistory({ limit: 1000 })
+      setHistoryRows(rows)
+    } catch (error) {
+      console.error('Failed to load production session history', error)
+      setHistoryError(error?.response?.data?.error || 'Failed to load production session history.')
+    } finally {
+      if (showSpinner) setHistoryLoading(false)
+    }
+  }
+
+  const updateHistoryFilter = (field, value) => {
+    setHistoryFilters((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const resetHistoryFilters = () => {
+    setHistoryFilters({
+      sessionId: '',
+      machineId: '',
+      worker: '',
+      status: 'all',
+      dateFrom: '',
+      dateTo: '',
+    })
+  }
 
   useEffect(() => {
     let mounted = true
@@ -207,7 +269,135 @@ export default function ProductionSession({
     }
   }, [])
 
+  useEffect(() => {
+    if (!isOwner) return
+
+    let mounted = true
+
+    const loadHistory = async () => {
+      setHistoryLoading(true)
+      setHistoryError('')
+      try {
+        const rows = await fetchProductionSessionHistory({ limit: 1000 })
+        if (!mounted) return
+        setHistoryRows(rows)
+      } catch (error) {
+        console.error('Failed to load production session history', error)
+        if (!mounted) return
+        setHistoryError(error?.response?.data?.error || 'Failed to load production session history.')
+      } finally {
+        if (mounted) {
+          setHistoryLoading(false)
+        }
+      }
+    }
+
+    loadHistory()
+
+    return () => {
+      mounted = false
+    }
+  }, [isOwner])
+
   const isBusy = busyState.start || busyState.log || busyState.end
+
+  const filteredHistory = useMemo(() => {
+    const sessionIdFilter = historyFilters.sessionId.trim().toLowerCase()
+    const machineIdFilter = historyFilters.machineId.trim()
+    const workerFilter = historyFilters.worker.trim().toLowerCase()
+    const statusFilter = historyFilters.status
+    const dateFromFilter = historyFilters.dateFrom
+    const dateToFilter = historyFilters.dateTo
+
+    const fromDate = dateFromFilter ? new Date(`${dateFromFilter}T00:00:00`) : null
+    const toDate = dateToFilter ? new Date(`${dateToFilter}T23:59:59.999`) : null
+
+    return historyRows.filter((row) => {
+      if (sessionIdFilter && !String(row.id ?? '').toLowerCase().includes(sessionIdFilter)) {
+        return false
+      }
+
+      if (machineIdFilter && String(row.machineId ?? '') !== machineIdFilter) {
+        return false
+      }
+
+      if (workerFilter) {
+        const workerText = `${row.workerId ?? ''} ${row.workerName ?? ''} ${row.workerEmail ?? ''}`.toLowerCase()
+        if (!workerText.includes(workerFilter)) {
+          return false
+        }
+      }
+
+      if (statusFilter && statusFilter !== 'all' && String(row.status ?? '').toLowerCase() !== statusFilter) {
+        return false
+      }
+
+      if (fromDate || toDate) {
+        const startedAt = new Date(row.startedAt)
+        if (Number.isNaN(startedAt.getTime())) return false
+        if (fromDate && startedAt < fromDate) return false
+        if (toDate && startedAt > toDate) return false
+      }
+
+      return true
+    })
+  }, [historyFilters, historyRows])
+
+  const historyColumns = [
+    { key: 'id', label: 'Session ID' },
+    {
+      key: 'startedAt',
+      label: 'Started At',
+      render: (value) => formatDateTime(value),
+    },
+    {
+      key: 'completedAt',
+      label: 'Completed At',
+      render: (value) => formatDateTime(value),
+    },
+    { key: 'machineName', label: 'Machine' },
+    {
+      key: 'worker',
+      label: 'Worker',
+      render: (_, row) => row.workerName || row.workerId || '—',
+    },
+    {
+      key: 'status',
+      label: 'Status',
+      render: (value) => {
+        const normalized = String(value || 'active').toLowerCase()
+        const toneClass =
+          normalized === 'completed'
+            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+            : 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+        return (
+          <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold uppercase ${toneClass}`}>
+            {normalized}
+          </span>
+        )
+      },
+    },
+    {
+      key: 'totalAllocatedKg',
+      label: 'Allocated',
+      render: (value) => formatKg(value),
+    },
+    {
+      key: 'totalOutputKg',
+      label: 'Produced',
+      render: (value) => formatKg(value),
+    },
+    {
+      key: 'totalWasteKg',
+      label: 'Waste',
+      render: (value) => formatKg(value),
+    },
+    {
+      key: 'logEntries',
+      label: 'Logs',
+      render: (value) => String(value ?? 0),
+    },
+  ]
 
   const resetToSetup = () => {
     setSessionState({
@@ -283,6 +473,7 @@ export default function ProductionSession({
         tareWeight: '',
       })
       await refreshInventoryData?.()
+      await loadOwnerHistory({ showSpinner: false })
       toast.success('Production session started.')
     } catch (error) {
       console.error('Failed to start production session', error)
@@ -324,6 +515,7 @@ export default function ProductionSession({
         tareWeight: '',
       })
       await refreshInventoryData?.()
+      await loadOwnerHistory({ showSpinner: false })
       toast.success('Production entry added.')
     } catch (error) {
       console.error('Failed to add production entry', error)
@@ -344,6 +536,7 @@ export default function ProductionSession({
     try {
       const result = await endProductionSession(Number(sessionState.session.id))
       await refreshInventoryData?.()
+      await loadOwnerHistory({ showSpinner: false })
       setSummary({
         totalOutput: result.totalOutput,
         totalWaste: result.totalWaste,
@@ -430,6 +623,132 @@ export default function ProductionSession({
             onRemoveMaterial={handleRemoveMaterial}
             onSubmit={handleStartSession}
           />
+        )}
+
+        {isOwner && (
+          <section className="space-y-6 rounded-[28px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/20 md:p-8">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent-gold">Owner View</p>
+                <h2 className="mt-2 text-2xl font-semibold text-text-primary">Production Session History</h2>
+                <p className="mt-2 text-sm text-text-secondary">
+                  Filter completed and active sessions by ID, date, machine, worker, and status.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => loadOwnerHistory()}
+                className="rounded-xl border border-border-default px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:text-text-primary"
+              >
+                Refresh History
+              </button>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div className="space-y-2">
+                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Session ID</label>
+                <input
+                  type="text"
+                  value={historyFilters.sessionId}
+                  onChange={(event) => updateHistoryFilter('sessionId', event.target.value)}
+                  placeholder="e.g. 102"
+                  className="w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Machine</label>
+                <select
+                  value={historyFilters.machineId}
+                  onChange={(event) => updateHistoryFilter('machineId', event.target.value)}
+                  className="w-full cursor-pointer rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
+                >
+                  <option value="">All machines</option>
+                  {machines.map((machine) => (
+                    <option key={machine.id} value={machine.id}>
+                      {machine.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Worker</label>
+                <input
+                  type="text"
+                  value={historyFilters.worker}
+                  onChange={(event) => updateHistoryFilter('worker', event.target.value)}
+                  placeholder="ID / name / email"
+                  className="w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Status</label>
+                <select
+                  value={historyFilters.status}
+                  onChange={(event) => updateHistoryFilter('status', event.target.value)}
+                  className="w-full cursor-pointer rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
+                >
+                  <option value="all">All statuses</option>
+                  <option value="active">Active</option>
+                  <option value="completed">Completed</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Date From</label>
+                <input
+                  type="date"
+                  value={historyFilters.dateFrom}
+                  onChange={(event) => updateHistoryFilter('dateFrom', event.target.value)}
+                  className="w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Date To</label>
+                <input
+                  type="date"
+                  value={historyFilters.dateTo}
+                  onChange={(event) => updateHistoryFilter('dateTo', event.target.value)}
+                  className="w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-text-secondary">
+                Showing <span className="font-semibold text-text-primary">{filteredHistory.length}</span> of{' '}
+                <span className="font-semibold text-text-primary">{historyRows.length}</span> sessions
+              </p>
+              <button
+                type="button"
+                onClick={resetHistoryFilters}
+                className="rounded-xl border border-border-default px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:text-text-primary"
+              >
+                Clear Filters
+              </button>
+            </div>
+
+            {historyError && (
+              <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+                {historyError}
+              </div>
+            )}
+
+            {historyLoading ? (
+              <div className="rounded-2xl border border-border-default bg-bg-input/25 px-6 py-14 text-center text-sm text-text-secondary">
+                Loading production session history...
+              </div>
+            ) : (
+              <DataTable
+                columns={historyColumns}
+                data={filteredHistory}
+                emptyMessage="No production sessions found for the selected filters."
+              />
+            )}
+          </section>
         )}
       </div>
 

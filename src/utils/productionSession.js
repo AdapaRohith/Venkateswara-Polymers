@@ -26,6 +26,8 @@ function getMachineName(machine, machineLookup = new Map()) {
 
 function normalizeMaterial(material = {}) {
   const initialQuantity = toNumber(
+    material.initial_quantity_kg ??
+      material.initialQuantityKg ??
     material.initial_quantity ??
       material.initialQuantity ??
       material.quantity ??
@@ -34,6 +36,8 @@ function normalizeMaterial(material = {}) {
   )
 
   const remainingQuantity = toNumber(
+    material.remaining_quantity_kg ??
+      material.remainingQuantityKg ??
     material.remaining_quantity ??
       material.remainingQuantity ??
       material.remaining ??
@@ -147,6 +151,62 @@ function parseMachines(data) {
 export async function fetchMachines() {
   const { data } = await api.get('/machines')
   return parseMachines(data)
+}
+
+function normalizeHistoryRow(item = {}) {
+  const id = item.id ?? item.session_id
+  const machineId = item.machine_id ?? item.machineId ?? null
+  const workerId = item.worker_id ?? item.workerId ?? item.user_id ?? item.userId ?? null
+  const workerName = item.worker_name ?? item.workerName ?? ''
+  const workerEmail = item.worker_email ?? item.workerEmail ?? ''
+
+  return {
+    id,
+    machineId,
+    machineName:
+      item.machine_name ??
+      item.machineName ??
+      (machineId ? `Machine ${machineId}` : 'Unassigned'),
+    workerId,
+    workerName,
+    workerEmail,
+    status: String(item.status ?? 'active').toLowerCase(),
+    startedAt: item.started_at ?? item.created_at ?? item.startedAt ?? '',
+    completedAt: item.completed_at ?? item.completedAt ?? '',
+    totalAllocatedKg: toNumber(item.total_allocated_kg ?? item.totalAllocatedKg),
+    totalRemainingKg: toNumber(item.total_remaining_kg ?? item.totalRemainingKg),
+    totalConsumedKg: toNumber(item.total_consumed_kg ?? item.totalConsumedKg),
+    totalOutputKg: toNumber(item.total_output_kg ?? item.totalOutputKg),
+    totalWasteKg: toNumber(item.total_waste_kg ?? item.totalWasteKg),
+    logEntries: toNumber(item.log_entries ?? item.logEntries),
+  }
+}
+
+export async function fetchProductionSessionHistory(filters = {}) {
+  const searchParams = new URLSearchParams()
+  const candidates = {
+    id: filters.id,
+    machine_id: filters.machine_id,
+    worker_id: filters.worker_id,
+    status: filters.status,
+    date_from: filters.date_from,
+    date_to: filters.date_to,
+    limit: filters.limit ?? 500,
+  }
+
+  Object.entries(candidates).forEach(([key, value]) => {
+    if (value === undefined || value === null) return
+    const normalized = String(value).trim()
+    if (!normalized) return
+    searchParams.set(key, normalized)
+  })
+
+  const query = searchParams.toString()
+  const endpoint = query ? `/production/sessions?${query}` : '/production/sessions'
+  const { data } = await api.get(endpoint)
+  const items = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []
+
+  return items.map(normalizeHistoryRow)
 }
 
 export async function startProductionSession(payload, machines = []) {
