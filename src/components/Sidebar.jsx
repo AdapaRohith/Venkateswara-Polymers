@@ -134,7 +134,8 @@ export default function Sidebar({ user, onLogout }) {
   const [open, setOpen] = useState(false)
   const [isDarkMode, setIsDarkMode] = useState(true)
   const location = useLocation()
-  const isWorker = user?.role === 'worker'
+  const userRole = String(user?.role || '').toLowerCase()
+  const isWorker = userRole === 'worker'
 
   const filteredNavItems = isWorker ? workerNavItems : ownerNavItems
   const quickNavPaths = isWorker ? workerQuickNavPaths : ownerQuickNavPaths

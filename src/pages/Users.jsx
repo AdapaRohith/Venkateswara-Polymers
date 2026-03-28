@@ -105,17 +105,15 @@ export default function Users() {
     const inputClass = "w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2 text-sm transition-colors focus:border-accent-gold"
 
     return (
-        <div className="space-y-8">
+        <div className="space-y-6">
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary">User Management</h2>
-                <p className="text-sm text-text-secondary mt-1">Manage system access</p>
             </div>
 
-            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-6 space-y-4">
+            <div className="space-y-4 rounded-xl border border-border-default bg-bg-card p-5 shadow-lg">
                 <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                     <div>
                         <h3 className="text-sm font-medium text-text-secondary/70 uppercase tracking-wide">Pending Approvals</h3>
-                        <p className="text-sm text-text-secondary">Review new worker registration requests.</p>
                     </div>
                     <button
                         type="button"
@@ -175,7 +173,7 @@ export default function Users() {
                 )}
             </div>
 
-            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-6">
+            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-5">
                 <h3 className="text-sm font-medium text-text-secondary/70 uppercase mb-4">Add New User</h3>
                 <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
                     <div className="space-y-2">
@@ -201,12 +199,9 @@ export default function Users() {
                         {submitting ? 'Adding...' : 'Add User'}
                     </button>
                 </form>
-                <p className="mt-4 text-[11px] text-text-secondary/50">
-                    The live API currently supports creating and listing users only. Delete is not available yet.
-                </p>
             </div>
 
-            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-6">
+            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-5">
                 <h3 className="text-sm font-medium text-text-secondary/70 uppercase mb-4">Change Password</h3>
                 <ChangePasswordForm />
             </div>

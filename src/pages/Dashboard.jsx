@@ -66,15 +66,14 @@ export default function Dashboard({ rawMaterials, manufacturingData, tradingData
     }, [rawMaterials, manufacturingData])
 
     return (
-        <div className="space-y-8">
+        <div className="space-y-6">
             {/* Header */}
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Dashboard</h2>
-                <p className="text-sm text-text-secondary mt-1">Overview of all material tracking metrics</p>
             </div>
 
             {/* Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <SummaryCard
                     title="Raw Material Net"
                     value={totalRawNet}
@@ -119,7 +118,7 @@ export default function Dashboard({ rawMaterials, manufacturingData, tradingData
             </div>
 
             {/* Charts */}
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
                 <ComparisonBarChart data={barChartData} />
                 <TrendLineChart
                     data={mfgChartData}

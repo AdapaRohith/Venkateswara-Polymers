@@ -128,33 +128,32 @@ export default function RawMaterial({ user, data, refreshInventoryData, stockBal
         'bg-bg-input text-text-primary border border-gray-700 rounded-lg px-3 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold w-24 shrink-0 appearance-none cursor-pointer text-center'
 
     return (
-        <div className="space-y-8">
+        <div className="space-y-6">
             {/* Header */}
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Raw Material</h2>
-                <p className="text-sm text-text-secondary mt-1">Track incoming raw material entries</p>
             </div>
 
             {!isWorker && (
                 <>
                     {/* Summary Cards */}
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+                        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                             <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
                             <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Entries</p>
                             <p className="text-3xl font-semibold text-text-primary">{totalEntries}</p>
                         </div>
-                        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                             <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
                             <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Qty Received</p>
                             <p className="text-3xl font-semibold text-blue-400">{formatKg(totalQtyKg)}</p>
                         </div>
-                        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                             <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
                             <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Today's Entries</p>
                             <p className="text-3xl font-semibold text-text-primary">{todayCount}</p>
                         </div>
-                        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                             <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
                             <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Today's Qty</p>
                             <p className="text-3xl font-semibold text-accent-gold">{formatKg(todayQtyKg)}</p>
@@ -169,7 +168,7 @@ export default function RawMaterial({ user, data, refreshInventoryData, stockBal
             )}
 
             {/* Form */}
-            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6">
+            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-5">
                 <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">
                     Add New Entry
                 </h3>

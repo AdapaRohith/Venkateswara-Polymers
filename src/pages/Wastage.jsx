@@ -93,13 +93,7 @@ export default function Wastage({
     const hasOrders = ordersList.length > 0
     const hasAvailableBatches = availableBatches.length > 0
     const orderSelectPlaceholder = hasOrders ? 'Select order...' : 'No orders available'
-    const orderHelperText = hasOrders
-        ? 'Choose an existing order, or switch to "New order".'
-        : 'No orders are available yet. Use "New order" to create one first.'
     const batchSelectPlaceholder = hasAvailableBatches ? 'Select stock batch...' : 'No stock batches available'
-    const batchHelperText = hasAvailableBatches
-        ? 'Pick the stock batch that this wastage should be deducted from.'
-        : 'No stock batches have free balance right now. Add raw material or free up stock first.'
 
     const handleChange = (event) => {
         const { name, value } = event.target
@@ -248,32 +242,28 @@ export default function Wastage({
         'w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold placeholder:text-text-secondary/30'
 
     return (
-        <div className="space-y-8">
+        <div className="space-y-6">
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Wastage</h2>
-                <p className="text-sm text-text-secondary mt-1">Per-order wastage breakdown and waste roll logging</p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+                <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Raw Material In</p>
                     <p className="text-3xl font-semibold text-blue-400">{formatKg(totalRawIn)}</p>
-                    <p className="text-xs text-text-secondary/50 mt-1">total received</p>
                 </div>
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Material Used</p>
                     <p className="text-3xl font-semibold text-accent-gold">{formatKg(totalMfgInput)}</p>
-                    <p className="text-xs text-text-secondary/50 mt-1">consumed in mfg</p>
                 </div>
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-emerald-500/80 via-emerald-500/40 to-transparent" />
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Mfg Output</p>
                     <p className="text-3xl font-semibold text-emerald-400">{formatKg(totalMfgOutput)}</p>
-                    <p className="text-xs text-text-secondary/50 mt-1">net weight produced</p>
                 </div>
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-red-500/80 via-red-500/40 to-transparent" />
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Process Wastage</p>
                     <p className="text-3xl font-semibold text-red-400">{formatKg(autoWastage)}</p>
@@ -286,7 +276,6 @@ export default function Wastage({
             <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
                 <div className="px-6 pt-6 pb-4">
                     <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">Per-Order Wastage Breakdown</h3>
-                    <p className="text-xs text-text-secondary/40 mt-1">Material used vs manufacturing output per order</p>
                 </div>
                 {perOrderData.length > 0 ? (
                     <div className="overflow-x-auto">
@@ -342,7 +331,7 @@ export default function Wastage({
                     </div>
                 ) : (
                     <div className="px-6 pb-6">
-                        <p className="text-sm text-text-secondary/50 italic">No manufacturing data yet. Add manufacturing entries with material used to see per-order wastage.</p>
+                        <p className="text-sm italic text-text-secondary/50">No manufacturing data yet.</p>
                     </div>
                 )}
             </div>
@@ -373,9 +362,6 @@ export default function Wastage({
                                     ))}
                                 </select>
                             )}
-                            {!showNewOrder && (
-                                <p className="text-[11px] text-text-secondary/60">{orderHelperText}</p>
-                            )}
                         </div>
 
                         <div className="space-y-2">
@@ -394,7 +380,6 @@ export default function Wastage({
                                     </option>
                                 ))}
                             </select>
-                            <p className="text-[11px] text-text-secondary/60">{batchHelperText}</p>
                             {form.fromStockId && (
                                 <p className="text-[10px] text-emerald-400/70">Stock will be auto-deducted on submit</p>
                             )}

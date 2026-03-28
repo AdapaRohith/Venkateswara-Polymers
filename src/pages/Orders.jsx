@@ -167,18 +167,13 @@ export default function Orders({ user, orders = [], loading = false, refreshOrde
     }`
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold text-text-primary">{isWorker ? 'Current Orders' : 'Order Management'}</h2>
-        <p className="text-sm text-text-secondary mt-1">
-          {isWorker
-            ? 'Active orders are shown first so you can focus on current work.'
-            : 'Manage client orders'}
-        </p>
       </div>
 
       {!isWorker && (
-        <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-6">
+        <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-5">
           <h3 className="text-sm font-medium text-text-secondary/70 uppercase mb-4">Add New Order</h3>
           <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
             <div className="space-y-2">
@@ -193,19 +188,13 @@ export default function Orders({ user, orders = [], loading = false, refreshOrde
               {submitting ? 'Adding...' : 'Add Order'}
             </button>
           </form>
-          <p className="mt-4 text-[11px] text-text-secondary/50">
-            Orders can be created, listed, deleted, and updated to Active, completed, or cancelled.
-          </p>
         </div>
       )}
 
-      <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-6">
+      <div className="bg-bg-card rounded-xl border border-border-default shadow-lg p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h3 className="text-sm font-medium text-text-secondary/70 uppercase">{isWorker ? 'What To Show' : 'View Orders'}</h3>
-            <p className="text-[11px] text-text-secondary/50 mt-1">
-              Sorted as Active first, then Cancelled, then Completed.
-            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             {ORDER_STATUS_FILTERS.map((filter) => (

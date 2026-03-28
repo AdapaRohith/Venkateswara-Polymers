@@ -63,11 +63,10 @@ export default function DataEntry() {
         'w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold placeholder:text-text-secondary/30'
 
     return (
-        <div className="space-y-8">
+        <div className="space-y-6">
             {/* Header */}
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Data Entry</h2>
-                <p className="text-sm text-text-secondary mt-1">Create orders and log production rolls</p>
             </div>
 
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">

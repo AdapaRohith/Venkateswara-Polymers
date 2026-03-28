@@ -147,13 +147,10 @@ export default function LogHistory({
     'bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold'
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Log History</h2>
-          <p className="mt-1 text-sm text-text-secondary">
-            View records from Raw Material, Manufacturing, Trading, Wastage, and Stock Usage sections.
-          </p>
         </div>
 
         <div className="flex items-end gap-3">
@@ -177,20 +174,17 @@ export default function LogHistory({
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3 lg:grid-cols-5">
         {sectionOrder.map((section) => (
-          <div key={section} className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-6 shadow-lg shadow-black/30">
+          <div key={section} className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
             <div className="absolute left-0 right-0 top-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
             <p className="mb-1 text-xs font-medium uppercase tracking-widest text-text-secondary/70">{section}</p>
             <p className="text-3xl font-semibold text-text-primary">{(grouped[section] || []).length}</p>
-            <p className="mt-1 text-xs text-text-secondary/50">entries{date ? ` on ${date}` : ''}</p>
           </div>
         ))}
       </div>
 
       {filtered.length === 0 ? (
         <div className="overflow-hidden rounded-xl border border-border-default bg-bg-card shadow-lg shadow-black/30">
-          <p className="py-12 text-center text-sm text-text-secondary/50">
-            No records found{date ? ` for ${date}` : ''}. Add entries in the respective sections first.
-          </p>
+          <p className="py-12 text-center text-sm text-text-secondary/50">No records found{date ? ` for ${date}` : ''}.</p>
         </div>
       ) : (
         sectionOrder.map((section) => {

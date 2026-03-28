@@ -442,13 +442,12 @@ export default function Production() {
     const selectClass = inputClass + ' appearance-none cursor-pointer'
 
     return (
-        <div className="space-y-12">
+        <div className="space-y-8">
             {/* =====================================================
             HEADER
             ===================================================== */}
             <div>
                 <h2 className="text-3xl font-bold text-text-primary">Manufacturing & Production</h2>
-                <p className="text-sm text-text-secondary mt-1">Manage production batches, materials, and machine efficiency</p>
             </div>
 
             {/* =====================================================
@@ -491,13 +490,12 @@ export default function Production() {
             {/* =====================================================
             SECTION 1: PRODUCTION ENTRY FORM
             ===================================================== */}
-            <div className="space-y-6">
+            <div className="space-y-5">
                 <div>
                     <h3 className="text-xl font-semibold text-text-primary">Production Entry Form</h3>
-                    <p className="text-sm text-text-secondary mt-1">Record a new production or cutting batch</p>
                 </div>
 
-                <form onSubmit={handleSubmit} className="bg-bg-card rounded-xl border border-border-default p-8 space-y-8">
+                <form onSubmit={handleSubmit} className="space-y-6 rounded-xl border border-border-default bg-bg-card p-6">
                     {/* Machine Selection */}
                     <div className="space-y-3">
                         <label className="block text-sm font-medium text-text-primary">
@@ -808,10 +806,9 @@ export default function Production() {
             {/* =====================================================
             SECTION 2: PRODUCTION HISTORY TABLE
             ===================================================== */}
-            <div className="space-y-6">
+            <div className="space-y-5">
                 <div>
                     <h3 className="text-xl font-semibold text-text-primary">Production History</h3>
-                    <p className="text-sm text-text-secondary mt-1">All production batches and their metrics</p>
                 </div>
 
                 {batchesLoading ? (
@@ -824,10 +821,9 @@ export default function Production() {
             {/* =====================================================
             SECTION 3: MACHINE ANALYTICS DASHBOARD
             ===================================================== */}
-            <div className="space-y-6">
+            <div className="space-y-5">
                 <div>
                     <h3 className="text-xl font-semibold text-text-primary">Machine Analytics</h3>
-                    <p className="text-sm text-text-secondary mt-1">Compare machine performance and efficiency</p>
                 </div>
 
                 {analyticsLoading ? (
@@ -870,10 +866,9 @@ export default function Production() {
             {/* =====================================================
             SECTION 4: INVENTORY SUMMARY
             ===================================================== */}
-            <div className="space-y-6">
+            <div className="space-y-5">
                 <div>
                     <h3 className="text-xl font-semibold text-text-primary">Inventory Balances</h3>
-                    <p className="text-sm text-text-secondary mt-1">Current stock levels</p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

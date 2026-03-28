@@ -79,13 +79,6 @@ export default function Stocks({
   const selectedUsageBatch = stockBatches.find((batch) => String(batch.id) === String(usageForm.fromStockId))
   const selectedIssuanceBatch = stockBatches.find((batch) => String(batch.id) === String(issuanceForm.fromStockId))
   const stockSelectPlaceholder = issuableBatches.length > 0 ? 'Select stock batch...' : 'No free stock available'
-  const stockSelectHelper = issuableBatches.length > 0
-    ? 'Only stock with free balance is shown here.'
-    : stockBatches.length === 0
-      ? 'No stock batches exist yet. Add raw material first.'
-      : (filterBrand || filterCode)
-        ? 'No stock batch matches the current brand/code filters.'
-        : 'All stock is either already used or reserved in issued balances.'
 
   const totalStockIn = stockBatches.reduce((sum, batch) => sum + batch.initialQty, 0)
   const totalUsed = stockBatches.reduce((sum, batch) => sum + batch.totalUsed, 0)
@@ -368,27 +361,15 @@ export default function Stocks({
       <div className="space-y-6">
         <div>
           <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Issued Stock</h2>
-          <p className="text-sm text-text-secondary mt-1">
-            This stock is assigned by admin and is used automatically in your manufacturing form.
-          </p>
         </div>
 
         <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6">
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Current Issued Stock</label>
-              <div className="w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-3 text-sm">
-                {currentWorkerIssuance
-                  ? `${currentWorkerIssuance.fromStockLabel} - ${formatKg(currentWorkerIssuance.remainingInKg)} remaining`
-                  : 'No issued stock available'}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Instruction</label>
-              <div className="w-full bg-bg-input text-text-secondary border border-gray-700 rounded-lg px-4 py-3 text-sm">
-                To switch stock, request a new issue from the admin panel. Worker accounts cannot change stock manually.
-              </div>
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Current Issued Stock</label>
+            <div className="w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-3 text-sm">
+              {currentWorkerIssuance
+                ? `${currentWorkerIssuance.fromStockLabel} - ${formatKg(currentWorkerIssuance.remainingInKg)} remaining`
+                : 'No issued stock available'}
             </div>
           </div>
         </div>
@@ -397,33 +378,28 @@ export default function Stocks({
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Stocks</h2>
-        <p className="text-sm text-text-secondary mt-1">
-          {isOwner
-            ? 'Issue stock to workers and keep reserved stock separate from direct usage'
-            : 'Workers can manufacture only with stock that has been issued first'}
-        </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
           <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-emerald-500/80 via-emerald-500/40 to-transparent" />
           <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Stock In</p>
           <p className="text-3xl font-semibold text-emerald-400">{formatKg(totalStockIn)}</p>
         </div>
-        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
           <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-red-500/80 via-red-500/40 to-transparent" />
           <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Physically Used</p>
           <p className="text-3xl font-semibold text-red-400">{formatKg(totalUsed)}</p>
         </div>
-        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
           <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-amber-500/80 via-amber-500/40 to-transparent" />
           <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Issued To Workers</p>
           <p className="text-3xl font-semibold text-amber-400">{formatKg(totalIssuedOutstanding)}</p>
         </div>
-        <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
           <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
           <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Free Stock</p>
           <p className="text-3xl font-semibold text-accent-gold">{formatKg(totalFreeStock)}</p>
@@ -476,9 +452,6 @@ export default function Stocks({
       <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
         <div className="px-6 pt-6 pb-4">
           <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">Stock Batches</h3>
-          <p className="text-xs text-text-secondary/50 mt-1">
-            Physical balance is the actual stock left. Free balance is what can still be issued or used directly.
-          </p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -547,7 +520,6 @@ export default function Stocks({
                     </option>
                   ))}
                 </select>
-                <p className="text-[11px] text-text-secondary/60">{stockSelectHelper}</p>
                 {selectedIssuanceBatch && (
                   <p className="text-[11px] text-amber-400/80">
                     {formatKg(selectedIssuanceBatch.availableToIssue)} can still be issued from this batch.
@@ -580,9 +552,6 @@ export default function Stocks({
               <button type="submit" className="w-full bg-accent-gold text-black font-semibold py-2.5 rounded-lg text-sm transition-all duration-200 hover:bg-accent-gold-hover active:scale-[0.98]">
                 Issue Stock
               </button>
-              <p className="text-[11px] text-text-secondary/50">
-                Issued stock is now written into the shared inventory ledger.
-              </p>
             </form>
           </div>
 
@@ -609,7 +578,6 @@ export default function Stocks({
                     </option>
                   ))}
                 </select>
-                <p className="text-[11px] text-text-secondary/60">{stockSelectHelper}</p>
                 {selectedUsageBatch && (
                   <p className="text-[11px] text-emerald-400/80">
                     {formatKg(selectedUsageBatch.availableToIssue)} is free for direct use.
@@ -638,25 +606,19 @@ export default function Stocks({
               <button type="submit" className="w-full bg-emerald-500/85 text-white font-semibold py-2.5 rounded-lg text-sm transition-all duration-200 hover:bg-emerald-500 active:scale-[0.98]">
                 Log Direct Usage
               </button>
-              <p className="text-[11px] text-text-secondary/50">
-                Reserved stock cannot be used here. Workers must consume from issued balances in Manufacturing.
-              </p>
             </form>
           </div>
         </div>
       ) : (
-        <div className="bg-bg-card rounded-xl border border-amber-500/20 shadow-lg shadow-black/30 p-6">
+        <div className="bg-bg-card rounded-xl border border-amber-500/20 shadow-lg shadow-black/30 p-5">
           <h3 className="text-sm font-medium text-amber-400 tracking-widest uppercase mb-2">Worker Rule</h3>
-          <p className="text-sm text-text-secondary">
-            Direct stock logging is disabled for worker accounts. Use the Manufacturing page and select only issued stock.
-          </p>
+          <p className="text-sm text-text-secondary">Direct stock logging is disabled for worker accounts.</p>
         </div>
       )}
 
       <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
         <div className="px-6 pt-6 pb-4">
           <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">Issued Stock Register</h3>
-          <p className="text-xs text-text-secondary/50 mt-1">Workers can consume only these issued balances in Manufacturing.</p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

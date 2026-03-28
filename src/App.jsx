@@ -24,10 +24,19 @@ const AUTH_TOKEN_KEY = 'token'
 const AUTH_USER_ID_KEY = 'user_id'
 const AUTH_ROLE_KEY = 'role'
 
+function normalizeRole(role) {
+  return String(role || '').trim().toLowerCase()
+}
+
 function ProtectedRoute({ element, allowedRoles, user }) {
+  const userRole = normalizeRole(user?.role)
+  const normalizedAllowedRoles = (Array.isArray(allowedRoles) ? allowedRoles : []).map((role) =>
+    normalizeRole(role),
+  )
+
   if (!user) return <Navigate to="/login" />
-  if (!allowedRoles.includes(user.role)) {
-    return <Navigate to={user.role === 'worker' ? '/worker-home' : '/'} />
+  if (!normalizedAllowedRoles.includes(userRole)) {
+    return <Navigate to={userRole === 'worker' ? '/worker-home' : '/'} />
   }
   return element
 }
@@ -52,6 +61,7 @@ function AnimatedRoutes({
   setStockUsage
 }) {
   const location = useLocation()
+  const userRole = normalizeRole(user?.role)
 
   if (!user) return <Navigate to="/login" />
 
@@ -88,7 +98,7 @@ function AnimatedRoutes({
                 <Route
                   path="/"
                   element={
-                    user?.role === 'worker' ? (
+                    userRole === 'worker' ? (
                       <Navigate to="/worker-home" />
                     ) : (
                       <ProtectedRoute
@@ -349,7 +359,7 @@ function App() {
 
   const handleLogin = (authData) => {
     const token = authData?.token
-    const role = authData?.role
+    const role = normalizeRole(authData?.role)
     const id = authData?.user_id ?? authData?.id
 
     if (!token || !role || id === undefined || id === null) {

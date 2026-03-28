@@ -142,7 +142,7 @@ export default function ProductionSession({
   refreshInventoryData,
 }) {
   const toast = useToast()
-  const isOwner = user?.role === 'owner'
+  const isOwner = String(user?.role || '').toLowerCase() === 'owner'
   const [machines, setMachines] = useState([])
   const [loadingBootstrap, setLoadingBootstrap] = useState(true)
   const [busyState, setBusyState] = useState({
@@ -631,9 +631,6 @@ export default function ProductionSession({
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent-gold">Owner View</p>
                 <h2 className="mt-2 text-2xl font-semibold text-text-primary">Production Session History</h2>
-                <p className="mt-2 text-sm text-text-secondary">
-                  Filter completed and active sessions by ID, date, machine, worker, and status.
-                </p>
               </div>
               <button
                 type="button"

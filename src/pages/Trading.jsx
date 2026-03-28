@@ -41,10 +41,6 @@ export default function Trading({ data, setData, ordersList = [] }) {
     const orderSelectPlaceholder = hasOrders
         ? 'Select order...'
         : 'No orders available'
-    const orderHelperText = hasOrders
-        ? 'Choose an existing order for this trading entry.'
-        : 'No orders are available yet. Create one in Orders before logging trading.'
-
     const handleChange = (e) => {
         setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }))
     }
@@ -112,30 +108,29 @@ export default function Trading({ data, setData, ordersList = [] }) {
     }, [data])
 
     return (
-        <div className="space-y-8">
+        <div className="space-y-6">
             <div>
                 <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Trading</h2>
-                <p className="text-sm text-text-secondary mt-1">Track stock bought and sold locally in this session</p>
             </div>
 
             {/* Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+                <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Entries</p>
                     <p className="text-3xl font-semibold text-text-primary">{data.length}</p>
                 </div>
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Bought (₹)</p>
                     <p className="text-3xl font-semibold text-accent-gold">₹{totalBuyValue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
                 </div>
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-emerald-500/80 via-emerald-500/40 to-transparent" />
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Sold (₹)</p>
                     <p className="text-3xl font-semibold text-emerald-400">₹{totalSellValue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
                 </div>
-                <div className="relative bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6 overflow-hidden">
+                <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-violet-500/80 via-violet-500/40 to-transparent" />
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Today's Entries</p>
                     <p className="text-3xl font-semibold text-text-primary">{todayCount}</p>
@@ -149,7 +144,7 @@ export default function Trading({ data, setData, ordersList = [] }) {
             )}
 
             {/* Form */}
-            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6">
+            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-5">
                 <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">Add Trading Entry</h3>
                 <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
@@ -165,7 +160,6 @@ export default function Trading({ data, setData, ordersList = [] }) {
                                 <option key={o.order_number} value={o.order_number}>{o.order_number} {o.client_name ? `(${o.client_name})` : ''}</option>
                             ))}
                         </select>
-                        <p className="text-[11px] text-text-secondary/60">{orderHelperText}</p>
                     </div>
 
                     <div className="space-y-2">
@@ -201,9 +195,6 @@ export default function Trading({ data, setData, ordersList = [] }) {
                         </button>
                     </div>
                 </form>
-                <p className="mt-4 text-[11px] text-text-secondary/50">
-                    Trading is currently frontend-only because the live API does not expose a trading endpoint.
-                </p>
             </div>
 
             <DataTable columns={columns} data={data} emptyMessage="No trading entries yet." onDelete={handleDelete} />

@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import { formatKg } from '../utils/stock'
 import ChangePasswordForm from '../components/ChangePasswordForm'
 
-function QuickCard({ step, title, description, to, tone = 'gold' }) {
+function QuickCard({ step, title, to, tone = 'gold' }) {
   const toneClasses =
     tone === 'blue'
       ? 'border-blue-500/30 bg-blue-500/10 text-blue-300'
@@ -17,7 +17,6 @@ function QuickCard({ step, title, description, to, tone = 'gold' }) {
         {step}
       </div>
       <p className="mt-4 text-2xl font-semibold text-text-primary">{title}</p>
-      <p className="mt-3 text-sm leading-6 text-text-secondary">{description}</p>
     </Link>
   )
 }
@@ -27,13 +26,10 @@ export default function WorkerHome({ stockIssuances = [], ordersList = [] }) {
   const latestIssuance = openIssuances[0] || null
 
   return (
-    <div className="max-w-4xl space-y-6">
+    <div className="max-w-4xl space-y-5">
       <div className="rounded-3xl border border-border-default bg-bg-card p-6 shadow-lg shadow-black/20">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-gold">Worker Home</p>
         <h1 className="mt-3 text-3xl font-semibold text-text-primary">Just two things to do.</h1>
-        <p className="mt-3 max-w-2xl text-base leading-7 text-text-secondary">
-          First check your stock. Then open the production session console and keep logging the batch there until it is complete. If something looks wrong, stop and ask admin.
-        </p>
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -52,9 +48,6 @@ export default function WorkerHome({ stockIssuances = [], ordersList = [] }) {
         <div className="rounded-2xl border border-border-default bg-bg-card p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary/70">Open Orders</p>
           <p className="mt-3 text-2xl font-semibold text-text-primary">{ordersList.length}</p>
-          <p className="mt-2 text-sm text-text-secondary">
-            Production work now runs through the production session page.
-          </p>
         </div>
       </div>
 
@@ -62,14 +55,12 @@ export default function WorkerHome({ stockIssuances = [], ordersList = [] }) {
         <QuickCard
           step="Step 1"
           title="Check My Stock"
-          description="Open your stock page and confirm that issued stock is showing before you begin work."
           to="/stocks"
           tone="blue"
         />
         <QuickCard
           step="Step 2"
           title="Run Session"
-          description="Start one session, choose the machine and materials, then keep adding weight logs until the batch is complete."
           to="/production-session"
         />
       </div>
@@ -77,9 +68,6 @@ export default function WorkerHome({ stockIssuances = [], ordersList = [] }) {
       <div className="rounded-2xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/20">
         <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary/70">Account Settings</p>
         <h3 className="mt-2 text-xl font-semibold text-text-primary">Change password</h3>
-        <p className="mt-2 text-sm text-text-secondary">
-          Update your password regularly to keep your account secure.
-        </p>
         <div className="mt-4">
           <ChangePasswordForm className="space-y-4" />
         </div>
