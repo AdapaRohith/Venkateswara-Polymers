@@ -27,6 +27,24 @@ export default function LogHistory() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [rows, setRows] = useState([])
+  const [exporting, setExporting] = useState(false)
+
+  const handleExport = async () => {
+    try {
+      setExporting(true)
+      await fetch('https://n8n.avlokai.com/webhook-test/77d8abd5-246a-4797-8370-1ebfdb10ffec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, logs: filtered }),
+      })
+      alert('Logs exported successfully!')
+    } catch (err) {
+      console.error('Export failed', err)
+      alert('Failed to export logs.')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -95,6 +113,15 @@ export default function LogHistory() {
               Clear
             </button>
           )}
+          
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting || filtered.length === 0}
+            className="rounded-lg bg-accent-gold px-4 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
+          >
+            {exporting ? 'Exporting...' : 'Export Logs'}
+          </button>
         </div>
       </div>
 

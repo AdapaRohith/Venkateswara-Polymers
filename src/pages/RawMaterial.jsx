@@ -21,6 +21,18 @@ const columns = [
   { key: 'total_quantity_kg', label: 'Total Quantity (kg)', render: (value) => toNumber(value).toFixed(2) },
 ]
 
+const batchColumns = [
+  { 
+    key: 'created_at', 
+    label: 'Date', 
+    render: (val) => new Date(val).toLocaleString() 
+  },
+  { key: 'material_name', label: 'Material Name' },
+  { key: 'quantity_kg', label: 'Quantity (kg)', render: (value) => toNumber(value).toFixed(2) },
+  { key: 'created_by_name', label: 'Added By' },
+  { key: 'note', label: 'Note' },
+]
+
 export default function RawMaterial({ user }) {
   const toast = useToast()
   const isWorker = user?.role === 'worker'
@@ -40,7 +52,12 @@ export default function RawMaterial({ user }) {
     material_name: '',
     quantity: '',
     quantityUnit: 'kg',
+    note: '',
   })
+
+  const [batches, setBatches] = useState([])
+  const [loadingBatches, setLoadingBatches] = useState(true)
+  const [batchesError, setBatchesError] = useState('')
 
   const refreshRawTotals = useCallback(async () => {
     console.info('[RawMaterial] calling GET /raw-material/totals')
@@ -72,10 +89,26 @@ export default function RawMaterial({ user }) {
     }
   }, [])
 
+  const refreshBatches = useCallback(async () => {
+    console.info('[RawMaterial] calling GET /raw-material/batches')
+    setLoadingBatches(true)
+    setBatchesError('')
+    try {
+      const { data } = await api.get('/raw-material/batches')
+      setBatches(Array.isArray(data) ? data : data?.data || [])
+    } catch (error) {
+      console.error('Failed to load raw material batches', error)
+      setBatchesError(error?.response?.data?.error || 'Failed to load batches')
+    } finally {
+      setLoadingBatches(false)
+    }
+  }, [])
+
   useEffect(() => {
     refreshRawTotals().catch(() => {})
     refreshMaterialOptions().catch(() => {})
-  }, [refreshMaterialOptions, refreshRawTotals])
+    refreshBatches().catch(() => {})
+  }, [refreshMaterialOptions, refreshRawTotals, refreshBatches])
 
   const handleAddChange = (event) => {
     const { name, value } = event.target
@@ -104,11 +137,12 @@ export default function RawMaterial({ user }) {
       await api.post('/raw-material/add', {
         material_name: addForm.material_name.trim(),
         quantity_kg: qtyInKg,
+        note: addForm.note?.trim() || '',
       })
 
-      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions()])
+      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
       toast.success('Raw material added')
-      setAddForm((previous) => ({ ...previous, quantity: '' }))
+      setAddForm((previous) => ({ ...previous, quantity: '', note: '' }))
     } catch (error) {
       console.error('Failed to add raw material', error)
       toast.error(error?.response?.data?.error || 'Failed to add raw material')
@@ -189,6 +223,19 @@ export default function RawMaterial({ user }) {
           </div>
 
           <div className="space-y-2">
+            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Note (Optional)</label>
+            <input
+              type="text"
+              name="note"
+              value={addForm.note}
+              onChange={handleAddChange}
+              placeholder="E.g., Batch #1234 or Supplier ABC"
+              className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold w-full"
+              disabled={submittingAdd}
+            />
+          </div>
+
+          <div className="space-y-2">
             <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Quantity</label>
             <div className="flex gap-2">
               <InputWithCamera
@@ -232,6 +279,20 @@ export default function RawMaterial({ user }) {
         data={tableData}
         emptyMessage={loadingTotals ? 'Loading raw material totals...' : 'No raw materials yet.'}
       />
+
+      <div className="pt-6 border-t border-border-default space-y-4">
+        <h3 className="text-xl font-semibold text-text-primary tracking-tight">Batch History</h3>
+        {batchesError && (
+          <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+            {batchesError}
+          </div>
+        )}
+        <DataTable
+          columns={batchColumns}
+          data={batches}
+          emptyMessage={loadingBatches ? 'Loading batches...' : 'No raw material batches found.'}
+        />
+      </div>
     </div>
   )
 }
