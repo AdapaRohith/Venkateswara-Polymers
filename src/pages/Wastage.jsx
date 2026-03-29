@@ -71,9 +71,9 @@ export default function Wastage() {
 
   const summary = useMemo(() => {
     const rows = Array.isArray(wastageRows) ? wastageRows : []
-    const totalActualWeight = rows.reduce((sum, row) => sum + toNumber(row.actualWeight), 0)
     const totalGrossWeight = rows.reduce((sum, row) => sum + toNumber(row.grossWeight), 0)
     const totalNetWeight = rows.reduce((sum, row) => sum + toNumber(row.netWeight), 0)
+    const totalActualWeight = totalGrossWeight - totalNetWeight
 
     return {
       totalActualWeight,

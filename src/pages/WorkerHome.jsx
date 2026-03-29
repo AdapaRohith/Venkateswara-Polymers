@@ -46,7 +46,7 @@ export default function WorkerHome({ floorStock = [], ordersList = [] }) {
     <div className="max-w-4xl space-y-5">
       <div className="rounded-3xl border border-border-default bg-bg-card p-6 shadow-lg shadow-black/20">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-gold">Worker Home</p>
-        <h1 className="mt-3 text-3xl font-semibold text-text-primary">Just two things to do.</h1>
+        <h1 className="mt-3 text-3xl font-semibold text-text-primary">Ready for production.</h1>
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -66,15 +66,9 @@ export default function WorkerHome({ floorStock = [], ordersList = [] }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-1">
         <QuickCard
-          step="Step 1"
-          title="Check My Stock"
-          to="/stocks"
-          tone="blue"
-        />
-        <QuickCard
-          step="Step 2"
+          step="Start"
           title="Run Session"
           to="/production-session"
         />

@@ -99,15 +99,6 @@ const workerNavItems = [
     ),
   },
   {
-    name: 'My Stock',
-    path: '/stocks',
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375" />
-      </svg>
-    ),
-  },
-  {
     name: 'Production Session',
     path: '/production-session',
     icon: (
@@ -120,7 +111,7 @@ const workerNavItems = [
 ]
 
 const ownerQuickNavPaths = ['/', '/production-session', '/orders', '/stocks']
-const workerQuickNavPaths = ['/worker-home', '/production-session', '/stocks']
+const workerQuickNavPaths = ['/worker-home', '/production-session']
 
 const quickNavLabels = {
   '/': 'Home',
@@ -271,9 +262,7 @@ export default function Sidebar({ user, onLogout }) {
             <div className="mx-3 mb-5 rounded-2xl border border-accent-gold/20 bg-accent-gold/10 px-4 py-3">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-accent-gold">Worker Mode</p>
               <p className="mt-2 text-xs leading-5 text-text-secondary">
-                1. Check stock
-                <br />
-                2. Run production session
+                1. Run production session
               </p>
             </div>
           )}
