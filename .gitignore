@@ -25,3 +25,9 @@ dist-ssr
 *.sw?
 server.js
 server_bak.js
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
