@@ -1,91 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useToast } from '../components/Toast'
-import DataTable from '../components/DataTable'
-import SessionSetup from '../components/SessionSetup'
-import SessionActive from '../components/SessionActive'
-import {
-  MAX_SESSION_MATERIALS,
-  endProductionSession,
-  fetchMachines,
-  fetchProductionSessionHistory,
-  findActiveProductionSession,
-  logProductionEntry,
-  startProductionSession,
-} from '../utils/productionSession'
-import { buildStockBatches, formatKg } from '../utils/stock'
+import { TrendLineChart } from '../components/Charts'
+import api from '../utils/api'
 
-const createEmptyMaterial = () => ({
-  stockId: '',
-  quantity: '',
-})
-
-function toNumber(value) {
+function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
-  return Number.isFinite(numericValue) ? numericValue : 0
+  return Number.isFinite(numericValue) ? numericValue : fallback
 }
 
-function validateSetupForm(form, materialOptions) {
-  const errors = {}
-
-  if (!form.machineId) {
-    errors.machineId = 'Machine is required.'
-  }
-
-  if (!form.workerId.trim()) {
-    errors.workerId = 'Worker is required.'
-  }
-
-  if (form.materials.length === 0) {
-    errors.materials = 'At least one raw material is required.'
-  }
-
-  if (form.materials.length > MAX_SESSION_MATERIALS) {
-    errors.materials = `You can select a maximum of ${MAX_SESSION_MATERIALS} materials.`
-  }
-
-  const selectedIds = new Set()
-
-  form.materials.forEach((material, index) => {
-    const stockKey = `material_${index}_stockId`
-    const quantityKey = `material_${index}_quantity`
-    const selectedOption = materialOptions.find((option) => String(option.id) === String(material.stockId))
-
-    if (!material.stockId) {
-      errors[stockKey] = 'Choose a material batch.'
-    } else if (selectedIds.has(String(material.stockId))) {
-      errors[stockKey] = 'Each material batch can be selected only once.'
-    } else {
-      selectedIds.add(String(material.stockId))
-    }
-
-    const quantity = toNumber(material.quantity)
-    if (!material.quantity || quantity <= 0) {
-      errors[quantityKey] = 'Quantity must be greater than zero.'
-    } else if (selectedOption && quantity > selectedOption.availableToIssue) {
-      errors[quantityKey] = `Quantity exceeds available stock of ${selectedOption.availableToIssue.toFixed(2)} kg.`
-    }
-  })
-
-  return errors
-}
-
-function validateLogForm(grossWeight, tareWeight) {
-  if (grossWeight === '' || tareWeight === '') {
-    return 'Gross and tare weight are required.'
-  }
-
-  const gross = toNumber(grossWeight)
-  const tare = toNumber(tareWeight)
-
-  if (gross < 0 || tare < 0) {
-    return 'Weights cannot be negative.'
-  }
-
-  if (gross <= tare) {
-    return 'Gross weight must be greater than tare weight.'
-  }
-
-  return ''
+function formatKg(kg) {
+  const numericValue = toNumber(kg)
+  if (Math.abs(numericValue) >= 1000) return `${(numericValue / 1000).toFixed(2)} tons`
+  return `${numericValue.toFixed(2)} kg`
 }
 
 function formatDateTime(value) {
@@ -103,653 +29,402 @@ function formatDateTime(value) {
   })
 }
 
-function SummaryModal({ summary, onClose }) {
-  if (!summary) return null
-
-  return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/65 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[28px] border border-border-default bg-bg-card p-6 shadow-2xl shadow-black/40 md:p-8">
-        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent-gold">Batch Complete</p>
-        <h2 className="mt-3 text-2xl font-semibold text-text-primary">Session reconciled successfully.</h2>
-        <div className="mt-6 grid gap-4">
-          <div className="rounded-2xl border border-border-default bg-bg-input/30 p-4">
-            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-secondary/60">Total Produced</p>
-            <p className="mt-2 text-2xl font-semibold text-accent-gold">{summary.totalOutput.toFixed(2)} kg</p>
-          </div>
-          <div className="rounded-2xl border border-border-default bg-bg-input/30 p-4">
-            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-secondary/60">Total Waste</p>
-            <p className="mt-2 text-2xl font-semibold text-red-400">{summary.totalWaste.toFixed(2)} kg</p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="mt-6 w-full rounded-2xl bg-accent-gold px-5 py-4 text-sm font-semibold text-black transition-colors hover:bg-accent-gold-hover"
-        >
-          Back To Setup
-        </button>
-      </div>
-    </div>
-  )
-}
-
-export default function ProductionSession({
-  user,
-  rawMaterials = [],
-  stockUsage = [],
-  stockIssuances = [],
-  stockBalances = {},
-  refreshInventoryData,
-}) {
+export default function ProductionSession() {
   const toast = useToast()
-  const isOwner = String(user?.role || '').toLowerCase() === 'owner'
-  const [machines, setMachines] = useState([])
-  const [loadingBootstrap, setLoadingBootstrap] = useState(true)
-  const [busyState, setBusyState] = useState({
-    start: false,
-    log: false,
-    end: false,
-  })
-  const [pageError, setPageError] = useState('')
-  const [summary, setSummary] = useState(null)
-  const [setupForm, setSetupForm] = useState({
-    machineId: '',
-    workerId: '',
-    materials: [createEmptyMaterial()],
-  })
-  const [setupErrors, setSetupErrors] = useState({})
-  const [entryForm, setEntryForm] = useState({
-    grossWeight: '',
-    tareWeight: '',
-  })
-  const [sessionState, setSessionState] = useState({
-    session: null,
-    materials: [],
-    logs: [],
-    totalOutput: 0,
-  })
-  const [historyRows, setHistoryRows] = useState([])
-  const [historyLoading, setHistoryLoading] = useState(false)
-  const [historyError, setHistoryError] = useState('')
-  const [historyFilters, setHistoryFilters] = useState({
-    sessionId: '',
-    machineId: '',
-    worker: '',
-    status: 'all',
-    dateFrom: '',
-    dateTo: '',
-  })
 
-  const materialOptions = useMemo(
-    () =>
-      buildStockBatches(rawMaterials, stockUsage, stockIssuances, stockBalances)
-        .filter((batch) => batch.availableToIssue > 0)
-        .sort((left, right) => String(right.date || '').localeCompare(String(left.date || ''))),
-    [rawMaterials, stockBalances, stockIssuances, stockUsage],
-  )
+  const [activeSession, setActiveSession] = useState(null)
+  const [machineId, setMachineId] = useState("")
+  const [grossWeight, setGrossWeight] = useState("")
+  const [tareWeight, setTareWeight] = useState("")
+  const [floorStock, setFloorStock] = useState([])
+  const [loading, setLoading] = useState(false)
+  
+  // Keep logs to not break UI logic existing
+  const [logs, setLogs] = useState([])
 
-  const netWeightPreview = Math.max(
-    toNumber(entryForm.grossWeight) - toNumber(entryForm.tareWeight),
-    0,
-  )
-
-  const loadOwnerHistory = async ({ showSpinner = true } = {}) => {
-    if (!isOwner) return
-
-    if (showSpinner) setHistoryLoading(true)
-    setHistoryError('')
-
+  const refreshFloorStock = async () => {
     try {
-      const rows = await fetchProductionSessionHistory({ limit: 1000 })
-      setHistoryRows(rows)
-    } catch (error) {
-      console.error('Failed to load production session history', error)
-      setHistoryError(error?.response?.data?.error || 'Failed to load production session history.')
-    } finally {
-      if (showSpinner) setHistoryLoading(false)
+      const { data } = await api.get('/floor/stock')
+      setFloorStock(data)
+    } catch (err) {
+      console.error(err.response?.data || err)
     }
   }
 
-  const updateHistoryFilter = (field, value) => {
-    setHistoryFilters((prev) => ({ ...prev, [field]: value }))
-  }
-
-  const resetHistoryFilters = () => {
-    setHistoryFilters({
-      sessionId: '',
-      machineId: '',
-      worker: '',
-      status: 'all',
-      dateFrom: '',
-      dateTo: '',
-    })
+  const checkActiveSession = async () => {
+    try {
+      const storedSessionId = localStorage.getItem('production_session_id')
+      if (storedSessionId) {
+        const { data } = await api.get(`/production/active-v2?session_id=${storedSessionId}`)
+        if (data) {
+          setActiveSession(data)
+          setMachineId(data.machine_id)
+        } else {
+          localStorage.removeItem('production_session_id')
+        }
+      }
+    } catch (err) {
+      console.error(err.response?.data || err)
+    }
   }
 
   useEffect(() => {
-    let mounted = true
-
-    const bootstrap = async () => {
-      setLoadingBootstrap(true)
-      setPageError('')
-
-      try {
-        const loadedMachines = await fetchMachines()
-        if (!mounted) return
-
-        setMachines(loadedMachines)
-
-        // Backend exposes active session lookup per machine, so bootstrap checks each known machine.
-        const activeSession = await findActiveProductionSession(loadedMachines)
-        if (!mounted) return
-
-        if (activeSession) {
-          setSessionState(activeSession)
-          setSetupForm((prev) => ({
-            ...prev,
-            machineId: activeSession.session.machineId ? String(activeSession.session.machineId) : '',
-            workerId: activeSession.session.workerName || activeSession.session.workerId || '',
-          }))
-        }
-      } catch (error) {
-        console.error('Failed to initialize production session page', error)
-        if (mounted) {
-          setPageError(error.response?.data?.error || 'Failed to load production session data.')
-        }
-      } finally {
-        if (mounted) {
-          setLoadingBootstrap(false)
-        }
-      }
-    }
-
-    bootstrap()
-
-    return () => {
-      mounted = false
-    }
+    checkActiveSession()
+    refreshFloorStock()
   }, [])
 
-  useEffect(() => {
-    if (!isOwner) return
+  const floorTotalKg = useMemo(
+    () => (Array.isArray(floorStock) ? floorStock : []).reduce((sum, row) => sum + toNumber(row.total_quantity_kg), 0),
+    [floorStock],
+  )
 
-    let mounted = true
+  const netPreview = useMemo(() => Math.max(toNumber(grossWeight) - toNumber(tareWeight), 0), [grossWeight, tareWeight])
 
-    const loadHistory = async () => {
-      setHistoryLoading(true)
-      setHistoryError('')
-      try {
-        const rows = await fetchProductionSessionHistory({ limit: 1000 })
-        if (!mounted) return
-        setHistoryRows(rows)
-      } catch (error) {
-        console.error('Failed to load production session history', error)
-        if (!mounted) return
-        setHistoryError(error?.response?.data?.error || 'Failed to load production session history.')
-      } finally {
-        if (mounted) {
-          setHistoryLoading(false)
-        }
-      }
-    }
-
-    loadHistory()
-
-    return () => {
-      mounted = false
-    }
-  }, [isOwner])
-
-  const isBusy = busyState.start || busyState.log || busyState.end
-
-  const filteredHistory = useMemo(() => {
-    const sessionIdFilter = historyFilters.sessionId.trim().toLowerCase()
-    const machineIdFilter = historyFilters.machineId.trim()
-    const workerFilter = historyFilters.worker.trim().toLowerCase()
-    const statusFilter = historyFilters.status
-    const dateFromFilter = historyFilters.dateFrom
-    const dateToFilter = historyFilters.dateTo
-
-    const fromDate = dateFromFilter ? new Date(`${dateFromFilter}T00:00:00`) : null
-    const toDate = dateToFilter ? new Date(`${dateToFilter}T23:59:59.999`) : null
-
-    return historyRows.filter((row) => {
-      if (sessionIdFilter && !String(row.id ?? '').toLowerCase().includes(sessionIdFilter)) {
-        return false
-      }
-
-      if (machineIdFilter && String(row.machineId ?? '') !== machineIdFilter) {
-        return false
-      }
-
-      if (workerFilter) {
-        const workerText = `${row.workerId ?? ''} ${row.workerName ?? ''} ${row.workerEmail ?? ''}`.toLowerCase()
-        if (!workerText.includes(workerFilter)) {
-          return false
-        }
-      }
-
-      if (statusFilter && statusFilter !== 'all' && String(row.status ?? '').toLowerCase() !== statusFilter) {
-        return false
-      }
-
-      if (fromDate || toDate) {
-        const startedAt = new Date(row.startedAt)
-        if (Number.isNaN(startedAt.getTime())) return false
-        if (fromDate && startedAt < fromDate) return false
-        if (toDate && startedAt > toDate) return false
-      }
-
-      return true
-    })
-  }, [historyFilters, historyRows])
-
-  const historyColumns = [
-    { key: 'id', label: 'Session ID' },
-    {
-      key: 'startedAt',
-      label: 'Started At',
-      render: (value) => formatDateTime(value),
-    },
-    {
-      key: 'completedAt',
-      label: 'Completed At',
-      render: (value) => formatDateTime(value),
-    },
-    { key: 'machineName', label: 'Machine' },
-    {
-      key: 'worker',
-      label: 'Worker',
-      render: (_, row) => row.workerName || row.workerId || '—',
-    },
-    {
-      key: 'status',
-      label: 'Status',
-      render: (value) => {
-        const normalized = String(value || 'active').toLowerCase()
-        const toneClass =
-          normalized === 'completed'
-            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-            : 'border-amber-500/30 bg-amber-500/10 text-amber-300'
-        return (
-          <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold uppercase ${toneClass}`}>
-            {normalized}
-          </span>
-        )
-      },
-    },
-    {
-      key: 'totalAllocatedKg',
-      label: 'Allocated',
-      render: (value) => formatKg(value),
-    },
-    {
-      key: 'totalOutputKg',
-      label: 'Produced',
-      render: (value) => formatKg(value),
-    },
-    {
-      key: 'totalWasteKg',
-      label: 'Waste',
-      render: (value) => formatKg(value),
-    },
-    {
-      key: 'logEntries',
-      label: 'Logs',
-      render: (value) => String(value ?? 0),
-    },
-  ]
-
-  const resetToSetup = () => {
-    setSessionState({
-      session: null,
-      materials: [],
-      logs: [],
-      totalOutput: 0,
-    })
-    setSetupForm({
-      machineId: '',
-      workerId: '',
-      materials: [createEmptyMaterial()],
-    })
-    setSetupErrors({})
-    setEntryForm({
-      grossWeight: '',
-      tareWeight: '',
-    })
-    setPageError('')
-  }
-
-  const handleAddMaterial = () => {
-    setSetupForm((prev) => {
-      if (prev.materials.length >= MAX_SESSION_MATERIALS) return prev
+  const sessionTrendData = useMemo(() => {
+    const ordered = (Array.isArray(logs) ? logs : []).slice().reverse()
+    let cumulative = 0
+    return ordered.map((row, index) => {
+      cumulative += toNumber(row.netWeight)
       return {
-        ...prev,
-        materials: [...prev.materials, createEmptyMaterial()],
+        label: `#${index + 1}`,
+        value: Number(cumulative.toFixed(2)),
       }
     })
+  }, [logs])
+
+  const canLog = Boolean(activeSession) && !loading && String(grossWeight) !== '' && String(tareWeight) !== '' && toNumber(grossWeight) > toNumber(tareWeight)
+
+  const inputClass =
+    'w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary transition-colors focus:border-accent-gold disabled:cursor-not-allowed disabled:opacity-60'
+
+  const handleStart = async () => {
+    if (loading) return
+    if (!machineId) {
+      toast.error('Please select a machine')
+      return
+    }
+    
+    setLoading(true)
+    try {
+      const { data } = await api.post('/production/start-v2', { machine_id: Number(machineId) })
+      setActiveSession(data)
+      localStorage.setItem('production_session_id', data.id)
+      toast.success('Session started')
+      setLogs([])
+    } catch (error) {
+      console.error(error.response?.data || error)
+      toast.error(error?.response?.data?.error || 'Failed to start session')
+    } finally {
+      setLoading(false)
+    }
   }
 
-  const handleRemoveMaterial = (index) => {
-    setSetupForm((prev) => {
-      const nextMaterials = prev.materials.filter((_, currentIndex) => currentIndex !== index)
-
-      return {
-        ...prev,
-        materials: nextMaterials.length > 0 ? nextMaterials : [createEmptyMaterial()],
-      }
-    })
-  }
-
-  const handleStartSession = async (event) => {
+  const handleLog = async (event) => {
     event.preventDefault()
-    setPageError('')
 
-    const nextErrors = validateSetupForm(setupForm, materialOptions)
-    setSetupErrors(nextErrors)
-
-    if (Object.keys(nextErrors).length > 0) {
-      toast.error(nextErrors.materials || 'Please fix the highlighted session setup fields.')
+    if (!activeSession) {
+      toast.error('Start a session first')
       return
     }
 
-    setBusyState((prev) => ({ ...prev, start: true }))
-
-    try {
-      const nextSession = await startProductionSession(
-        {
-          machine_id: Number(setupForm.machineId),
-          worker_id: setupForm.workerId.trim(),
-          materials: setupForm.materials.map((material) => ({
-            stock_id: Number(material.stockId),
-            quantity: toNumber(material.quantity),
-          })),
-        },
-        machines,
-      )
-
-      setSessionState(nextSession)
-      setEntryForm({
-        grossWeight: '',
-        tareWeight: '',
-      })
-      await refreshInventoryData?.()
-      await loadOwnerHistory({ showSpinner: false })
-      toast.success('Production session started.')
-    } catch (error) {
-      console.error('Failed to start production session', error)
-      const message = error.response?.data?.error || 'Failed to start production session.'
-      setPageError(message)
-      toast.error(message)
-    } finally {
-      setBusyState((prev) => ({ ...prev, start: false }))
-    }
-  }
-
-  const handleAddEntry = async (event) => {
-    event.preventDefault()
-    setPageError('')
-
-    const validationError = validateLogForm(entryForm.grossWeight, entryForm.tareWeight)
-    if (validationError) {
-      setPageError(validationError)
-      toast.error(validationError)
+    const gross = toNumber(grossWeight)
+    const tare = toNumber(tareWeight)
+    if (gross <= tare) {
+      toast.error('Gross weight must be greater than tare weight')
       return
     }
 
-    setBusyState((prev) => ({ ...prev, log: true }))
-
+    setLoading(true)
     try {
-      const nextSession = await logProductionEntry(
-        {
-          session_id: Number(sessionState.session.id),
-          worker_id: sessionState.session.workerId || sessionState.session.workerName || setupForm.workerId.trim(),
-          gross_weight: toNumber(entryForm.grossWeight),
-          tare_weight: toNumber(entryForm.tareWeight),
-        },
-        machines,
-      )
-
-      setSessionState(nextSession)
-      setEntryForm({
-        grossWeight: '',
-        tareWeight: '',
+      const { data } = await api.post('/production/log-v2', {
+        session_id: activeSession.id,
+        gross_weight: gross,
+        tare_weight: tare,
       })
-      await refreshInventoryData?.()
-      await loadOwnerHistory({ showSpinner: false })
-      toast.success('Production entry added.')
+
+      setLogs((previous) => [
+        {
+          id: data?.id ?? `${Date.now()}`,
+          grossWeight: gross,
+          tareWeight: tare,
+          netWeight: toNumber(data?.net_weight ?? data?.netWeight, Math.max(gross - tare, 0)),
+          createdAt: data?.created_at ?? data?.createdAt ?? new Date().toISOString(),
+        },
+        ...previous,
+      ])
+
+      setGrossWeight('')
+      setTareWeight('')
+      toast.success('Entry logged')
+      await refreshFloorStock()
     } catch (error) {
-      console.error('Failed to add production entry', error)
-      const message = error.response?.data?.error || 'Failed to add production entry.'
-      setPageError(message)
-      toast.error(message)
+      console.error(error.response?.data || error)
+      toast.error(error?.response?.data?.error || 'Failed to log entry')
     } finally {
-      setBusyState((prev) => ({ ...prev, log: false }))
+      setLoading(false)
     }
   }
 
-  const handleComplete = async () => {
-    if (!sessionState.session?.id) return
-
-    setBusyState((prev) => ({ ...prev, end: true }))
-    setPageError('')
-
+  const handleEnd = async () => {
+    if (!activeSession || loading) return
+    setLoading(true)
     try {
-      const result = await endProductionSession(Number(sessionState.session.id))
-      await refreshInventoryData?.()
-      await loadOwnerHistory({ showSpinner: false })
-      setSummary({
-        totalOutput: result.totalOutput,
-        totalWaste: result.totalWaste,
-      })
-      toast.success('Production session completed.')
-      resetToSetup()
+      await api.post('/production/end-v2', { session_id: activeSession.id })
+      setActiveSession(null)
+      setMachineId('')
+      localStorage.removeItem('production_session_id')
+      setLogs([])
+      setGrossWeight('')
+      setTareWeight('')
+      toast.success('Session ended')
+      await refreshFloorStock()
     } catch (error) {
-      console.error('Failed to complete production session', error)
-      const message = error.response?.data?.error || 'Failed to complete production session.'
-      setPageError(message)
-      toast.error(message)
+      console.error(error.response?.data || error)
+      toast.error(error?.response?.data?.error || 'Failed to end session')
     } finally {
-      setBusyState((prev) => ({ ...prev, end: false }))
+      setLoading(false)
     }
   }
 
   return (
-    <>
-      <div className="space-y-8">
-        <div className="rounded-[32px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/20 md:p-8">
-          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-accent-gold">Production Console</p>
-          <h1 className="mt-3 text-4xl font-semibold text-text-primary">One session. Continuous logging. Automatic reconciliation.</h1>
-          <p className="mt-4 max-w-3xl text-sm leading-7 text-text-secondary">
-            The old manufacturing entry and production tracker flows are merged here. Start once, log throughout the run, watch stock move live, and close the batch with waste calculated from the remaining balance.
-          </p>
-        </div>
-
-        {loadingBootstrap ? (
-          <div className="rounded-[28px] border border-border-default bg-bg-card px-6 py-16 text-center text-sm text-text-secondary shadow-lg shadow-black/20">
-            Loading machines and checking for active production sessions...
-          </div>
-        ) : sessionState.session ? (
-          <SessionActive
-            session={sessionState.session}
-            materials={sessionState.materials}
-            logs={sessionState.logs}
-            totalOutput={sessionState.totalOutput}
-            grossWeight={entryForm.grossWeight}
-            tareWeight={entryForm.tareWeight}
-            netWeight={netWeightPreview}
-            loading={isBusy}
-            error={pageError}
-            onGrossWeightChange={(value) => setEntryForm((prev) => ({ ...prev, grossWeight: value }))}
-            onTareWeightChange={(value) => setEntryForm((prev) => ({ ...prev, tareWeight: value }))}
-            onAddEntry={handleAddEntry}
-            onComplete={handleComplete}
-          />
-        ) : (
-          <SessionSetup
-            machines={machines}
-            materialOptions={materialOptions}
-            form={setupForm}
-            validationErrors={setupErrors}
-            loading={isBusy}
-            error={pageError}
-            onFieldChange={(field, value) => setSetupForm((prev) => ({ ...prev, [field]: value }))}
-            onMaterialChange={(index, value) =>
-              setSetupForm((prev) => ({
-                ...prev,
-                materials: prev.materials.map((material, currentIndex) =>
-                  currentIndex === index
-                    ? {
-                        ...material,
-                        stockId: value,
-                      }
-                    : material,
-                ),
-              }))
-            }
-            onMaterialQuantityChange={(index, value) =>
-              setSetupForm((prev) => ({
-                ...prev,
-                materials: prev.materials.map((material, currentIndex) =>
-                  currentIndex === index
-                    ? {
-                        ...material,
-                        quantity: value,
-                      }
-                    : material,
-                ),
-              }))
-            }
-            onAddMaterial={handleAddMaterial}
-            onRemoveMaterial={handleRemoveMaterial}
-            onSubmit={handleStartSession}
-          />
-        )}
-
-        {isOwner && (
-          <section className="space-y-6 rounded-[28px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/20 md:p-8">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent-gold">Owner View</p>
-                <h2 className="mt-2 text-2xl font-semibold text-text-primary">Production Session History</h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => loadOwnerHistory()}
-                className="rounded-xl border border-border-default px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:text-text-primary"
-              >
-                Refresh History
-              </button>
+    <div className="space-y-6">
+      {!activeSession ? (
+        <section className="space-y-6 rounded-[28px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/20 md:p-8">
+          <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent-gold">Session Setup</p>
+              <h2 className="mt-3 text-3xl font-semibold text-text-primary">Start a production run.</h2>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-text-secondary">
+                Floor materials are pooled. Start a session to log production on a specific machine.
+              </p>
             </div>
-
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              <div className="space-y-2">
-                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Session ID</label>
-                <input
-                  type="text"
-                  value={historyFilters.sessionId}
-                  onChange={(event) => updateHistoryFilter('sessionId', event.target.value)}
-                  placeholder="e.g. 102"
-                  className="w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
-                />
-              </div>
-
+            <div className="flex flex-col gap-3 md:flex-row md:items-end">
               <div className="space-y-2">
                 <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Machine</label>
-                <select
-                  value={historyFilters.machineId}
-                  onChange={(event) => updateHistoryFilter('machineId', event.target.value)}
-                  className="w-full cursor-pointer rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
+                <select 
+                  value={machineId} 
+                  onChange={(e) => setMachineId(e.target.value)} 
+                  className={inputClass}
+                  style={{ minWidth: '150px' }}
                 >
-                  <option value="">All machines</option>
-                  {machines.map((machine) => (
-                    <option key={machine.id} value={machine.id}>
-                      {machine.name}
-                    </option>
+                  <option value="">Select...</option>
+                  {[1, 2, 3, 4, 5].map(m => (
+                    <option key={m} value={m}>Machine {m}</option>
                   ))}
                 </select>
               </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Worker</label>
-                <input
-                  type="text"
-                  value={historyFilters.worker}
-                  onChange={(event) => updateHistoryFilter('worker', event.target.value)}
-                  placeholder="ID / name / email"
-                  className="w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Status</label>
-                <select
-                  value={historyFilters.status}
-                  onChange={(event) => updateHistoryFilter('status', event.target.value)}
-                  className="w-full cursor-pointer rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
-                >
-                  <option value="all">All statuses</option>
-                  <option value="active">Active</option>
-                  <option value="completed">Completed</option>
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Date From</label>
-                <input
-                  type="date"
-                  value={historyFilters.dateFrom}
-                  onChange={(event) => updateHistoryFilter('dateFrom', event.target.value)}
-                  className="w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Date To</label>
-                <input
-                  type="date"
-                  value={historyFilters.dateTo}
-                  onChange={(event) => updateHistoryFilter('dateTo', event.target.value)}
-                  className="w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-text-secondary">
-                Showing <span className="font-semibold text-text-primary">{filteredHistory.length}</span> of{' '}
-                <span className="font-semibold text-text-primary">{historyRows.length}</span> sessions
-              </p>
               <button
                 type="button"
-                onClick={resetHistoryFilters}
-                className="rounded-xl border border-border-default px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:text-text-primary"
+                onClick={handleStart}
+                disabled={loading || !machineId}
+                className="rounded-2xl bg-accent-gold px-5 py-3.5 text-sm font-semibold text-black transition-colors hover:bg-accent-gold-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Clear Filters
+                {loading ? 'Starting...' : 'Start Session'}
               </button>
             </div>
-
-            {historyError && (
-              <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-                {historyError}
+          </div>
+          <div className="rounded-2xl border border-border-default bg-bg-input/30 p-4">
+            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-secondary/60">Current Floor Stock</p>
+            <p className="mt-2 text-2xl font-semibold text-text-primary">{formatKg(floorTotalKg)}</p>
+            <p className="mt-2 text-sm text-text-secondary">Available pooled material on the floor right now.</p>
+          </div>
+        </section>
+      ) : (
+        <div className="space-y-6">
+          <section className="overflow-hidden rounded-[28px] border border-border-default bg-bg-card shadow-lg shadow-black/20">
+            <div className="bg-[radial-gradient(circle_at_top_left,_rgba(25,178,179,0.22),_transparent_45%),linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0))] px-6 py-7 md:px-8">
+              <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent-gold">Production Session</p>
+                  <h1 className="mt-3 text-3xl font-semibold text-text-primary">Machine: {activeSession.machine_id}</h1>
+                  <p className="mt-3 text-sm leading-6 text-text-secondary">
+                    Session ID: {activeSession.id} <br />
+                    Log entries to consume from the floor pool. End the session when finished.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleEnd}
+                  disabled={loading}
+                  className="rounded-2xl border border-red-500/25 bg-red-500/10 px-5 py-3 text-sm font-semibold text-red-400 transition-colors hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {loading ? 'Processing...' : 'End Session'}
+                </button>
               </div>
-            )}
+            </div>
 
-            {historyLoading ? (
-              <div className="rounded-2xl border border-border-default bg-bg-input/25 px-6 py-14 text-center text-sm text-text-secondary">
-                Loading production session history...
+            <div className="grid gap-4 border-t border-border-default bg-bg-input/15 px-6 py-5 md:grid-cols-3 md:px-8">
+              <div className="rounded-2xl border border-border-default bg-bg-card/80 p-4">
+                <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-secondary/60">Current Floor Stock</p>
+                <p className="mt-2 text-2xl font-semibold text-accent-gold">{formatKg(floorTotalKg)}</p>
               </div>
-            ) : (
-              <DataTable
-                columns={historyColumns}
-                data={filteredHistory}
-                emptyMessage="No production sessions found for the selected filters."
-              />
-            )}
+              <div className="rounded-2xl border border-border-default bg-bg-card/80 p-4">
+                <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-secondary/60">Entries Logged</p>
+                <p className="mt-2 text-2xl font-semibold text-text-primary">{String(logs.length)}</p>
+              </div>
+              <div className="rounded-2xl border border-border-default bg-bg-card/80 p-4">
+                <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-secondary/60">Net Preview</p>
+                <p className="mt-2 text-2xl font-semibold text-emerald-400">{formatKg(netPreview)}</p>
+              </div>
+            </div>
           </section>
-        )}
-      </div>
 
-      <SummaryModal summary={summary} onClose={() => setSummary(null)} />
-    </>
+          <section className="grid gap-6 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+            <div className="rounded-[28px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/20 md:p-8">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-secondary/70">Current Floor Stock</p>
+                <h2 className="mt-2 text-xl font-semibold text-text-primary">Live pooled balances</h2>
+              </div>
+
+              <div className="mt-6 overflow-x-auto rounded-2xl border border-border-default bg-bg-input/15">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border-default">
+                      <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
+                        Material Name
+                      </th>
+                      <th className="px-6 py-3 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
+                        Qty (kg)
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(floorStock || []).length === 0 ? (
+                      <tr>
+                        <td colSpan={2} className="px-6 py-10 text-center text-sm text-text-secondary/50">
+                          No floor stock yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      (floorStock || []).map((row, index) => (
+                        <tr
+                          key={row.material_type_id ?? index}
+                          className={`border-b border-border-subtle transition-colors hover:bg-white/[0.02] ${
+                            index % 2 === 0 ? '' : 'bg-white/[0.01]'
+                          }`}
+                        >
+                          <td className="px-6 py-3 text-text-primary/90">{row.material_name}</td>
+                          <td className="px-6 py-3 text-right font-semibold text-accent-gold">
+                            {toNumber(row.total_quantity_kg).toFixed(2)}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              <div className="rounded-[28px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/20 md:p-8">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-secondary/70">Log Entry</p>
+                  <h2 className="mt-2 text-xl font-semibold text-text-primary">Gross / tare logging</h2>
+                  <p className="mt-3 text-sm leading-6 text-text-secondary">
+                    Net weight is calculated from gross - tare.
+                  </p>
+                </div>
+
+                <form onSubmit={handleLog} className="mt-6 space-y-5">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Gross Weight</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={grossWeight}
+                        onChange={(event) => setGrossWeight(event.target.value)}
+                        className={inputClass}
+                        placeholder="0.00"
+                        disabled={loading}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Tare Weight</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={tareWeight}
+                        onChange={(event) => setTareWeight(event.target.value)}
+                        className={inputClass}
+                        placeholder="0.00"
+                        disabled={loading}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-accent-gold/20 bg-accent-gold/10 p-4">
+                    <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-accent-gold/80">Net Weight Preview</p>
+                    <p className="mt-2 text-3xl font-semibold text-accent-gold">{netPreview > 0 ? formatKg(netPreview) : '0.00 kg'}</p>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={!canLog}
+                    className="w-full rounded-2xl bg-accent-gold px-5 py-4 text-sm font-semibold text-black transition-colors hover:bg-accent-gold-hover disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {loading ? 'Saving Entry...' : 'Add Entry'}
+                  </button>
+                </form>
+              </div>
+
+              <div className="rounded-[28px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/20 md:p-8">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-secondary/70">Session Log</p>
+                  <h2 className="mt-2 text-xl font-semibold text-text-primary">Recent entries</h2>
+                </div>
+
+                <div className="mt-6 overflow-x-auto rounded-2xl border border-border-default bg-bg-input/15">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border-default">
+                        <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Time</th>
+                        <th className="px-6 py-3 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Gross</th>
+                        <th className="px-6 py-3 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Tare</th>
+                        <th className="px-6 py-3 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Net</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {logs.length === 0 ? (
+                        <tr>
+                          <td colSpan={4} className="px-6 py-10 text-center text-sm text-text-secondary/50">
+                            No entries logged yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        logs.map((row, index) => (
+                          <tr
+                            key={row.id ?? index}
+                            className={`border-b border-border-subtle transition-colors hover:bg-white/[0.02] ${
+                              index % 2 === 0 ? '' : 'bg-white/[0.01]'
+                            }`}
+                          >
+                            <td className="px-6 py-3 text-text-primary/90">{formatDateTime(row.createdAt)}</td>
+                            <td className="px-6 py-3 text-right text-text-primary/90">{toNumber(row.grossWeight).toFixed(2)}</td>
+                            <td className="px-6 py-3 text-right text-text-primary/90">{toNumber(row.tareWeight).toFixed(2)}</td>
+                            <td className="px-6 py-3 text-right font-semibold text-accent-gold">{toNumber(row.netWeight).toFixed(2)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {sessionTrendData.length > 0 && (
+                <TrendLineChart
+                  data={sessionTrendData}
+                  title="Session Output Trend (kg)"
+                  color="#a78bfa"
+                  gradientId="gradSessionOut"
+                />
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
   )
 }

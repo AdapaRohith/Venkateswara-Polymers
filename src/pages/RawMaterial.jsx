@@ -1,250 +1,237 @@
-import { useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
-import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
-import {
-    createInventoryTransaction,
-    deleteInventoryTransaction,
-    INVENTORY_NOTE_CATEGORIES,
-    INVENTORY_TRANSACTION_TYPES,
-    makeInventoryTransaction,
-} from '../utils/inventory'
-import { getNextStockId } from '../utils/stock'
 
-const getTodayDate = () => new Date().toISOString().split('T')[0]
+function toNumber(value, fallback = 0) {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : fallback
+}
+
+function formatKg(kg) {
+  const numericValue = toNumber(kg)
+  if (Math.abs(numericValue) >= 1000) return `${(numericValue / 1000).toFixed(2)} tons`
+  return `${numericValue.toFixed(2)} kg`
+}
 
 const columns = [
-    { key: 'sno', label: 'S.No' },
-    { key: 'date', label: 'Date' },
-    { key: 'quantityDisplay', label: 'Qty Received' },
-    { key: 'brandName', label: 'Brand Name' },
-    { key: 'codeName', label: 'Code Name' },
+  { key: 'material_name', label: 'Material Name' },
+  { key: 'total_quantity_kg', label: 'Total Quantity (kg)', render: (value) => toNumber(value).toFixed(2) },
 ]
 
-export default function RawMaterial({ user, data, refreshInventoryData, stockBalances = {} }) {
-    const isWorker = user?.role === 'worker'
-    const toast = useToast()
-    const [form, setForm] = usePersistentState('vp_raw_material_form', {
-        date: getTodayDate(),
-        quantityReceived: '',
-        quantityUnit: 'kg',
-        brandName: '',
-        codeName: '',
-    })
+export default function RawMaterial({ user }) {
+  const toast = useToast()
+  const isWorker = user?.role === 'worker'
+  const [submittingAdd, setSubmittingAdd] = useState(false)
+  const [loadingTotals, setLoadingTotals] = useState(true)
+  const [totalsError, setTotalsError] = useState('')
+  const [rawTotals, setRawTotals] = useState([])
+  const [materialOptions, setMaterialOptions] = useState([])
+  const [loadingMaterialOptions, setLoadingMaterialOptions] = useState(true)
+  const [materialOptionsError, setMaterialOptionsError] = useState('')
 
-    const handleChange = (e) => {
-        setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }))
+  useEffect(() => {
+    console.info('[RawMaterial] mounted')
+  }, [])
+
+  const [addForm, setAddForm] = usePersistentState('vp_raw_material_add_form', {
+    material_name: '',
+    quantity: '',
+    quantityUnit: 'kg',
+  })
+
+  const refreshRawTotals = useCallback(async () => {
+    console.info('[RawMaterial] calling GET /raw-material/totals')
+    setLoadingTotals(true)
+    setTotalsError('')
+    try {
+      const { data } = await api.get('/raw-material/totals')
+      setRawTotals(Array.isArray(data) ? data : data?.data || [])
+    } catch (error) {
+      console.error('Failed to load raw material totals', error)
+      setTotalsError(error?.response?.data?.error || 'Failed to load raw material totals')
+    } finally {
+      setLoadingTotals(false)
+    }
+  }, [])
+
+  const refreshMaterialOptions = useCallback(async () => {
+    console.info('[RawMaterial] calling GET /raw-material/options')
+    setLoadingMaterialOptions(true)
+    setMaterialOptionsError('')
+    try {
+      const { data } = await api.get('/raw-material/options')
+      setMaterialOptions(Array.isArray(data) ? data : data?.data || [])
+    } catch (error) {
+      console.error('Failed to load raw material options', error)
+      setMaterialOptionsError(error?.response?.data?.error || 'Failed to load raw material options')
+    } finally {
+      setLoadingMaterialOptions(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshRawTotals().catch(() => {})
+    refreshMaterialOptions().catch(() => {})
+  }, [refreshMaterialOptions, refreshRawTotals])
+
+  const handleAddChange = (event) => {
+    const { name, value } = event.target
+    setAddForm((previous) => ({ ...previous, [name]: value }))
+  }
+
+  const handleSubmitAdd = async (event) => {
+    event.preventDefault()
+
+    if (!addForm.material_name?.trim()) {
+      toast.error('Material name is required')
+      return
     }
 
-    const handleSubmit = async (e) => {
-        e.preventDefault()
-        if (!form.date || !form.quantityReceived) return
-
-        const qty = parseFloat(form.quantityReceived) || 0
-        const unit = form.quantityUnit
-        // Convert to kg for calculations
-        const qtyInKg = unit === 'tons' ? qty * 1000 : unit === 'grams' ? qty / 1000 : qty
-
-        const stockId = getNextStockId({
-            stockBalances,
-            collections: [data],
-        })
-
-        try {
-            await createInventoryTransaction(
-                api,
-                makeInventoryTransaction({
-                    stockId,
-                    transactionType: INVENTORY_TRANSACTION_TYPES.IN,
-                    direction: 'IN',
-                    quantityInKg: qtyInKg,
-                    metadata: {
-                        category: INVENTORY_NOTE_CATEGORIES.RAW_MATERIAL,
-                        date: form.date,
-                        quantityReceived: qty,
-                        quantityUnit: unit,
-                        quantityDisplay: `${qty} ${unit}`,
-                        brandName: form.brandName.trim(),
-                        codeName: form.codeName.trim(),
-                    },
-                }),
-            )
-            await refreshInventoryData?.()
-            toast.success('Raw material entry added')
-        } catch (err) {
-            console.error('Failed to save raw material entry', err)
-            toast.error(err.response?.data?.error || 'Failed to save raw material entry')
-            return
-        }
-
-        setForm({ date: getTodayDate(), quantityReceived: '', quantityUnit: 'kg', brandName: '', codeName: '' })
+    const qty = toNumber(addForm.quantity)
+    if (qty <= 0) {
+      toast.error('Quantity must be greater than zero')
+      return
     }
 
-    const handleDelete = async (id) => {
-        const target = data.find((item) => item.id === id)
-        if (!target?.transactionId) return
+    const qtyInKg = addForm.quantityUnit === 'tons' ? qty * 1000 : qty
 
-        try {
-            await deleteInventoryTransaction(api, target.transactionId)
-            await refreshInventoryData?.()
-            toast.success('Raw material entry deleted')
-        } catch (error) {
-            console.error('Failed to delete raw material entry', error)
-            toast.error('Failed to delete raw material entry')
-        }
+    setSubmittingAdd(true)
+    try {
+      console.info('[RawMaterial] calling POST /raw-material/add')
+      await api.post('/raw-material/add', {
+        material_name: addForm.material_name.trim(),
+        quantity_kg: qtyInKg,
+      })
+
+      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions()])
+      toast.success('Raw material added')
+      setAddForm((previous) => ({ ...previous, quantity: '' }))
+    } catch (error) {
+      console.error('Failed to add raw material', error)
+      toast.error(error?.response?.data?.error || 'Failed to add raw material')
+    } finally {
+      setSubmittingAdd(false)
     }
+  }
 
-    // ── Summary calculations ──
-    const today = new Date().toISOString().split('T')[0]
-    const todayEntries = data.filter((d) => d.date === today)
+  const selectClass =
+    'bg-bg-input text-text-primary border border-gray-700 rounded-lg px-3 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold w-24 shrink-0 appearance-none cursor-pointer text-center'
 
-    const totalEntries = data.length
-    const totalQtyKg = data.reduce((s, i) => s + (i.quantityInKg || 0), 0)
-    const todayCount = todayEntries.length
-    const todayQtyKg = todayEntries.reduce((s, i) => s + (i.quantityInKg || 0), 0)
+  const totalTypes = (Array.isArray(rawTotals) ? rawTotals : []).length
+  const totalQtyKg = useMemo(
+    () => (Array.isArray(rawTotals) ? rawTotals : []).reduce((sum, row) => sum + toNumber(row.total_quantity_kg), 0),
+    [rawTotals],
+  )
 
-    // Format kg
-    const formatKg = (kg) => {
-        if (Math.abs(kg) >= 1000) return `${(kg / 1000).toFixed(2)} tons`
-        return `${kg.toFixed(2)} kg`
-    }
+  const tableData = (Array.isArray(rawTotals) ? rawTotals : []).map((row, index) => ({
+    ...row,
+    id: row.material_name ?? index,
+  }))
 
-    // Chart: daily quantity breakdown
-    const chartData = useMemo(() => {
-        const map = {}
-        data.forEach((d) => {
-            if (!map[d.date]) map[d.date] = 0
-            map[d.date] += (d.quantityInKg || 0)
-        })
-        return Object.entries(map)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([date, value]) => ({ name: date, value: value / 1000 }))
-    }, [data])
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Raw Material</h2>
+      </div>
 
-    const selectClass =
-        'bg-bg-input text-text-primary border border-gray-700 rounded-lg px-3 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold w-24 shrink-0 appearance-none cursor-pointer text-center'
-
-    return (
-        <div className="space-y-6">
-            {/* Header */}
-            <div>
-                <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Raw Material</h2>
-            </div>
-
-            {!isWorker && (
-                <>
-                    {/* Summary Cards */}
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-                        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
-                            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
-                            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Entries</p>
-                            <p className="text-3xl font-semibold text-text-primary">{totalEntries}</p>
-                        </div>
-                        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
-                            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-blue-500/80 via-blue-500/40 to-transparent" />
-                            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Qty Received</p>
-                            <p className="text-3xl font-semibold text-blue-400">{formatKg(totalQtyKg)}</p>
-                        </div>
-                        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
-                            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
-                            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Today's Entries</p>
-                            <p className="text-3xl font-semibold text-text-primary">{todayCount}</p>
-                        </div>
-                        <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
-                            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
-                            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Today's Qty</p>
-                            <p className="text-3xl font-semibold text-accent-gold">{formatKg(todayQtyKg)}</p>
-                        </div>
-                    </div>
-
-                    {/* Chart */}
-                    {chartData.length > 0 && (
-                        <SectionBarChart data={chartData} title="Daily Raw Material Received (tons)" color="#60a5fa" />
-                    )}
-                </>
-            )}
-
-            {/* Form */}
-            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-5">
-                <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">
-                    Add New Entry
-                </h3>
-                <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Date</label>
-                        <InputWithCamera
-                            type="date"
-                            name="date"
-                            value={form.date}
-                            onChange={handleChange}
-                            required
-                        />
-                    </div>
-
-                    <div className="space-y-2">
-                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Quantity Received</label>
-                        <div className="flex gap-2">
-                            <InputWithCamera
-                                type="text"
-                                inputMode="decimal"
-                                name="quantityReceived"
-                                value={form.quantityReceived}
-                                onChange={handleChange}
-                                placeholder="0.00"
-                                className="flex-1"
-                                required
-                            />
-                            <select
-                                name="quantityUnit"
-                                value={form.quantityUnit}
-                                onChange={handleChange}
-                                className={selectClass}
-                            >
-                                <option value="kg">kg</option>
-                                <option value="tons">tons</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Brand Name</label>
-                        <InputWithCamera
-                            type="text"
-                            name="brandName"
-                            value={form.brandName}
-                            onChange={handleChange}
-                            placeholder="e.g. Reliance, SABIC"
-                        />
-                    </div>
-
-                    <div className="space-y-2">
-                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Code Name</label>
-                        <InputWithCamera
-                            type="text"
-                            name="codeName"
-                            value={form.codeName}
-                            onChange={handleChange}
-                            placeholder="e.g. REL-001"
-                        />
-                    </div>
-
-                    <div className="flex items-end md:col-span-2">
-                        <button
-                            type="submit"
-                            className="w-full bg-accent-gold text-black font-semibold py-2.5 rounded-lg text-sm transition-all duration-200 hover:bg-accent-gold-hover active:scale-[0.98]"
-                        >
-                            Add Entry
-                        </button>
-                    </div>
-                </form>
-            </div>
-
-            {!isWorker && (
-                <DataTable columns={columns} data={data} emptyMessage="No raw material entries yet. Add one above." onDelete={user?.role === 'owner' ? handleDelete : undefined} />
-            )}
+      {totalsError && (
+        <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          {totalsError}
         </div>
-    )
+      )}
+
+      {materialOptionsError && (
+        <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          {materialOptionsError}
+        </div>
+      )}
+
+      {!isWorker && (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
+            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Material Types</p>
+            <p className="text-3xl font-semibold text-text-primary">{totalTypes}</p>
+          </div>
+          <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
+            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Raw Material</p>
+            <p className="text-3xl font-semibold text-accent-gold">{formatKg(totalQtyKg)}</p>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-5">
+        <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">Add / Update Raw Material</h3>
+        <form onSubmit={handleSubmitAdd} className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Material Name</label>
+            <select
+              name="material_name"
+              value={addForm.material_name}
+              onChange={handleAddChange}
+              className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold w-full"
+              disabled={submittingAdd || loadingMaterialOptions || materialOptions.length === 0}
+              required
+            >
+              <option value="">
+                {loadingMaterialOptions ? 'Loading materials...' : 'Select material name'}
+              </option>
+              {(Array.isArray(materialOptions) ? materialOptions : []).map((row) => (
+                <option key={row.material_name} value={row.material_name}>
+                  {row.material_name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Quantity</label>
+            <div className="flex gap-2">
+              <InputWithCamera
+                type="text"
+                inputMode="decimal"
+                name="quantity"
+                value={addForm.quantity}
+                onChange={handleAddChange}
+                placeholder="0.00"
+                className="flex-1"
+                required
+                disabled={submittingAdd}
+              />
+              <select
+                name="quantityUnit"
+                value={addForm.quantityUnit}
+                onChange={handleAddChange}
+                className={selectClass}
+                disabled={submittingAdd}
+              >
+                <option value="kg">kg</option>
+                <option value="tons">tons</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-end md:col-span-2">
+            <button
+              type="submit"
+              disabled={submittingAdd || loadingMaterialOptions || materialOptions.length === 0}
+              className="w-full bg-accent-gold text-black font-semibold py-2.5 rounded-lg text-sm transition-all duration-200 hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50"
+            >
+              {submittingAdd ? 'Submitting...' : 'Add Raw Material'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <DataTable
+        columns={columns}
+        data={tableData}
+        emptyMessage={loadingTotals ? 'Loading raw material totals...' : 'No raw materials yet.'}
+      />
+    </div>
+  )
 }

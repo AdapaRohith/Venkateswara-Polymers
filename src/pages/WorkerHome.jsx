@@ -1,6 +1,16 @@
 import { Link } from 'react-router-dom'
-import { formatKg } from '../utils/stock'
 import ChangePasswordForm from '../components/ChangePasswordForm'
+
+function toNumber(value, fallback = 0) {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : fallback
+}
+
+function formatKg(kg) {
+  const numericValue = toNumber(kg)
+  if (Math.abs(numericValue) >= 1000) return `${(numericValue / 1000).toFixed(2)} tons`
+  return `${numericValue.toFixed(2)} kg`
+}
 
 function QuickCard({ step, title, to, tone = 'gold' }) {
   const toneClasses =
@@ -21,9 +31,16 @@ function QuickCard({ step, title, to, tone = 'gold' }) {
   )
 }
 
-export default function WorkerHome({ stockIssuances = [], ordersList = [] }) {
-  const openIssuances = stockIssuances.filter((issuance) => issuance.remainingInKg > 0)
-  const latestIssuance = openIssuances[0] || null
+export default function WorkerHome({ floorStock = [], ordersList = [] }) {
+  const totalFloorKg = (Array.isArray(floorStock) ? floorStock : []).reduce(
+    (sum, row) => sum + toNumber(row.total_quantity_kg),
+    0,
+  )
+
+  const topMaterial =
+    (Array.isArray(floorStock) ? floorStock : [])
+      .slice()
+      .sort((a, b) => toNumber(b.total_quantity_kg) - toNumber(a.total_quantity_kg))[0] || null
 
   return (
     <div className="max-w-4xl space-y-5">
@@ -34,14 +51,12 @@ export default function WorkerHome({ stockIssuances = [], ordersList = [] }) {
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <div className="rounded-2xl border border-border-default bg-bg-card p-5">
-          <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary/70">My Stock</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary/70">Floor Stock</p>
           <p className="mt-3 text-2xl font-semibold text-text-primary">
-            {latestIssuance ? formatKg(latestIssuance.remainingInKg) : 'No stock'}
+            {totalFloorKg > 0 ? formatKg(totalFloorKg) : 'No stock'}
           </p>
           <p className="mt-2 text-sm text-text-secondary">
-            {latestIssuance
-              ? latestIssuance.fromStockLabel
-              : 'No stock has been issued to you yet.'}
+            {topMaterial ? topMaterial.material_name : 'No stock has been issued to the floor yet.'}
           </p>
         </div>
 

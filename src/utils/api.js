@@ -3,6 +3,22 @@ import axios from 'axios'
 export const BASE_URL = 'https://vp-api.avlokai.com'
 const AUTH_TOKEN_KEY = 'token'
 
+const shouldLogApiCalls = () => {
+  if (typeof window === 'undefined') return false
+  return Boolean(import.meta?.env?.DEV) || localStorage.getItem('vp_api_logs') === '1'
+}
+
+const buildRequestUrl = (config) => {
+  const url = config?.url ?? ''
+  const baseURL = config?.baseURL ?? BASE_URL
+
+  try {
+    return new URL(url, baseURL).toString()
+  } catch {
+    return `${baseURL}${url}`
+  }
+}
+
 const ensureLoginRedirect = () => {
   if (typeof window === 'undefined') return
   if (window.location.pathname !== '/login') {
@@ -16,6 +32,13 @@ const apiClient = axios.create({
 
 apiClient.interceptors.request.use(
   (config) => {
+    if (shouldLogApiCalls()) {
+      const method = String(config.method ?? 'get').toUpperCase()
+      console.log(`[API] -> ${method} ${buildRequestUrl(config)}`)
+    }
+
+    config.__vpRequestStartedAt = Date.now()
+
     const skipAuth = config.skipAuth === true
     const token = localStorage.getItem(AUTH_TOKEN_KEY)
 
@@ -108,6 +131,16 @@ const transformers = {
 
 apiClient.interceptors.response.use(
   (response) => {
+    if (shouldLogApiCalls()) {
+      const method = String(response?.config?.method ?? 'get').toUpperCase()
+      const url = buildRequestUrl(response?.config)
+      const status = response?.status
+      const startedAt = response?.config?.__vpRequestStartedAt
+      const durationMs = startedAt ? Math.max(Date.now() - startedAt, 0) : null
+      const durationLabel = durationMs === null ? '' : ` (${durationMs}ms)`
+      console.log(`[API] <- ${method} ${url} ${status}${durationLabel}`)
+    }
+
     const rawData = response.data?.data ?? response.data
     const transformerKey = (response.config?.url ?? '').split('?')[0]
     let data = rawData
@@ -120,6 +153,16 @@ apiClient.interceptors.response.use(
     return response
   },
   (error) => {
+    if (shouldLogApiCalls()) {
+      const method = String(error?.config?.method ?? 'get').toUpperCase()
+      const url = buildRequestUrl(error?.config)
+      const status = error?.response?.status ?? 'ERR'
+      const startedAt = error?.config?.__vpRequestStartedAt
+      const durationMs = startedAt ? Math.max(Date.now() - startedAt, 0) : null
+      const durationLabel = durationMs === null ? '' : ` (${durationMs}ms)`
+      console.log(`[API] <- ${method} ${url} ${status}${durationLabel}`)
+    }
+
     if (error.response?.status === 401) {
       localStorage.removeItem(AUTH_TOKEN_KEY)
       ensureLoginRedirect()

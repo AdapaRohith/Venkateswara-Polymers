@@ -16,10 +16,8 @@ import Login from './components/ui/animated-characters-login-page.jsx'
 import Users from './pages/Users'
 import Orders from './pages/Orders'
 import WorkerHome from './pages/WorkerHome'
-import { getInventoryBalances, getInventoryTransactions, inventoryTransactionsToState } from './utils/inventory'
 import avlokaiLogo from '../avlokai_logo.png'
 
-const STOCK_ISSUANCES_STORAGE_KEY = 'vp_stock_issuances'
 const AUTH_TOKEN_KEY = 'token'
 const AUTH_USER_ID_KEY = 'user_id'
 const AUTH_ROLE_KEY = 'role'
@@ -44,21 +42,14 @@ function ProtectedRoute({ element, allowedRoles, user }) {
 function AnimatedRoutes({ 
   user, 
   handleLogout, 
-  rawMaterials, 
-  manufacturingData, 
-  tradingData, 
-  wastageData, 
-  stockUsage, 
-  stockIssuances, 
-  stockBalances, 
+  floorStock,
+  tradingData,
   activeOrdersList, 
-  refreshInventoryData, 
+  refreshFloorStock,
   ordersList, 
   ordersLoading, 
   refreshOrders,
   setTradingData,
-  setWastageData,
-  setStockUsage
 }) {
   const location = useLocation()
   const userRole = normalizeRole(user?.role)
@@ -105,11 +96,7 @@ function AnimatedRoutes({
                         user={user}
                         allowedRoles={['owner']}
                         element={
-                          <Dashboard
-                            rawMaterials={rawMaterials}
-                            manufacturingData={manufacturingData}
-                            tradingData={tradingData}
-                          />
+                          <Dashboard />
                         }
                       />
                     )
@@ -121,7 +108,7 @@ function AnimatedRoutes({
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['worker']}
-                      element={<WorkerHome stockIssuances={stockIssuances} ordersList={activeOrdersList} />}
+                      element={<WorkerHome floorStock={floorStock} ordersList={activeOrdersList} />}
                     />
                   }
                 />
@@ -130,9 +117,8 @@ function AnimatedRoutes({
                   element={
                     <RawMaterial
                       user={user}
-                      data={rawMaterials}
-                      stockBalances={stockBalances}
-                      refreshInventoryData={refreshInventoryData}
+                      floorStock={floorStock}
+                      refreshFloorStock={refreshFloorStock}
                     />
                   }
                 />
@@ -149,11 +135,8 @@ function AnimatedRoutes({
                       element={
                         <ProductionSession
                           user={user}
-                          rawMaterials={rawMaterials}
-                          stockUsage={stockUsage}
-                          stockIssuances={stockIssuances}
-                          stockBalances={stockBalances}
-                          refreshInventoryData={refreshInventoryData}
+                          floorStock={floorStock}
+                          refreshFloorStock={refreshFloorStock}
                         />
                       }
                     />
@@ -175,21 +158,7 @@ function AnimatedRoutes({
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['owner']}
-                      element={
-                        <Wastage
-                          rawMaterials={rawMaterials}
-                          manufacturingData={manufacturingData}
-                          wastageData={wastageData}
-                          ordersList={activeOrdersList}
-                          setWastageData={setWastageData}
-                          stockUsage={stockUsage}
-                          stockIssuances={stockIssuances}
-                          stockBalances={stockBalances}
-                          setStockUsage={setStockUsage}
-                          refreshInventoryData={refreshInventoryData}
-                          refreshOrders={refreshOrders}
-                        />
-                      }
+                      element={<Wastage />}
                     />
                   }
                 />
@@ -202,11 +171,6 @@ function AnimatedRoutes({
                       element={
                         <LogHistory
                           user={user}
-                          rawMaterials={rawMaterials}
-                          manufacturingData={manufacturingData}
-                          tradingData={tradingData}
-                          wastageData={wastageData}
-                          stockUsage={stockUsage}
                         />
                       }
                     />
@@ -218,11 +182,8 @@ function AnimatedRoutes({
                   element={
                     <Stocks
                       user={user}
-                      rawMaterials={rawMaterials}
-                      stockUsage={stockUsage}
-                      stockIssuances={stockIssuances}
-                      stockBalances={stockBalances}
-                      refreshInventoryData={refreshInventoryData}
+                      floorStock={floorStock}
+                      refreshFloorStock={refreshFloorStock}
                     />
                   }
                 />
@@ -308,23 +269,10 @@ function App() {
     }
   })
 
-  const [rawMaterials, setRawMaterials] = useState([])
-  const [manufacturingData, setManufacturingData] = useState([])
+  const [floorStock, setFloorStock] = useState([])
   const [tradingData, setTradingData] = useState([])
-  const [wastageData, setWastageData] = useState([])
-  const [stockUsage, setStockUsage] = useState([])
-  const [stockBalances, setStockBalances] = useState({})
   const [ordersList, setOrdersList] = useState([])
   const [ordersLoading, setOrdersLoading] = useState(true)
-  const [stockIssuances, setStockIssuances] = useState(() => {
-    try {
-      const saved = localStorage.getItem(STOCK_ISSUANCES_STORAGE_KEY)
-      return saved ? JSON.parse(saved) : []
-    } catch (error) {
-      console.error('Failed to load saved stock issuances', error)
-      return []
-    }
-  })
 
   const activeOrdersList = ordersList.filter((order) => {
     const normalizedStatus = String(order.status || 'active').toLowerCase()
@@ -342,19 +290,9 @@ function App() {
     }
   }, [])
 
-  const refreshInventoryData = useCallback(async () => {
-    const [transactions, balances] = await Promise.all([
-      getInventoryTransactions(api),
-      getInventoryBalances(api),
-    ])
-
-    const inventoryState = inventoryTransactionsToState(transactions, balances)
-    setRawMaterials(inventoryState.rawMaterials)
-    setManufacturingData(inventoryState.manufacturingData)
-    setWastageData(inventoryState.wastageData)
-    setStockUsage(inventoryState.stockUsage)
-    setStockIssuances(inventoryState.stockIssuances)
-    setStockBalances(inventoryState.stockBalances)
+  const refreshFloorStock = useCallback(async () => {
+    const { data } = await api.get('/floor/stock')
+    setFloorStock(Array.isArray(data) ? data : [])
   }, [])
 
   const handleLogin = (authData) => {
@@ -404,14 +342,14 @@ function App() {
 
     const loadAll = async () => {
       const results = await Promise.allSettled([
-        refreshInventoryData(),
+        refreshFloorStock(),
         refreshOrders(),
       ])
 
-      const [inventoryResult, ordersResult] = results
+      const [floorStockResult, ordersResult] = results
 
-      if (inventoryResult.status !== 'fulfilled') {
-        console.warn('Failed to load inventory data:', inventoryResult.reason)
+      if (floorStockResult.status !== 'fulfilled') {
+        console.warn('Failed to load floor stock:', floorStockResult.reason)
       }
       if (ordersResult.status !== 'fulfilled') {
         console.warn('Failed to load orders:', ordersResult.reason)
@@ -419,15 +357,7 @@ function App() {
     }
 
     loadAll().catch((error) => console.error('Failed to load initial data', error))
-  }, [user, refreshInventoryData, refreshOrders])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STOCK_ISSUANCES_STORAGE_KEY, JSON.stringify(stockIssuances))
-    } catch (error) {
-      console.error('Failed to persist stock issuances', error)
-    }
-  }, [stockIssuances])
+  }, [user, refreshFloorStock, refreshOrders])
 
   return (
     <ToastProvider>
@@ -440,21 +370,14 @@ function App() {
               <AnimatedRoutes
                 user={user}
                 handleLogout={handleLogout}
-                rawMaterials={rawMaterials}
-                manufacturingData={manufacturingData}
+                floorStock={floorStock}
                 tradingData={tradingData}
-                wastageData={wastageData}
-                stockUsage={stockUsage}
-                stockIssuances={stockIssuances}
-                stockBalances={stockBalances}
                 activeOrdersList={activeOrdersList}
-                refreshInventoryData={refreshInventoryData}
+                refreshFloorStock={refreshFloorStock}
                 ordersList={ordersList}
                 ordersLoading={ordersLoading}
                 refreshOrders={refreshOrders}
                 setTradingData={setTradingData}
-                setWastageData={setWastageData}
-                setStockUsage={setStockUsage}
               />
             }
           />
