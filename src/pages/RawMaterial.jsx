@@ -44,6 +44,25 @@ export default function RawMaterial({ user }) {
   const [loadingMaterialOptions, setLoadingMaterialOptions] = useState(true)
   const [materialOptionsError, setMaterialOptionsError] = useState('')
 
+  const [exporting, setExporting] = useState(false)
+
+  const handleExport = async () => {
+    try {
+      setExporting(true)
+      await fetch('https://n8n.avlokai.com/webhook-test/77d8abd5-246a-4797-8370-1ebfdb10ffec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'raw_material_batches', logs: batches }),
+      })
+      toast.success('Logs exported successfully!')
+    } catch (err) {
+      console.error('Export failed', err)
+      toast.error('Failed to export logs.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   useEffect(() => {
     console.info('[RawMaterial] mounted')
   }, [])
@@ -281,7 +300,17 @@ export default function RawMaterial({ user }) {
       />
 
       <div className="pt-6 border-t border-border-default space-y-4">
-        <h3 className="text-xl font-semibold text-text-primary tracking-tight">Batch History</h3>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h3 className="text-xl font-semibold text-text-primary tracking-tight">Batch History</h3>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting || batches.length === 0}
+            className="rounded-lg bg-accent-gold px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
+          >
+            {exporting ? 'Exporting...' : 'Export Logs'}
+          </button>
+        </div>
         {batchesError && (
           <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
             {batchesError}

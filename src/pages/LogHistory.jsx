@@ -113,15 +113,6 @@ export default function LogHistory() {
               Clear
             </button>
           )}
-          
-          <button
-            type="button"
-            onClick={handleExport}
-            disabled={exporting || filtered.length === 0}
-            className="rounded-lg bg-accent-gold px-4 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
-          >
-            {exporting ? 'Exporting...' : 'Export Logs'}
-          </button>
         </div>
       </div>
 
@@ -136,13 +127,23 @@ export default function LogHistory() {
       )}
 
       <div className="rounded-[28px] border border-border-default bg-bg-card shadow-lg shadow-black/30">
-        <div className="flex items-center gap-3 border-b border-border-default px-6 py-4">
-          <span className="rounded px-2.5 py-1 text-xs font-medium bg-accent-gold/15 text-accent-gold">
-            Floor Transactions
-          </span>
-          <h3 className="text-sm font-medium uppercase tracking-widest text-text-secondary/70">
-            - {loading ? 'Loading…' : `${filtered.length} ${filtered.length === 1 ? 'entry' : 'entries'}`}
-          </h3>
+        <div className="flex items-center justify-between border-b border-border-default px-6 py-4">
+          <div className="flex items-center gap-3">
+            <span className="rounded px-2.5 py-1 text-xs font-medium bg-accent-gold/15 text-accent-gold">
+              Floor Transactions
+            </span>
+            <h3 className="text-sm font-medium uppercase tracking-widest text-text-secondary/70">
+              - {loading ? 'Loading…' : `${filtered.length} ${filtered.length === 1 ? 'entry' : 'entries'}`}
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting || filtered.length === 0}
+            className="rounded-lg bg-accent-gold px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
+          >
+            {exporting ? 'Exporting...' : 'Export Logs'}
+          </button>
         </div>
 
         <div className="overflow-x-auto">

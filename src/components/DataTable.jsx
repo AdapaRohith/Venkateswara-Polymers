@@ -1,6 +1,12 @@
-export default function DataTable({ columns, data, emptyMessage = 'No entries yet.', onDelete }) {
+export default function DataTable({ columns, data, emptyMessage = 'No entries yet.', onDelete, title, rightAction }) {
     return (
         <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
+            {(title || rightAction) && (
+                <div className="px-6 py-4 flex items-center justify-between border-b border-border-default">
+                    {title ? <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">{title}</h3> : <div />}
+                    {rightAction && <div>{rightAction}</div>}
+                </div>
+            )}
             {/* Desktop: normal table */}
             <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-sm">

@@ -33,6 +33,24 @@ export default function Trading({ data, setData, ordersList = [] }) {
         type: 'Buy',
     })
     const [submitting, setSubmitting] = useState(false)
+    const [exporting, setExporting] = useState(false)
+
+    const handleExport = async () => {
+        try {
+            setExporting(true)
+            await fetch('https://n8n.avlokai.com/webhook-test/77d8abd5-246a-4797-8370-1ebfdb10ffec', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'trading', logs: data }),
+            })
+            toast.success('Logs exported successfully!')
+        } catch (err) {
+            console.error('Export failed', err)
+            toast.error('Failed to export logs.')
+        } finally {
+            setExporting(false)
+        }
+    }
 
 
 
@@ -197,7 +215,23 @@ export default function Trading({ data, setData, ordersList = [] }) {
                 </form>
             </div>
 
-            <DataTable columns={columns} data={data} emptyMessage="No trading entries yet." onDelete={handleDelete} />
+            <DataTable 
+               title="Trading History"
+               columns={columns} 
+               data={data} 
+               emptyMessage="No trading entries yet." 
+               onDelete={handleDelete} 
+               rightAction={
+                   <button
+                       type="button"
+                       onClick={handleExport}
+                       disabled={exporting || data.length === 0}
+                       className="rounded-lg bg-accent-gold px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
+                   >
+                       {exporting ? 'Exporting...' : 'Export Logs'}
+                   </button>
+               }
+            />
         </div>
     )
 }

@@ -42,6 +42,25 @@ export default function ProductionSession() {
   // Keep logs to not break UI logic existing
   const [logs, setLogs] = useState([])
 
+  const [exporting, setExporting] = useState(false)
+
+  const handleExport = async () => {
+    try {
+      setExporting(true)
+      await fetch('https://n8n.avlokai.com/webhook-test/77d8abd5-246a-4797-8370-1ebfdb10ffec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'production_session_logs', logs }),
+      })
+      toast.success('Logs exported successfully!')
+    } catch (err) {
+      console.error('Export failed', err)
+      toast.error('Failed to export logs.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const refreshFloorStock = async () => {
     try {
       const { data } = await api.get('/floor/stock')
@@ -194,9 +213,6 @@ export default function ProductionSession() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent-gold">Session Setup</p>
               <h2 className="mt-3 text-3xl font-semibold text-text-primary">Start a production run.</h2>
-              <p className="mt-3 max-w-2xl text-sm leading-6 text-text-secondary">
-                Floor materials are pooled. Start a session to log production on a specific machine.
-              </p>
             </div>
             <div className="flex flex-col gap-3 md:flex-row md:items-end">
               <div className="space-y-2">
@@ -226,7 +242,6 @@ export default function ProductionSession() {
           <div className="rounded-2xl border border-border-default bg-bg-input/30 p-4">
             <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-secondary/60">Current Floor Stock</p>
             <p className="mt-2 text-2xl font-semibold text-text-primary">{formatKg(floorTotalKg)}</p>
-            <p className="mt-2 text-sm text-text-secondary">Available pooled material on the floor right now.</p>
           </div>
         </section>
       ) : (
@@ -238,8 +253,7 @@ export default function ProductionSession() {
                   <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent-gold">Production Session</p>
                   <h1 className="mt-3 text-3xl font-semibold text-text-primary">Machine: {activeSession.machine_id}</h1>
                   <p className="mt-3 text-sm leading-6 text-text-secondary">
-                    Session ID: {activeSession.id} <br />
-                    Log entries to consume from the floor pool. End the session when finished.
+                    Session ID: {activeSession.id}
                   </p>
                 </div>
                 <button
@@ -320,9 +334,6 @@ export default function ProductionSession() {
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-secondary/70">Log Entry</p>
                   <h2 className="mt-2 text-xl font-semibold text-text-primary">Gross / tare logging</h2>
-                  <p className="mt-3 text-sm leading-6 text-text-secondary">
-                    Net weight is calculated from gross - tare.
-                  </p>
                 </div>
 
                 <form onSubmit={handleLog} className="mt-6 space-y-5">
@@ -371,9 +382,19 @@ export default function ProductionSession() {
               </div>
 
               <div className="rounded-[28px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/20 md:p-8">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-secondary/70">Session Log</p>
-                  <h2 className="mt-2 text-xl font-semibold text-text-primary">Recent entries</h2>
+                <div className="flex flex-wrap items-end justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-secondary/70">Session Log</p>
+                    <h2 className="mt-2 text-xl font-semibold text-text-primary">Recent entries</h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleExport}
+                    disabled={exporting || logs.length === 0}
+                    className="rounded-lg bg-accent-gold px-4 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
+                  >
+                    {exporting ? 'Exporting...' : 'Export Logs'}
+                  </button>
                 </div>
 
                 <div className="mt-6 overflow-x-auto rounded-2xl border border-border-default bg-bg-input/15">

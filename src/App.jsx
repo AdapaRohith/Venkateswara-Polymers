@@ -157,8 +157,8 @@ function AnimatedRoutes({
                   element={
                     <ProtectedRoute
                       user={user}
-                      allowedRoles={['owner']}
-                      element={<Wastage />}
+                      allowedRoles={['owner', 'worker']}
+                      element={<Wastage user={user} ordersList={activeOrdersList} />}
                     />
                   }
                 />
