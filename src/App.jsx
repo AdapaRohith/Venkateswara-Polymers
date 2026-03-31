@@ -6,16 +6,15 @@ import { ToastProvider } from './components/Toast'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
 import RawMaterial from './pages/RawMaterial'
-import Production from './pages/Production'
-import ProductionSession from './pages/ProductionSession'
-import Trading from './pages/Trading'
 import Wastage from './pages/Wastage'
-import LogHistory from './pages/LogHistory'
-import Stocks from './pages/Stocks'
 import Login from './components/ui/animated-characters-login-page.jsx'
 import Users from './pages/Users'
 import Orders from './pages/Orders'
-import WorkerHome from './pages/WorkerHome'
+import ProductionLog from './pages/ProductionLog'
+import MaterialMovement from './pages/MaterialMovement'
+import ProductionOrders from './pages/ProductionOrders'
+import Fulfillment from './pages/Fulfillment'
+import MachineReports from './pages/MachineReports'
 import avlokaiLogo from '../avlokai_logo.png'
 
 const AUTH_TOKEN_KEY = 'token'
@@ -28,127 +27,77 @@ function normalizeRole(role) {
 
 function ProtectedRoute({ element, allowedRoles, user }) {
   const userRole = normalizeRole(user?.role)
-  const normalizedAllowedRoles = (Array.isArray(allowedRoles) ? allowedRoles : []).map((role) =>
-    normalizeRole(role),
-  )
-
+  const normalizedAllowedRoles = (Array.isArray(allowedRoles) ? allowedRoles : []).map(normalizeRole)
   if (!user) return <Navigate to="/login" />
   if (!normalizedAllowedRoles.includes(userRole)) {
-    return <Navigate to={userRole === 'worker' ? '/worker-home' : '/'} />
+    return <Navigate to={userRole === 'worker' ? '/production-log' : '/'} />
   }
   return element
 }
 
-function AnimatedRoutes({ 
-  user, 
-  handleLogout, 
-  floorStock,
-  tradingData,
-  activeOrdersList, 
-  refreshFloorStock,
-  ordersList, 
-  ordersLoading, 
-  refreshOrders,
-  setTradingData,
-}) {
+function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refreshOrders }) {
   const location = useLocation()
   const userRole = normalizeRole(user?.role)
+  const activeOrdersList = ordersList.filter(o => {
+    const s = String(o.status || 'active').toLowerCase()
+    return s !== 'completed' && s !== 'cancelled'
+  })
 
   if (!user) return <Navigate to="/login" />
 
   return (
     <div className="flex min-h-screen bg-bg-primary relative overflow-hidden transition-colors duration-500">
-      {/* Refined Background Watermark */}
+      {/* Background watermark */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-[0.03] dark:opacity-[0.02]">
-          <img
-            src={avlokaiLogo}
-            alt="Watermark"
-            className="w-[800px] max-w-none rotate-[-12deg] grayscale"
-          />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-[0.03]">
+          <img src={avlokaiLogo} alt="" className="w-[800px] max-w-none rotate-[-12deg] grayscale" />
         </div>
-        {/* Subtle Ambient Glows */}
         <div className="absolute -top-24 -left-24 w-96 h-96 bg-primary/5 rounded-full blur-[100px]" />
         <div className="absolute bottom-0 right-0 w-[500px] h-[500px] bg-blue-500/5 rounded-full blur-[120px]" />
       </div>
 
       <Sidebar user={user} onLogout={handleLogout} />
-      
-      <main className="flex-1 ml-0 lg:ml-72 pt-16 lg:pt-0 min-h-screen relative z-10">
-        <div className="max-w-[1600px] mx-auto px-4 pb-28 pt-4 sm:px-6 sm:pt-6 lg:px-12 lg:pb-12 lg:pt-12">
+
+      <main className="flex-1 ml-0 lg:ml-64 pt-16 lg:pt-0 min-h-screen relative z-10">
+        <div className="max-w-[1600px] mx-auto px-4 pb-28 pt-4 sm:px-6 sm:pt-6 lg:px-10 lg:pb-12 lg:pt-10">
           <AnimatePresence mode="wait">
             <motion.div
               key={location.pathname}
-              initial={{ opacity: 0, y: 10 }}
+              initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
               className="min-w-0"
             >
               <Routes location={location}>
+                {/* Root */}
                 <Route
                   path="/"
                   element={
-                    userRole === 'worker' ? (
-                      <Navigate to="/worker-home" />
-                    ) : (
-                      <ProtectedRoute
-                        user={user}
-                        allowedRoles={['owner']}
-                        element={
-                          <Dashboard />
-                        }
-                      />
-                    )
+                    userRole === 'worker'
+                      ? <Navigate to="/production-log" />
+                      : <ProtectedRoute user={user} allowedRoles={['owner']} element={<Dashboard />} />
                   }
                 />
+
+                {/* ─── Core Operations ─── */}
                 <Route
-                  path="/worker-home"
-                  element={
-                    <ProtectedRoute
-                      user={user}
-                      allowedRoles={['worker']}
-                      element={<WorkerHome floorStock={floorStock} ordersList={activeOrdersList} />}
-                    />
-                  }
-                />
-                <Route
-                  path="/raw-material"
-                  element={
-                    <RawMaterial
-                      user={user}
-                      floorStock={floorStock}
-                      refreshFloorStock={refreshFloorStock}
-                    />
-                  }
-                />
-                <Route
-                  path="/manufacturing"
-                  element={<Production />}
-                />
-                <Route
-                  path="/production-session"
+                  path="/production-log"
                   element={
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['owner', 'worker']}
-                      element={
-                        <ProductionSession
-                          user={user}
-                          floorStock={floorStock}
-                          refreshFloorStock={refreshFloorStock}
-                        />
-                      }
+                      element={<ProductionLog user={user} />}
                     />
                   }
                 />
                 <Route
-                  path="/trading"
+                  path="/materials"
                   element={
                     <ProtectedRoute
                       user={user}
-                      allowedRoles={['owner']}
-                      element={<Trading data={tradingData} setData={setTradingData} ordersList={activeOrdersList} />}
+                      allowedRoles={['owner', 'worker']}
+                      element={<MaterialMovement />}
                     />
                   }
                 />
@@ -162,28 +111,47 @@ function AnimatedRoutes({
                     />
                   }
                 />
+
+                {/* ─── Orders ─── */}
                 <Route
-                  path="/log-history"
+                  path="/production-orders"
                   element={
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['owner']}
-                      element={
-                        <LogHistory
-                          user={user}
-                        />
-                      }
+                      element={<ProductionOrders />}
+                    />
+                  }
+                />
+                <Route
+                  path="/fulfillment"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner']}
+                      element={<Fulfillment />}
                     />
                   }
                 />
 
+                {/* ─── Reports & Data ─── */}
                 <Route
-                  path="/stocks"
+                  path="/reports"
                   element={
-                    <Stocks
+                    <ProtectedRoute
                       user={user}
-                      floorStock={floorStock}
-                      refreshFloorStock={refreshFloorStock}
+                      allowedRoles={['owner']}
+                      element={<MachineReports />}
+                    />
+                  }
+                />
+                <Route
+                  path="/raw-material"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner']}
+                      element={<RawMaterial user={user} />}
                     />
                   }
                 />
@@ -197,30 +165,24 @@ function AnimatedRoutes({
                     />
                   }
                 />
+
+                {/* Legacy / kept routes */}
                 <Route path="/orders" element={<Orders user={user} orders={ordersList} loading={ordersLoading} refreshOrders={refreshOrders} />} />
+
+                {/* Catch-all */}
+                <Route path="*" element={<Navigate to={userRole === 'worker' ? '/production-log' : '/'} />} />
               </Routes>
             </motion.div>
           </AnimatePresence>
 
-          <footer className="mt-16 border-t border-border-default/50 pt-10 text-center relative z-10 sm:mt-24 sm:pt-12">
-            <div className="flex flex-col items-center gap-6">
-               <img
-                src={avlokaiLogo}
-                alt="AvlokAI"
-                className="h-10 w-auto object-contain opacity-20 grayscale hover:opacity-100 hover:grayscale-0 transition-all duration-700"
-              />
-              <div className="space-y-2">
-                <p className="text-[10px] font-bold tracking-[0.2em] uppercase text-text-secondary/40">
-                  Precision Polymer Tracking System
-                </p>
+          <footer className="mt-16 border-t border-border-default/50 pt-10 text-center relative z-10">
+            <div className="flex flex-col items-center gap-4">
+              <img src={avlokaiLogo} alt="AvlokAI" className="h-9 w-auto object-contain opacity-20 grayscale hover:opacity-100 hover:grayscale-0 transition-all duration-700" />
+              <div className="space-y-1">
+                <p className="text-[10px] font-bold tracking-[0.2em] uppercase text-text-secondary/40">Precision Polymer Tracking System</p>
                 <p className="text-[11px] text-text-secondary/60">
                   © 2026 Venkateswara Polymers · Engineered by{' '}
-                  <a
-                    href="https://avlokai.com"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary/60 hover:text-primary transition-colors font-bold"
-                  >
+                  <a href="https://avlokai.com" target="_blank" rel="noopener noreferrer" className="text-primary/60 hover:text-primary font-bold">
                     AvlokAI
                   </a>
                 </p>
@@ -239,46 +201,22 @@ function App() {
       const token = localStorage.getItem(AUTH_TOKEN_KEY)
       const savedUser = localStorage.getItem('demo_user')
       if (!savedUser) return null
-
       const parsedUser = JSON.parse(savedUser)
-      if (!parsedUser?.role) {
-        localStorage.removeItem('demo_user')
-        return null
-      }
-
-      if (!token && !parsedUser?.token) {
-        localStorage.removeItem('demo_user')
-        return null
-      }
-
-      if (!token && parsedUser?.token) {
-        localStorage.setItem(AUTH_TOKEN_KEY, parsedUser.token)
-      }
-      if (parsedUser?.id !== undefined && parsedUser?.id !== null) {
-        localStorage.setItem(AUTH_USER_ID_KEY, String(parsedUser.id))
-      }
-      if (parsedUser?.role) {
-        localStorage.setItem(AUTH_ROLE_KEY, parsedUser.role)
-      }
-
+      if (!parsedUser?.role) { localStorage.removeItem('demo_user'); return null }
+      if (!token && !parsedUser?.token) { localStorage.removeItem('demo_user'); return null }
+      if (!token && parsedUser?.token) localStorage.setItem(AUTH_TOKEN_KEY, parsedUser.token)
+      if (parsedUser?.id != null) localStorage.setItem(AUTH_USER_ID_KEY, String(parsedUser.id))
+      if (parsedUser?.role) localStorage.setItem(AUTH_ROLE_KEY, parsedUser.role)
       return parsedUser
-    } catch (error) {
-      console.error('Failed to read saved user session', error)
+    } catch {
       localStorage.removeItem('demo_user')
       return null
     }
   })
 
-  const [floorStock, setFloorStock] = useState([])
-  const [tradingData, setTradingData] = useState([])
   const [ordersList, setOrdersList] = useState([])
   const [ordersLoading, setOrdersLoading] = useState(true)
-
-  const activeOrdersList = ordersList.filter((order) => {
-    const normalizedStatus = String(order.status || 'active').toLowerCase()
-    return normalizedStatus !== 'completed' && normalizedStatus !== 'cancelled'
-  })
-  const hasLoadedFromServerRef = useRef(false)
+  const hasLoadedRef = useRef(false)
 
   const refreshOrders = useCallback(async () => {
     setOrdersLoading(true)
@@ -290,40 +228,23 @@ function App() {
     }
   }, [])
 
-  const refreshFloorStock = useCallback(async () => {
-    const { data } = await api.get('/floor/stock')
-    setFloorStock(Array.isArray(data) ? data : [])
-  }, [])
-
-  const handleLogin = (authData) => {
+  const handleLogin = authData => {
     const token = authData?.token
     const role = normalizeRole(authData?.role)
     const id = authData?.user_id ?? authData?.id
+    if (!token || !role || id == null) return
 
-    if (!token || !role || id === undefined || id === null) {
-      console.error('Invalid login response payload', authData)
-      return
-    }
-
-    const normalizedUser = {
-      id: String(id),
-      role,
-      name: authData?.name ?? '',
-      email: authData?.email ?? '',
-      token,
-    }
-
+    const u = { id: String(id), role, name: authData?.name ?? '', email: authData?.email ?? '', token }
     localStorage.setItem(AUTH_TOKEN_KEY, token)
     localStorage.setItem(AUTH_USER_ID_KEY, String(id))
     localStorage.setItem(AUTH_ROLE_KEY, role)
-    localStorage.setItem('demo_user', JSON.stringify(normalizedUser))
-
-    hasLoadedFromServerRef.current = false
-    setUser(normalizedUser)
+    localStorage.setItem('demo_user', JSON.stringify(u))
+    hasLoadedRef.current = false
+    setUser(u)
   }
 
   const handleLogout = () => {
-    hasLoadedFromServerRef.current = false
+    hasLoadedRef.current = false
     setUser(null)
     localStorage.removeItem(AUTH_TOKEN_KEY)
     localStorage.removeItem(AUTH_USER_ID_KEY)
@@ -332,32 +253,10 @@ function App() {
   }
 
   useEffect(() => {
-    if (!user) {
-      hasLoadedFromServerRef.current = false
-      return
-    }
-
-    if (hasLoadedFromServerRef.current) return
-    hasLoadedFromServerRef.current = true
-
-    const loadAll = async () => {
-      const results = await Promise.allSettled([
-        refreshFloorStock(),
-        refreshOrders(),
-      ])
-
-      const [floorStockResult, ordersResult] = results
-
-      if (floorStockResult.status !== 'fulfilled') {
-        console.warn('Failed to load floor stock:', floorStockResult.reason)
-      }
-      if (ordersResult.status !== 'fulfilled') {
-        console.warn('Failed to load orders:', ordersResult.reason)
-      }
-    }
-
-    loadAll().catch((error) => console.error('Failed to load initial data', error))
-  }, [user, refreshFloorStock, refreshOrders])
+    if (!user || hasLoadedRef.current) return
+    hasLoadedRef.current = true
+    refreshOrders().catch(console.warn)
+  }, [user, refreshOrders])
 
   return (
     <ToastProvider>
@@ -370,14 +269,9 @@ function App() {
               <AnimatedRoutes
                 user={user}
                 handleLogout={handleLogout}
-                floorStock={floorStock}
-                tradingData={tradingData}
-                activeOrdersList={activeOrdersList}
-                refreshFloorStock={refreshFloorStock}
                 ordersList={ordersList}
                 ordersLoading={ordersLoading}
                 refreshOrders={refreshOrders}
-                setTradingData={setTradingData}
               />
             }
           />
