@@ -59,31 +59,16 @@ const Icon = {
 // ─── Nav definitions ──────────────────────────────────────────────────────────
 const ownerNavGroups = [
   {
-    label: 'Overview',
+    label: '',
     items: [
       { name: 'Dashboard', path: '/', icon: Icon.dashboard },
-    ]
-  },
-  {
-    label: 'Operations',
-    items: [
-      { name: 'Production', path: '/production-log', icon: Icon.production },
+      { name: 'Raw Material', path: '/raw-material', icon: Icon.rawMaterial },
       { name: 'Materials', path: '/materials', icon: Icon.materials },
-      { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
-    ]
-  },
-  {
-    label: 'Orders',
-    items: [
+      { name: 'Production', path: '/production-log', icon: Icon.production },
       { name: 'Production Orders', path: '/production-orders', icon: Icon.orders },
       { name: 'Fulfillment', path: '/fulfillment', icon: Icon.fulfillment },
-    ]
-  },
-  {
-    label: 'Reports & Data',
-    items: [
+      { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
       { name: 'Machine Reports', path: '/reports', icon: Icon.reports },
-      { name: 'Raw Material', path: '/raw-material', icon: Icon.rawMaterial },
       { name: 'Users', path: '/users', icon: Icon.users },
     ]
   },
@@ -237,10 +222,12 @@ export default function Sidebar({ user, onLogout }) {
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 overflow-y-auto space-y-5">
           {navGroups.map(group => (
-            <div key={group.label}>
-              <p className="px-3 mb-2 text-[9px] font-bold tracking-widest uppercase text-text-secondary/40">
-                {group.label}
-              </p>
+            <div key={group.label || 'main'}>
+              {group.label && (
+                <p className="px-3 mb-2 text-[9px] font-bold tracking-widest uppercase text-text-secondary/40">
+                  {group.label}
+                </p>
+              )}
               <ul className="space-y-0.5">
                 {group.items.map(item => (
                   <li key={item.path}>

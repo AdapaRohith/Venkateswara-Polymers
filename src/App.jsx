@@ -10,7 +10,7 @@ import Wastage from './pages/Wastage'
 import Login from './components/ui/animated-characters-login-page.jsx'
 import Users from './pages/Users'
 import Orders from './pages/Orders'
-import ProductionLog from './pages/ProductionLog'
+import Production from './pages/Production'
 import MaterialMovement from './pages/MaterialMovement'
 import ProductionOrders from './pages/ProductionOrders'
 import Fulfillment from './pages/Fulfillment'
@@ -87,7 +87,7 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['owner', 'worker']}
-                      element={<ProductionLog user={user} />}
+                      element={<Production user={user} />}
                     />
                   }
                 />
