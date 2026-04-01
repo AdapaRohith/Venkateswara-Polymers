@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useToast } from '../components/Toast'
+import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 
 const emptyMachine = () => ({ gross_weight: '', tare_weight: '', size: '', note: '' })
@@ -11,10 +12,11 @@ function calcNet(gross, tare) {
   return Math.round((g - t) * 1000) / 1000
 }
 
-function MachineCard({ machine, values, onChange, index, firstRef }) {
+function MachineCard({ machine, values, onChange, index, firstRef, touchedSizeFields, onSizeTouched }) {
   const net = calcNet(values.gross_weight, values.tare_weight)
   const isValid = net !== null && net > 0
   const isInvalid = values.gross_weight !== '' && values.tare_weight !== '' && net !== null && net <= 0
+  const isSizeDisabled = !touchedSizeFields[machine.id]
 
   return (
     <div
@@ -91,10 +93,15 @@ function MachineCard({ machine, values, onChange, index, firstRef }) {
             </label>
             <input
               type="text"
+              readOnly={isSizeDisabled}
               value={values.size}
               onChange={e => onChange('size', e.target.value)}
-              placeholder="optional"
-              className="w-full bg-bg-input text-text-primary border border-border-default rounded-lg px-3 py-2.5 text-sm focus:border-accent-gold focus:ring-1 focus:ring-accent-gold/20 transition-all"
+              onFocus={() => onSizeTouched(machine.id)}
+              className={`w-full text-text-primary border rounded-lg px-3 py-2.5 text-sm transition-all ${
+                isSizeDisabled
+                  ? 'bg-bg-input/70 border-border-default/60 cursor-pointer'
+                  : 'bg-bg-input border-border-default focus:border-accent-gold focus:ring-1 focus:ring-accent-gold/20'
+              }`}
             />
           </div>
           <div>
@@ -105,7 +112,6 @@ function MachineCard({ machine, values, onChange, index, firstRef }) {
               type="text"
               value={values.note}
               onChange={e => onChange('note', e.target.value)}
-              placeholder="optional"
               className="w-full bg-bg-input text-text-primary border border-border-default rounded-lg px-3 py-2.5 text-sm focus:border-accent-gold focus:ring-1 focus:ring-accent-gold/20 transition-all"
             />
           </div>
@@ -119,7 +125,8 @@ export default function ProductionLog({ user }) {
   const toast = useToast()
   const [machines, setMachines] = useState([])
   const [machinesLoading, setMachinesLoading] = useState(true)
-  const [inputs, setInputs] = useState({})
+  const [inputs, setInputs] = usePersistentState('vp_production_log_inputs', {})
+  const [touchedSizeFields, setTouchedSizeFields] = usePersistentState('vp_production_log_touched_sizes', {})
   const [submitting, setSubmitting] = useState(false)
   const [lastBatch, setLastBatch] = useState(null)
   const [flash, setFlash] = useState(false)
@@ -131,9 +138,16 @@ export default function ProductionLog({ user }) {
       .then(({ data }) => {
         const list = Array.isArray(data) ? data : []
         setMachines(list)
-        const initial = {}
-        list.forEach(m => { initial[m.id] = emptyMachine() })
-        setInputs(initial)
+        // Initialize only missing machines, preserve existing data
+        setInputs(prev => {
+          const updated = { ...prev }
+          list.forEach(m => {
+            if (!updated[m.id]) {
+              updated[m.id] = emptyMachine()
+            }
+          })
+          return updated
+        })
       })
       .catch(() => toast.error('Failed to load machines'))
       .finally(() => setMachinesLoading(false))
@@ -146,16 +160,24 @@ export default function ProductionLog({ user }) {
     }))
   }, [])
 
+  const handleSizeTouched = useCallback((machineId) => {
+    setTouchedSizeFields(prev => ({
+      ...prev,
+      [machineId]: true
+    }))
+  }, [])
+
   const reset = useCallback(() => {
     setInputs(prev => {
       const fresh = {}
       Object.keys(prev).forEach(id => { fresh[id] = emptyMachine() })
       return fresh
     })
+    setTouchedSizeFields({})
     setTimeout(() => firstRef.current?.focus(), 50)
   }, [])
 
-  const handleSubmit = async () => {
+  const handleSubmit = useCallback(async () => {
     // Collect valid machine entries
     const validMachines = machines
       .map(m => {
@@ -203,7 +225,7 @@ export default function ProductionLog({ user }) {
     } finally {
       setSubmitting(false)
     }
-  }
+  }, [machines, inputs, toast, reset, user?.id])
 
   // Keyboard shortcut: Ctrl+Enter to submit
   useEffect(() => {
@@ -214,7 +236,7 @@ export default function ProductionLog({ user }) {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [submitting, inputs]) // eslint-disable-line
+  }, [submitting, handleSubmit])
 
   const hasAnyInput = machines.some(m => {
     const v = inputs[m.id] || emptyMachine()
@@ -321,6 +343,8 @@ export default function ProductionLog({ user }) {
               onChange={(field, val) => handleChange(machine.id, field, val)}
               index={idx}
               firstRef={firstRef}
+              touchedSizeFields={touchedSizeFields}
+              onSizeTouched={handleSizeTouched}
             />
           ))}
         </div>

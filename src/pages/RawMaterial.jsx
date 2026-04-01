@@ -45,6 +45,9 @@ export default function RawMaterial({ user }) {
   const [materialOptionsError, setMaterialOptionsError] = useState('')
 
   const [exporting, setExporting] = useState(false)
+  const [showAddMaterial, setShowAddMaterial] = useState(false)
+  const [newMaterialName, setNewMaterialName] = useState('')
+  const [submittingMaterial, setSubmittingMaterial] = useState(false)
 
   const handleExport = async () => {
     try {
@@ -60,6 +63,37 @@ export default function RawMaterial({ user }) {
       toast.error('Failed to export logs.')
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleAddNewMaterial = async () => {
+    if (!newMaterialName?.trim()) {
+      toast.error('Material name is required')
+      return
+    }
+
+    setSubmittingMaterial(true)
+    try {
+      const response = await api.post('/materials', {
+        name: newMaterialName.trim(),
+      })
+      
+      // Response: { id: 1, name: "Material Name" }
+      const newMaterial = response.data
+      
+      // Refresh dropdown so new material appears
+      await refreshMaterialOptions()
+      
+      // Auto-select the newly added material by name
+      setAddForm((previous) => ({ ...previous, material_name: newMaterial.name }))
+      setNewMaterialName('')
+      setShowAddMaterial(false)
+      toast.success('Material added successfully!')
+    } catch (error) {
+      console.error('Failed to add material', error)
+      toast.error(error?.response?.data?.error || 'Failed to add material')
+    } finally {
+      setSubmittingMaterial(false)
     }
   }
 
@@ -221,7 +255,16 @@ export default function RawMaterial({ user }) {
         <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">Add / Update Raw Material</h3>
         <form onSubmit={handleSubmitAdd} className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="space-y-2">
-            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Material Name</label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Material Name</label>
+              <button
+                type="button"
+                onClick={() => setShowAddMaterial(true)}
+                className="text-xs font-semibold text-accent-gold hover:text-accent-gold-hover transition-colors"
+              >
+                + Add Item
+              </button>
+            </div>
             <select
               name="material_name"
               value={addForm.material_name}
@@ -322,6 +365,56 @@ export default function RawMaterial({ user }) {
           emptyMessage={loadingBatches ? 'Loading batches...' : 'No raw material batches found.'}
         />
       </div>
+
+      {showAddMaterial && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-bg-card rounded-2xl border border-border-default shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div>
+              <h3 className="text-lg font-semibold text-text-primary">Add New Material</h3>
+              <p className="text-sm text-text-secondary mt-1">Enter the name of the new raw material item</p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Material Name</label>
+              <input
+                type="text"
+                value={newMaterialName}
+                onChange={(e) => setNewMaterialName(e.target.value)}
+                placeholder="E.g., Plastic Resin, Steel Wire..."
+                className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold w-full"
+                disabled={submittingMaterial}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleAddNewMaterial()
+                  }
+                }}
+              />
+            </div>
+
+            <div className="flex gap-3 pt-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddMaterial(false)
+                  setNewMaterialName('')
+                }}
+                disabled={submittingMaterial}
+                className="flex-1 rounded-lg border border-gray-700 px-4 py-2.5 text-sm font-semibold text-text-primary transition-colors hover:bg-bg-input/50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleAddNewMaterial}
+                disabled={submittingMaterial || !newMaterialName.trim()}
+                className="flex-1 rounded-lg bg-accent-gold px-4 py-2.5 text-sm font-semibold text-black transition-all hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50"
+              >
+                {submittingMaterial ? 'Adding...' : 'Add Material'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
