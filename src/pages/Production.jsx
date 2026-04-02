@@ -103,15 +103,29 @@ export default function Production({ user }) {
 
   /* ── State ──────────────────────────────────────────────────────────────── */
   const [activeMachine, setActiveMachine] = useState(null)     // { id, label, type: 'production' | 'cutting' }
-  const [floorStock, setFloorStock] = useState([])
+  const [floorStock, setFloorStock] = useState([])            // Issued (floor) materials with quantities
   const [workerName, setWorkerName] = useState(loadWorkerName)
-  const [material, setMaterial] = useState('')
+  const [materialId, setMaterialId] = useState('')            // Stores material_type_id for floor_material_balance
   const [size, setSize] = useState(loadSize)
   const [grossWeight, setGrossWeight] = useState('')
   const [tareWeight, setTareWeight] = useState('')
   const [history, setHistory] = useState([])
   const [submitting, setSubmitting] = useState(false)
+  const [loadingWorker, setLoadingWorker] = useState(false)
+  const [loadingMaterials, setLoadingMaterials] = useState(false)
   const grossRef = useRef(null)
+
+  /* ── Compute available materials for production with floor stock quantities ─ */
+  const materialsForProduction = useMemo(() => {
+    // Floor stock is the source of truth for production - only show materials that have been issued
+    const mapped = floorStock.map(fs => ({
+      id: fs.material_type_id,  // material_type_id from floor_material_balance
+      material_name: fs.material_name,
+      issued_quantity_kg: toNumber(fs.total_quantity_kg),
+    }))
+    console.log('Materials for production (mapped):', mapped)
+    return mapped
+  }, [floorStock])
 
   /* ── Net weight auto-calc ───────────────────────────────────────────────── */
   const netWeight = useMemo(() => {
@@ -121,19 +135,52 @@ export default function Production({ user }) {
     return Math.max(g - t, 0)
   }, [grossWeight, tareWeight])
 
-  const isValid = netWeight !== null && netWeight > 0
+  const isValid = netWeight !== null && netWeight > 0 && materialId !== '' && activeMachine !== null
   const isInvalid = grossWeight !== '' && tareWeight !== '' && netWeight !== null && netWeight <= 0
 
-  /* ── Load floor stock for materials dropdown ────────────────────────────── */
+  /* ── Load floor stock (issued materials) for production ───────────────────── */
   useEffect(() => {
-    api.get('/floor/stock')
-      .then(({ data }) => setFloorStock(Array.isArray(data) ? data : []))
-      .catch(() => {})
+    const loadFloorStock = async () => {
+      setLoadingMaterials(true)
+      try {
+        const { data } = await api.get('/floor/stock')
+        console.log('Floor stock response:', data)
+        setFloorStock(Array.isArray(data) ? data : [])
+      } catch (err) {
+        console.error('Failed to load floor stock:', err)
+      } finally {
+        setLoadingMaterials(false)
+      }
+    }
+    
+    // Load immediately
+    loadFloorStock()
+    
+    // Poll every 10 seconds
+    const pollInterval = setInterval(loadFloorStock, 10000)
+    
+    return () => clearInterval(pollInterval)
   }, [])
 
   /* ── Persist worker name & size ─────────────────────────────────────────── */
   useEffect(() => { saveWorkerName(workerName) }, [workerName])
   useEffect(() => { saveSize(size) }, [size])
+
+  /* ── Fetch worker name from machine state ────────────────────────────────── */
+  const fetchWorkerForMachine = useCallback(async (machineId) => {
+    setLoadingWorker(true)
+    try {
+      const { data } = await api.get(`/machines/${machineId}/state`)
+      if (data?.current_worker) {
+        setWorkerName(data.current_worker)
+      }
+    } catch (err) {
+      // Silently ignore if endpoint doesn't exist
+      console.debug('Could not fetch worker state:', err.message)
+    } finally {
+      setLoadingWorker(false)
+    }
+  }, [])
 
   /* ── Select / deselect machine ──────────────────────────────────────────── */
   const selectMachine = useCallback((machine, type) => {
@@ -141,15 +188,20 @@ export default function Production({ user }) {
       if (prev && prev.id === machine.id && prev.type === type) return null
       return { ...machine, type }
     })
-    setMaterial('')
+    setMaterialId('')
     setGrossWeight('')
     setTareWeight('')
+    
+    // Fetch worker name for this machine from backend state
+    const machineIdNum = parseInt(machine.id.replace(/\D/g, ''), 10) || 1
+    fetchWorkerForMachine(machineIdNum)
+    
     setTimeout(() => grossRef.current?.focus(), 100)
-  }, [])
+  }, [fetchWorkerForMachine])
 
   const deselectMachine = useCallback(() => {
     setActiveMachine(null)
-    setMaterial('')
+    setMaterialId('')
     setGrossWeight('')
     setTareWeight('')
   }, [])
@@ -157,7 +209,17 @@ export default function Production({ user }) {
   /* ── Submit entry ───────────────────────────────────────────────────────── */
   const handleSubmit = useCallback(async (e) => {
     e.preventDefault()
-    if (!activeMachine || !isValid) return
+    if (!activeMachine || !isValid || !materialId) return
+
+    // Validation
+    if (!materialId) {
+      toast.error('Please select a material')
+      return
+    }
+    if (!workerName) {
+      toast.error('Please enter worker name')
+      return
+    }
 
     const gross = toNumber(grossWeight)
     const tare = toNumber(tareWeight)
@@ -167,29 +229,37 @@ export default function Production({ user }) {
       toast.error('Net weight must be greater than 0')
       return
     }
+    if (gross < tare) {
+      toast.error('Gross weight must be >= tare weight')
+      return
+    }
 
     setSubmitting(true)
     try {
-      // Use the existing production log API
       const machineIdNum = parseInt(activeMachine.id.replace(/\D/g, ''), 10) || 1
+      const materialIdNum = parseInt(materialId, 10)
+
+      // New API: POST /production/logs
       const { data } = await api.post('/production/logs', {
-        entered_by: user?.id,
-        machines: [{
-          machine_id: machineIdNum,
-          gross_weight: gross,
-          tare_weight: tare,
-          size: size || null,
-          note: `${activeMachine.type === 'cutting' ? '[CUTTING] ' : ''}${material ? `Material: ${material}` : ''}${workerName ? ` | Worker: ${workerName}` : ''}`,
-        }],
+        machine_id: machineIdNum,
+        material_id: materialIdNum,
+        size: size || null,
+        worker_name: workerName,
+        gross_weight: gross,
+        tare_weight: tare,
       })
+
+      // Find material name from materialsForProduction for history display
+      const selectedMaterial = materialsForProduction.find(mat => mat.id === materialIdNum)
+      const materialName = selectedMaterial?.material_name || `Material ${materialIdNum}`
 
       // Add to local history
       setHistory(prev => [{
-        id: data?.batch_id || Date.now(),
+        id: data?.id || Date.now(),
         time: new Date().toISOString(),
         machine: activeMachine.label,
         machineType: activeMachine.type,
-        material: material || '—',
+        material: materialName,
         size: size || '—',
         worker: workerName || '—',
         gross,
@@ -199,16 +269,18 @@ export default function Production({ user }) {
 
       toast.success(`✓ Entry logged for ${activeMachine.label}`)
 
-      // Reset form (keep worker name, size, and material)
+      // Reset form (keep machine, worker, material selection)
       setGrossWeight('')
       setTareWeight('')
       setTimeout(() => grossRef.current?.focus(), 50)
     } catch (err) {
-      toast.error(err?.response?.data?.error || 'Failed to log entry')
+      const errorMsg = err?.response?.data?.error || err?.message || 'Failed to log entry'
+      toast.error(errorMsg)
+      // Do NOT clear form on error per spec
     } finally {
       setSubmitting(false)
     }
-  }, [activeMachine, grossWeight, tareWeight, material, size, workerName, isValid, user?.id, toast])
+  }, [activeMachine, grossWeight, tareWeight, materialId, size, workerName, isValid, materialsForProduction, toast])
 
   /* ── Keyboard shortcut ──────────────────────────────────────────────────── */
   useEffect(() => {
@@ -330,14 +402,15 @@ export default function Production({ user }) {
                   Material
                 </label>
                 <select
-                  value={material}
-                  onChange={e => setMaterial(e.target.value)}
+                  value={materialId}
+                  onChange={e => setMaterialId(e.target.value)}
                   className={inputClass}
+                  disabled={submitting || loadingMaterials}
                 >
-                  <option value="">Select material...</option>
-                  {floorStock.map((fs, i) => (
-                    <option key={fs.material_type_id ?? i} value={fs.material_name}>
-                      {fs.material_name} ({toNumber(fs.total_quantity_kg).toFixed(1)} kg)
+                  <option value="">{loadingMaterials ? 'Loading materials...' : 'Select material...'}</option>
+                  {materialsForProduction.map((mat, i) => (
+                    <option key={mat.id ?? i} value={mat.id}>
+                      {mat.material_name} ({toNumber(mat.issued_quantity_kg).toFixed(1)} kg issued)
                     </option>
                   ))}
                 </select>

@@ -158,9 +158,19 @@ export default function RawMaterial({ user }) {
   }, [])
 
   useEffect(() => {
+    // Load immediately
     refreshRawTotals().catch(() => {})
     refreshMaterialOptions().catch(() => {})
     refreshBatches().catch(() => {})
+    
+    // Poll every 10 seconds
+    const pollInterval = setInterval(() => {
+      refreshRawTotals().catch(() => {})
+      refreshMaterialOptions().catch(() => {})
+      refreshBatches().catch(() => {})
+    }, 10000)
+    
+    return () => clearInterval(pollInterval)
   }, [refreshMaterialOptions, refreshRawTotals, refreshBatches])
 
   const handleAddChange = (event) => {

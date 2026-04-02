@@ -25,3 +25,4 @@ dist-ssr
 *.sw?
 server.js
 server_bak.js
+API_ENDPOINTS.md

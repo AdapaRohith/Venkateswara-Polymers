@@ -101,6 +101,11 @@ export default function Wastage({ user, ordersList = [] }) {
 
   useEffect(() => {
     loadWastage()
+    
+    // Poll every 10 seconds
+    const pollInterval = setInterval(loadWastage, 10000)
+    
+    return () => clearInterval(pollInterval)
   }, [loadWastage])
 
   // Summary from locally submitted data (no GET endpoint for wastage currently)

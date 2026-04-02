@@ -33,7 +33,14 @@ export default function Fulfillment() {
     }
   }, [])
 
-  useEffect(() => { loadData() }, [loadData, refreshKey])
+  useEffect(() => {
+    loadData()
+    
+    // Poll every 10 seconds
+    const pollInterval = setInterval(loadData, 10000)
+    
+    return () => clearInterval(pollInterval)
+  }, [loadData, refreshKey])
 
   const selectedPO = form.order_number ? poItems[form.order_number] : null
   const selectedItem = selectedPO && form.item_index !== '' ? selectedPO.items[parseInt(form.item_index)] : null

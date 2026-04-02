@@ -37,7 +37,7 @@ export default function MachineReports() {
 
       const [reportRes, logsRes] = await Promise.allSettled([
         api.get(`/reports/machines?${params.toString()}`),
-        api.get(`/production/logs?${params.toString()}`),
+        api.get(`/reports/logs?${params.toString()}`),
       ])
 
       if (reportRes.status === 'fulfilled') {
@@ -56,8 +56,15 @@ export default function MachineReports() {
     }
   }
 
-  // Load on mount
-  useEffect(() => { loadReport() }, []) // eslint-disable-line
+  // Load on mount with polling (only if default date range)
+  useEffect(() => {
+    loadReport()
+    
+    // Poll every 10 seconds
+    const pollInterval = setInterval(loadReport, 10000)
+    
+    return () => clearInterval(pollInterval)
+  }, []) // eslint-disable-line
 
   const totalEntries = report.reduce((s, r) => s + (Number(r.total_entries) || 0), 0)
   const totalNet = report.reduce((s, r) => s + (Number(r.total_net_weight_kg) || 0), 0)
