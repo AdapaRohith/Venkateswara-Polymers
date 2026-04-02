@@ -7,7 +7,7 @@ import { useEffect } from 'react'
  * @param {boolean} enabled - Whether polling is enabled (default: true)
  * @param {Array} deps - Dependency array to trigger refetch
  */
-export function usePolling(fetchFn, interval = 10000, enabled = true, deps = []) {
+export function usePolling(fetchFn, interval = 100000, enabled = true, deps = []) {
   useEffect(() => {
     if (!enabled || !fetchFn) return
 
