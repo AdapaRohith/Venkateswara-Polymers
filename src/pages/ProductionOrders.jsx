@@ -99,13 +99,13 @@ function CreatePOPanel({ onCreated }) {
           </div>
           <div className="space-y-2">
             {items.map((it, i) => (
-              <div key={i} className="flex gap-2 items-center">
+              <div key={i} className="flex gap-2 items-center overflow-hidden">
                 <input
                   type="text"
                   value={it.item_name}
                   onChange={e => updateItem(i, 'item_name', e.target.value)}
                   placeholder="Item name"
-                  className="flex-1 bg-bg-input text-text-primary border border-border-default rounded-lg px-3 py-2 text-sm focus:border-accent-gold transition-all"
+                  className="flex-1 min-w-0 bg-bg-input text-text-primary border border-border-default rounded-lg px-3 py-2 text-sm focus:border-accent-gold transition-all"
                 />
                 <input
                   type="number"
@@ -114,10 +114,10 @@ function CreatePOPanel({ onCreated }) {
                   placeholder="Qty (kg)"
                   min="0.001"
                   step="0.001"
-                  className="w-28 bg-bg-input text-text-primary border border-border-default rounded-lg px-3 py-2 text-sm font-mono focus:border-accent-gold transition-all"
+                  className="w-24 shrink-0 bg-bg-input text-text-primary border border-border-default rounded-lg px-3 py-2 text-sm font-mono focus:border-accent-gold transition-all"
                 />
                 {items.length > 1 && (
-                  <button type="button" onClick={() => removeItem(i)} className="text-red-400 hover:text-red-300 p-1">
+                  <button type="button" onClick={() => removeItem(i)} className="shrink-0 text-red-400 hover:text-red-300 p-1 rounded-lg hover:bg-red-500/10 transition-colors">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                     </svg>

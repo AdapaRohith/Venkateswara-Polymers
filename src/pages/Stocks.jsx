@@ -54,7 +54,17 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
   }, [])
 
   useEffect(() => {
-    Promise.allSettled([refreshFloorStock?.(), refreshRawTotals()]).catch(() => {})
+    const loadStockData = async () => {
+      return Promise.allSettled([refreshFloorStock?.(), refreshRawTotals()]).catch(() => {})
+    }
+    
+    // Load immediately
+    loadStockData()
+    
+    // Poll every 10 seconds
+    const pollInterval = setInterval(loadStockData, 10000)
+    
+    return () => clearInterval(pollInterval)
   }, [refreshFloorStock, refreshRawTotals])
 
   const totalAvailableKg = useMemo(

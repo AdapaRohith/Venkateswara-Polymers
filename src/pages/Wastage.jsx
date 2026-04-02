@@ -7,10 +7,6 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback
 }
 
-function formatKg(value) {
-  return `${toNumber(value).toFixed(2)} kg`
-}
-
 function formatDate(value) {
   if (!value) return '—'
   const date = new Date(value)
@@ -28,9 +24,7 @@ export default function Wastage({ user, ordersList = [] }) {
 
   const [form, setForm] = useState({
     date: new Date().toISOString().split('T')[0],
-    order_number: '',
-    gross_weight: '',
-    net_weight: '',
+    wastage_generated: '',
   })
 
   // Compute sno from existing rows
@@ -40,12 +34,12 @@ export default function Wastage({ user, ordersList = [] }) {
 
   const handleSubmit = async e => {
     e.preventDefault()
-    if (!form.date || !form.order_number || !form.gross_weight || !form.net_weight) {
+    if (!form.date || !form.wastage_generated) {
       toast.error('Please fill all required fields')
       return
     }
-    if (Number(form.gross_weight) < Number(form.net_weight)) {
-      toast.error('Gross weight cannot be less than net weight')
+    if (Number(form.wastage_generated) <= 0) {
+      toast.error('Wastage generated must be greater than 0')
       return
     }
 
@@ -54,12 +48,10 @@ export default function Wastage({ user, ordersList = [] }) {
       await api.post('/wastage', {
         sno: nextSno,
         date: form.date,
-        order_number: form.order_number,
-        gross_weight: Number(form.gross_weight),
-        net_weight: Number(form.net_weight),
+        wastage_generated: Number(form.wastage_generated),
       })
       toast.success('Wastage logged successfully')
-      setForm(prev => ({ ...prev, gross_weight: '', net_weight: '' }))
+      setForm(prev => ({ ...prev, wastage_generated: '' }))
       loadWastage()
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to log wastage')
@@ -87,12 +79,9 @@ export default function Wastage({ user, ordersList = [] }) {
   const loadWastage = useCallback(async () => {
     setLoading(true)
     try {
-      // Fetch recent logs from production logs endpoint (new system)
       const { data } = await api.get('/reports/logs?limit=200')
-      // Filter only wastage data if needed – for now show all logs
       setWastageRows(Array.isArray(data) ? [] : [])
     } catch {
-      // Silently fail — wastage table may not have a GET endpoint yet
       setWastageRows([])
     } finally {
       setLoading(false)
@@ -101,22 +90,21 @@ export default function Wastage({ user, ordersList = [] }) {
 
   useEffect(() => {
     loadWastage()
+    
+    // Poll every 10 seconds
+    const pollInterval = setInterval(loadWastage, 10000)
+    
+    return () => clearInterval(pollInterval)
   }, [loadWastage])
 
-  // Summary from locally submitted data (no GET endpoint for wastage currently)
-  const summary = {
-    totalGrossWeight: wastageRows.reduce((s, r) => s + toNumber(r.gross_weight || r.grossWeight), 0),
-    totalNetWeight: wastageRows.reduce((s, r) => s + toNumber(r.net_weight || r.netWeight), 0),
-    get totalActualWeight() { return this.totalGrossWeight - this.totalNetWeight },
-    entryCount: wastageRows.length,
-  }
+  const totalWastage = wastageRows.reduce((s, r) => s + toNumber(r.wastage_generated || r.net_weight || r.netWeight), 0)
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-text-primary tracking-tight">Wastage Entry</h1>
-          <p className="text-sm text-text-secondary mt-1">Log independent wastage records</p>
+          <p className="text-sm text-text-secondary mt-1">Log wastage generated during production</p>
         </div>
         {isOwner && (
           <button
@@ -133,7 +121,7 @@ export default function Wastage({ user, ordersList = [] }) {
       {/* Entry Form */}
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm p-6">
         <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60 mb-6">Log Wastage</h2>
-        <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-3 gap-5">
           <div>
             <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Date</label>
             <input
@@ -147,29 +135,11 @@ export default function Wastage({ user, ordersList = [] }) {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Order</label>
-            <select
-              name="order_number"
-              value={form.order_number}
-              onChange={handleChange}
-              required
-              className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all appearance-none"
-            >
-              <option value="">{ordersList.length > 0 ? 'Select order...' : 'No orders available'}</option>
-              {ordersList.map(o => (
-                <option key={o.order_number} value={o.order_number}>
-                  {o.order_number}{o.client_name ? ` (${o.client_name})` : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Gross (kg)</label>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Wastage Generated (kg)</label>
             <input
               type="number"
-              name="gross_weight"
-              value={form.gross_weight}
+              name="wastage_generated"
+              value={form.wastage_generated}
               onChange={handleChange}
               required
               step="0.01"
@@ -179,38 +149,7 @@ export default function Wastage({ user, ordersList = [] }) {
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Net (kg)</label>
-            <input
-              type="number"
-              name="net_weight"
-              value={form.net_weight}
-              onChange={handleChange}
-              required
-              step="0.01"
-              min="0"
-              placeholder="0.00"
-              className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm font-mono focus:border-accent-gold transition-all"
-            />
-          </div>
-
-          {/* Actual wastage hint */}
-          {form.gross_weight && form.net_weight && (
-            <div className="sm:col-span-2 lg:col-span-3 flex items-center gap-3">
-              <div className={`rounded-lg px-4 py-2 border text-sm font-semibold font-mono ${
-                Number(form.gross_weight) >= Number(form.net_weight)
-                  ? 'text-accent-gold bg-accent-gold/10 border-accent-gold/20'
-                  : 'text-red-400 bg-red-500/10 border-red-500/20'
-              }`}>
-                Actual wastage: {Math.max(0, Number(form.gross_weight) - Number(form.net_weight)).toFixed(2)} kg
-              </div>
-              {Number(form.gross_weight) < Number(form.net_weight) && (
-                <span className="text-xs text-red-400">Gross must be ≥ Net</span>
-              )}
-            </div>
-          )}
-
-          <div className="flex items-end justify-end lg:col-start-4">
+          <div className="flex items-end">
             <button
               type="submit"
               disabled={submitting}
@@ -224,8 +163,13 @@ export default function Wastage({ user, ordersList = [] }) {
 
       {/* Table */}
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-border-subtle">
+        <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between">
           <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Recent Wastage Logs</h2>
+          {totalWastage > 0 && (
+            <span className="text-xs font-semibold font-mono text-accent-gold bg-accent-gold/10 border border-accent-gold/20 rounded-lg px-3 py-1">
+              Total: {totalWastage.toFixed(2)} kg
+            </span>
+          )}
         </div>
 
         <div className="overflow-x-auto">
@@ -234,34 +178,26 @@ export default function Wastage({ user, ordersList = [] }) {
               <tr className="border-b border-border-subtle bg-bg-primary/30">
                 <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">S.No</th>
                 <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Date</th>
-                <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Order</th>
-                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Gross (kg)</th>
-                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Net (kg)</th>
-                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Wastage (kg)</th>
+                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Wastage Generated (kg)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border-subtle">
               {loading ? (
-                <tr><td colSpan={6} className="py-10 text-center text-text-secondary/50">Loading...</td></tr>
+                <tr><td colSpan={3} className="py-10 text-center text-text-secondary/50">Loading...</td></tr>
               ) : wastageRows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-sm text-text-secondary/40">
+                  <td colSpan={3} className="py-12 text-center text-sm text-text-secondary/40">
                     No wastage entries logged yet. Submit above to see records.
                   </td>
                 </tr>
               ) : (
                 wastageRows.map((row, i) => {
-                  const gross = toNumber(row.gross_weight || row.grossWeight)
-                  const net = toNumber(row.net_weight || row.netWeight)
-                  const actual = toNumber(row.actual_weight || row.actualWeight, gross - net)
+                  const wastage = toNumber(row.wastage_generated || row.net_weight || row.netWeight)
                   return (
                     <tr key={row.id || i} className="hover:bg-white/[0.02] transition-colors">
                       <td className="px-6 py-3.5 text-text-secondary/60">{row.sno || i + 1}</td>
                       <td className="px-6 py-3.5 text-text-primary/90">{formatDate(row.date)}</td>
-                      <td className="px-6 py-3.5 text-text-primary/90">{row.order_number || '—'}</td>
-                      <td className="px-6 py-3.5 text-right font-mono text-text-primary/90">{gross.toFixed(2)}</td>
-                      <td className="px-6 py-3.5 text-right font-mono text-text-primary/90">{net.toFixed(2)}</td>
-                      <td className="px-6 py-3.5 text-right font-mono font-bold text-accent-gold">{actual.toFixed(2)}</td>
+                      <td className="px-6 py-3.5 text-right font-mono font-bold text-accent-gold">{wastage.toFixed(2)}</td>
                     </tr>
                   )
                 })

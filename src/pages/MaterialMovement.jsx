@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 
-const MOVEMENT_TYPES = ['INWARD', 'FLOOR_TRANSFER', 'CONSUMPTION', 'ADJUSTMENT']
+const MOVEMENT_TYPES = ['FLOOR_TRANSFER']
 
 function formatDate(iso) {
   if (!iso) return '—'
@@ -34,39 +34,42 @@ export default function MaterialMovement() {
   const [form, setForm] = useState({
     material_name: '',
     quantity_kg: '',
-    movement_type: 'INWARD',
-    direction: 'IN',
+    movement_type: 'FLOOR_TRANSFER',
+    direction: 'OUT',
     note: '',
   })
 
   const loadData = async () => {
     setLoading(true)
     try {
-      const [matRes, rawRes] = await Promise.allSettled([
+      const [matRes, movRes] = await Promise.allSettled([
         api.get('/raw-material/options'),
-        api.get('/raw-material/totals'),
+        api.get('/floor/transactions'),
       ])
       if (matRes.status === 'fulfilled') {
         setMaterials(Array.isArray(matRes.value.data) ? matRes.value.data : [])
+      }
+      if (movRes.status === 'fulfilled') {
+        setMovements(Array.isArray(movRes.value.data) ? movRes.value.data : [])
       }
     } catch {/* ignore */} finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => {
+    // Load immediately
+    loadData()
+    
+    // Poll every 10 seconds
+    const pollInterval = setInterval(loadData, 10000)
+    
+    return () => clearInterval(pollInterval)
+  }, [])
 
   const handleChange = e => {
     const { name, value } = e.target
-    setForm(prev => {
-      const next = { ...prev, [name]: value }
-      // Auto-set direction
-      if (name === 'movement_type') {
-        if (['INWARD'].includes(value)) next.direction = 'IN'
-        else if (['CONSUMPTION', 'FLOOR_TRANSFER'].includes(value)) next.direction = 'OUT'
-      }
-      return next
-    })
+    setForm(prev => ({ ...prev, [name]: value }))
   }
 
   const handleSubmit = async e => {
@@ -145,56 +148,16 @@ export default function MaterialMovement() {
                 />
               </div>
 
-              {/* Movement Type */}
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">
-                  Movement Type
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {MOVEMENT_TYPES.map(t => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => setForm(prev => {
-                        const next = { ...prev, movement_type: t }
-                        if (['INWARD'].includes(t)) next.direction = 'IN'
-                        else if (['CONSUMPTION', 'FLOOR_TRANSFER'].includes(t)) next.direction = 'OUT'
-                        return next
-                      })}
-                      className={`py-2 px-3 rounded-lg text-xs font-semibold border transition-all ${
-                        form.movement_type === t
-                          ? 'bg-accent-gold text-white border-accent-gold shadow-sm'
-                          : 'border-border-default text-text-secondary hover:border-accent-gold/40'
-                      }`}
-                    >
-                      {t.replace('_', ' ')}
-                    </button>
-                  ))}
+              {/* Movement Type — Fixed to Floor Transfer */}
+              <div className="rounded-xl border border-purple-500/20 bg-purple-500/10 px-4 py-3 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
+                  <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+                  </svg>
                 </div>
-              </div>
-
-              {/* Direction */}
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">
-                  Direction
-                </label>
-                <div className="flex gap-3">
-                  {['IN', 'OUT'].map(d => (
-                    <button
-                      key={d}
-                      type="button"
-                      onClick={() => setForm(prev => ({ ...prev, direction: d }))}
-                      className={`flex-1 py-2.5 rounded-xl text-sm font-bold border transition-all ${
-                        form.direction === d
-                          ? d === 'IN'
-                            ? 'bg-green-500/20 border-green-500/50 text-green-400'
-                            : 'bg-red-500/20 border-red-500/50 text-red-400'
-                          : 'border-border-default text-text-secondary hover:bg-bg-primary'
-                      }`}
-                    >
-                      {d === 'IN' ? '↓ IN' : '↑ OUT'}
-                    </button>
-                  ))}
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-purple-400">Floor Transfer</p>
+                  <p className="text-[10px] text-text-secondary/50 mt-0.5">Material out to production floor</p>
                 </div>
               </div>
 
@@ -224,9 +187,10 @@ export default function MaterialMovement() {
           </div>
         </div>
 
-        {/* Stock Summary */}
+        {/* Stock Summary & Movements History */}
         <div className="xl:col-span-2 space-y-6">
           <StockSummary />
+          <MovementHistory movements={movements} loading={loading} />
         </div>
       </div>
     </div>
@@ -272,6 +236,68 @@ function StockSummary() {
                   </td>
                   <td className="px-6 py-3.5 text-right text-text-secondary/60 text-xs">
                     {row.updated_at ? new Date(row.updated_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : '—'}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function MovementHistory({ movements, loading }) {
+  return (
+    <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-border-subtle">
+        <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Movement History</h2>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border-subtle">
+              <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Date/Time</th>
+              <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Material</th>
+              <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Quantity (kg)</th>
+              <th className="px-6 py-3 text-center text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Direction</th>
+              <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Type</th>
+              <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">By</th>
+              <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={7} className="py-8 text-center text-text-secondary/50">Loading...</td></tr>
+            ) : movements.length === 0 ? (
+              <tr><td colSpan={7} className="py-8 text-center text-text-secondary/50">No movements recorded yet</td></tr>
+            ) : (
+              movements.map((row, i) => (
+                <tr key={i} className="border-b border-border-subtle hover:bg-white/[0.02] transition-colors">
+                  <td className="px-6 py-3.5 text-xs text-text-secondary/70 whitespace-nowrap">
+                    {formatDate(row.created_at)}
+                  </td>
+                  <td className="px-6 py-3.5 font-medium text-text-primary">
+                    {row.material_name || `[ID: ${row.material_id}]`}
+                  </td>
+                  <td className="px-6 py-3.5 text-right font-mono font-semibold text-accent-gold">
+                    {parseFloat(row.quantity_kg || 0).toFixed(2)}
+                  </td>
+                  <td className="px-6 py-3.5 text-center">
+                    <span className={`inline-block px-3 py-1 rounded-lg text-xs font-bold border ${directionColors[row.direction] || 'text-gray-400 bg-gray-500/10'}`}>
+                      {row.direction || '—'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-3.5">
+                    <span className={`inline-block px-3 py-1 rounded-lg text-xs font-bold ${typeColors[row.movement_type] || 'text-gray-400'}`}>
+                      {row.movement_type || '—'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-3.5 text-xs text-text-secondary/70">
+                    {row.created_by_name || '—'}
+                  </td>
+                  <td className="px-6 py-3.5 text-xs text-text-secondary/60 max-w-xs truncate">
+                    {row.note || '—'}
                   </td>
                 </tr>
               ))
