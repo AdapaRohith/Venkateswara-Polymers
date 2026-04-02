@@ -1,5 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import EditEntryModal from '../components/EditEntryModal'
+import { useToast } from '../components/Toast'
 import api from '../utils/api'
+import {
+  bulkDeleteProductionLogs,
+  deleteProductionLog,
+  updateProductionLog,
+} from '../utils/logActions'
 
 function formatDate(iso) {
   if (!iso) return '-'
@@ -20,16 +27,31 @@ function toNumber(value, fallback = 0) {
 }
 
 export default function MachineReports() {
+  const toast = useToast()
   const [report, setReport] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [filters, setFilters] = useState({
     date_from: new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0],
     date_to: new Date().toISOString().split('T')[0],
+    machine_id: '',
   })
   const [applied, setApplied] = useState(null)
   const [detailLogs, setDetailLogs] = useState([])
   const [detailLoading, setDetailLoading] = useState(false)
+  const [materialOptions, setMaterialOptions] = useState([])
+  const [machineOptions, setMachineOptions] = useState([])
+  const [selectedLogIds, setSelectedLogIds] = useState([])
+  const [editingLog, setEditingLog] = useState(null)
+  const [editForm, setEditForm] = useState({
+    machine_id: '',
+    material_id: '',
+    size: '',
+    worker_name: '',
+    gross_weight: '',
+    tare_weight: '',
+  })
+  const [savingEdit, setSavingEdit] = useState(false)
 
   const loadReport = async () => {
     setLoading(true)
@@ -40,10 +62,13 @@ export default function MachineReports() {
       const params = new URLSearchParams()
       if (filters.date_from) params.append('date_from', filters.date_from)
       if (filters.date_to) params.append('date_to', filters.date_to)
+      if (filters.machine_id) params.append('machine_id', filters.machine_id)
 
-      const [reportRes, logsRes] = await Promise.allSettled([
+      const [reportRes, logsRes, floorStockRes, machinesRes] = await Promise.allSettled([
         api.get(`/reports/machines?${params.toString()}`),
         api.get(`/production/logs?${params.toString()}`),
+        api.get('/floor/stock'),
+        api.get('/machines'),
       ])
 
       if (reportRes.status === 'fulfilled') {
@@ -51,6 +76,12 @@ export default function MachineReports() {
       }
       if (logsRes.status === 'fulfilled') {
         setDetailLogs(Array.isArray(logsRes.value.data) ? logsRes.value.data : [])
+      }
+      if (floorStockRes.status === 'fulfilled') {
+        setMaterialOptions(Array.isArray(floorStockRes.value.data) ? floorStockRes.value.data : [])
+      }
+      if (machinesRes.status === 'fulfilled') {
+        setMachineOptions(Array.isArray(machinesRes.value.data) ? machinesRes.value.data : [])
       }
 
       setApplied({ ...filters })
@@ -73,6 +104,79 @@ export default function MachineReports() {
   const totalNet = report.reduce((sum, row) => sum + toNumber(row.total_net_weight_kg), 0)
   const totalGross = report.reduce((sum, row) => sum + toNumber(row.total_gross_weight_kg), 0)
   const maxNet = Math.max(...report.map((row) => toNumber(row.total_net_weight_kg)), 0)
+  const allSelected = detailLogs.length > 0 && detailLogs.every((row) => selectedLogIds.includes(row.id))
+
+  const toggleAll = () => {
+    setSelectedLogIds(allSelected ? [] : detailLogs.map((row) => row.id))
+  }
+
+  const toggleOne = (rowId) => {
+    setSelectedLogIds((previous) =>
+      previous.includes(rowId) ? previous.filter((id) => id !== rowId) : [...previous, rowId],
+    )
+  }
+
+  const handleDeleteOne = async (logId) => {
+    if (!window.confirm('Delete this production log?')) return
+
+    try {
+      await deleteProductionLog(logId)
+      setSelectedLogIds((previous) => previous.filter((id) => id !== logId))
+      await loadReport()
+      toast.success('Production log deleted')
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to delete production log')
+    }
+  }
+
+  const handleDeleteSelected = async () => {
+    if (selectedLogIds.length === 0) return
+    if (!window.confirm(`Delete ${selectedLogIds.length} selected production logs?`)) return
+
+    try {
+      await bulkDeleteProductionLogs(selectedLogIds)
+      setSelectedLogIds([])
+      await loadReport()
+      toast.success('Selected production logs deleted')
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to delete selected production logs')
+    }
+  }
+
+  const openEditModal = (entry) => {
+    setEditingLog(entry)
+    setEditForm({
+      machine_id: String(entry.machine_id || ''),
+      material_id: String(entry.material_id || ''),
+      size: entry.size || '',
+      worker_name: entry.worker_name || '',
+      gross_weight: toNumber(entry.gross_weight).toFixed(2),
+      tare_weight: toNumber(entry.tare_weight).toFixed(2),
+    })
+  }
+
+  const handleSaveEdit = async () => {
+    if (!editingLog) return
+
+    try {
+      setSavingEdit(true)
+      await updateProductionLog(editingLog.id, {
+        machine_id: toNumber(editForm.machine_id),
+        material_type_id: toNumber(editForm.material_id),
+        size: editForm.size,
+        worker_name: editForm.worker_name,
+        gross_weight: toNumber(editForm.gross_weight),
+        tare_weight: toNumber(editForm.tare_weight),
+      })
+      setEditingLog(null)
+      await loadReport()
+      toast.success('Production log updated')
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to update production log')
+    } finally {
+      setSavingEdit(false)
+    }
+  }
 
   return (
     <div className="space-y-8">
@@ -88,7 +192,7 @@ export default function MachineReports() {
             <input
               type="date"
               value={filters.date_from}
-              onChange={(e) => setFilters((prev) => ({ ...prev, date_from: e.target.value }))}
+              onChange={(event) => setFilters((previous) => ({ ...previous, date_from: event.target.value }))}
               className="bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all"
             />
           </div>
@@ -97,9 +201,24 @@ export default function MachineReports() {
             <input
               type="date"
               value={filters.date_to}
-              onChange={(e) => setFilters((prev) => ({ ...prev, date_to: e.target.value }))}
+              onChange={(event) => setFilters((previous) => ({ ...previous, date_to: event.target.value }))}
               className="bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all"
             />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Machine</label>
+            <select
+              value={filters.machine_id}
+              onChange={(event) => setFilters((previous) => ({ ...previous, machine_id: event.target.value }))}
+              className="bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all min-w-40"
+            >
+              <option value="">All machines</option>
+              {machineOptions.map((machine) => (
+                <option key={machine.id} value={machine.id}>
+                  {machine.name || `Machine ${machine.id}`}
+                </option>
+              ))}
+            </select>
           </div>
           <button
             onClick={loadReport}
@@ -108,29 +227,11 @@ export default function MachineReports() {
           >
             {loading ? 'Loading...' : 'Generate Report'}
           </button>
-          <div className="flex gap-2">
-            {[
-              { label: 'Today', days: 0 },
-              { label: '7 Days', days: 7 },
-              { label: '30 Days', days: 30 },
-            ].map((preset) => (
-              <button
-                key={preset.label}
-                onClick={() => {
-                  const to = new Date().toISOString().split('T')[0]
-                  const from = new Date(Date.now() - preset.days * 86400000).toISOString().split('T')[0]
-                  setFilters({ date_from: preset.days === 0 ? to : from, date_to: to })
-                }}
-                className="px-3 py-2 text-xs font-semibold rounded-lg border border-border-default text-text-secondary hover:border-accent-gold/40 hover:text-accent-gold transition-all"
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
         </div>
         {applied && (
           <p className="text-[11px] text-text-secondary/50 mt-3">
             Showing: {formatDate(applied.date_from)} - {formatDate(applied.date_to)}
+            {applied.machine_id ? ` · Machine ${applied.machine_id}` : ' · All machines'}
           </p>
         )}
       </div>
@@ -236,7 +337,7 @@ export default function MachineReports() {
       </div>
 
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-purple-500/15 flex items-center justify-center">
               <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -245,7 +346,17 @@ export default function MachineReports() {
             </div>
             <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Production History</h2>
           </div>
-          <span className="text-[10px] text-text-secondary/40 font-mono">{detailLogs.length} entries</span>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] text-text-secondary/40 font-mono">{detailLogs.length} entries</span>
+            <button
+              type="button"
+              onClick={handleDeleteSelected}
+              disabled={selectedLogIds.length === 0}
+              className="rounded-lg border border-red-500/30 px-4 py-2 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+            >
+              Delete Selected ({selectedLogIds.length})
+            </button>
+          </div>
         </div>
 
         {detailLoading ? (
@@ -268,6 +379,15 @@ export default function MachineReports() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border-subtle bg-bg-primary/50">
+                  <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                      className="h-4 w-4 accent-accent-gold"
+                      aria-label="Select all production rows"
+                    />
+                  </th>
                   <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Time</th>
                   <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Machine</th>
                   <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Material</th>
@@ -276,6 +396,7 @@ export default function MachineReports() {
                   <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Gross (kg)</th>
                   <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Tare (kg)</th>
                   <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Net (kg)</th>
+                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle">
@@ -289,6 +410,15 @@ export default function MachineReports() {
 
                   return (
                     <tr key={entry.id || index} className={`hover:bg-white/[0.02] transition-colors ${index % 2 !== 0 ? 'bg-white/[0.01]' : ''}`}>
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedLogIds.includes(entry.id)}
+                          onChange={() => toggleOne(entry.id)}
+                          className="h-4 w-4 accent-accent-gold"
+                          aria-label={`Select production log ${entry.id}`}
+                        />
+                      </td>
                       <td className="px-5 py-3 text-text-primary/80 whitespace-nowrap text-xs">{formatDateTime(entry.created_at)}</td>
                       <td className="px-5 py-3 whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-accent-gold/10 text-accent-gold border border-accent-gold/20">
@@ -301,6 +431,24 @@ export default function MachineReports() {
                       <td className="px-5 py-3 text-right font-mono text-text-secondary/80">{gross.toFixed(2)}</td>
                       <td className="px-5 py-3 text-right font-mono text-text-secondary/60">{tare.toFixed(2)}</td>
                       <td className="px-5 py-3 text-right font-mono font-bold text-accent-gold">{net.toFixed(2)}</td>
+                      <td className="px-5 py-3">
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => openEditModal(entry)}
+                            className="text-xs font-semibold text-blue-300 transition-colors hover:text-blue-200"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteOne(entry.id)}
+                            className="text-xs font-semibold text-red-300 transition-colors hover:text-red-200"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   )
                 })}
@@ -309,6 +457,39 @@ export default function MachineReports() {
           </div>
         )}
       </div>
+
+      <EditEntryModal
+        open={Boolean(editingLog)}
+        title="Edit Production Log"
+        values={editForm}
+        onChange={(name, value) => setEditForm((previous) => ({ ...previous, [name]: value }))}
+        onClose={() => {
+          if (savingEdit) return
+          setEditingLog(null)
+        }}
+        onSubmit={handleSaveEdit}
+        submitting={savingEdit}
+        fields={[
+          { name: 'machine_id', label: 'Machine ID', type: 'number', min: '1', required: true },
+          {
+            name: 'material_id',
+            label: 'Material',
+            type: 'select',
+            required: true,
+            options: [
+              { value: '', label: 'Select material' },
+              ...materialOptions.map((material) => ({
+                value: String(material.material_type_id),
+                label: material.material_name,
+              })),
+            ],
+          },
+          { name: 'size', label: 'Size', type: 'text', placeholder: 'Optional size' },
+          { name: 'worker_name', label: 'Worker Name', type: 'text', required: true },
+          { name: 'gross_weight', label: 'Gross Weight', type: 'number', step: '0.01', min: '0.01', required: true },
+          { name: 'tare_weight', label: 'Tare Weight', type: 'number', step: '0.01', min: '0', required: true },
+        ]}
+      />
     </div>
   )
 }

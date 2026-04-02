@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import DataTable from '../components/DataTable'
+import EditEntryModal from '../components/EditEntryModal'
 import InputWithCamera from '../components/InputWithCamera'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
+import {
+  bulkDeleteRawMaterialBatches,
+  deleteRawMaterialBatch,
+  updateRawMaterialBatch,
+} from '../utils/logActions'
 
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
@@ -111,6 +117,14 @@ export default function RawMaterial({ user }) {
   const [batches, setBatches] = useState([])
   const [loadingBatches, setLoadingBatches] = useState(true)
   const [batchesError, setBatchesError] = useState('')
+  const [selectedBatchIds, setSelectedBatchIds] = useState([])
+  const [editingBatch, setEditingBatch] = useState(null)
+  const [editBatchForm, setEditBatchForm] = useState({
+    material_name: '',
+    quantity_kg: '',
+    note: '',
+  })
+  const [savingBatchEdit, setSavingBatchEdit] = useState(false)
 
   const refreshRawTotals = useCallback(async () => {
     console.info('[RawMaterial] calling GET /raw-material/totals')
@@ -156,6 +170,62 @@ export default function RawMaterial({ user }) {
       setLoadingBatches(false)
     }
   }, [])
+
+  const handleDeleteBatch = async (batchId) => {
+    if (!window.confirm('Delete this raw material batch?')) return
+
+    try {
+      await deleteRawMaterialBatch(batchId)
+      await Promise.allSettled([refreshRawTotals(), refreshBatches()])
+      setSelectedBatchIds((previous) => previous.filter((id) => id !== batchId))
+      toast.success('Batch deleted')
+    } catch (error) {
+      toast.error(error?.response?.data?.error || 'Failed to delete batch')
+    }
+  }
+
+  const handleBulkDeleteBatches = async () => {
+    if (selectedBatchIds.length === 0) return
+    if (!window.confirm(`Delete ${selectedBatchIds.length} selected batch entries?`)) return
+
+    try {
+      await bulkDeleteRawMaterialBatches(selectedBatchIds)
+      setSelectedBatchIds([])
+      await Promise.allSettled([refreshRawTotals(), refreshBatches()])
+      toast.success('Selected batches deleted')
+    } catch (error) {
+      toast.error(error?.response?.data?.error || 'Failed to delete selected batches')
+    }
+  }
+
+  const openEditBatch = (batch) => {
+    setEditingBatch(batch)
+    setEditBatchForm({
+      material_name: batch.material_name || '',
+      quantity_kg: toNumber(batch.quantity_kg).toFixed(2),
+      note: batch.note || '',
+    })
+  }
+
+  const handleSaveBatchEdit = async () => {
+    if (!editingBatch) return
+
+    try {
+      setSavingBatchEdit(true)
+      await updateRawMaterialBatch(editingBatch.id, {
+        material_name: editBatchForm.material_name,
+        quantity_kg: toNumber(editBatchForm.quantity_kg),
+        note: editBatchForm.note,
+      })
+      setEditingBatch(null)
+      await Promise.allSettled([refreshRawTotals(), refreshBatches(), refreshMaterialOptions()])
+      toast.success('Batch updated')
+    } catch (error) {
+      toast.error(error?.response?.data?.error || 'Failed to update batch')
+    } finally {
+      setSavingBatchEdit(false)
+    }
+  }
 
   useEffect(() => {
     // Load immediately
@@ -355,14 +425,24 @@ export default function RawMaterial({ user }) {
       <div className="pt-6 border-t border-border-default space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <h3 className="text-xl font-semibold text-text-primary tracking-tight">Batch History</h3>
-          <button
-            type="button"
-            onClick={handleExport}
-            disabled={exporting || batches.length === 0}
-            className="rounded-lg bg-accent-gold px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
-          >
-            {exporting ? 'Exporting...' : 'Export Logs'}
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={handleBulkDeleteBatches}
+              disabled={selectedBatchIds.length === 0}
+              className="rounded-lg border border-red-500/30 px-4 py-2 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+            >
+              Delete Selected ({selectedBatchIds.length})
+            </button>
+            <button
+              type="button"
+              onClick={handleExport}
+              disabled={exporting || batches.length === 0}
+              className="rounded-lg bg-accent-gold px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
+            >
+              {exporting ? 'Exporting...' : 'Export Logs'}
+            </button>
+          </div>
         </div>
         {batchesError && (
           <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
@@ -373,8 +453,54 @@ export default function RawMaterial({ user }) {
           columns={batchColumns}
           data={batches}
           emptyMessage={loadingBatches ? 'Loading batches...' : 'No raw material batches found.'}
+          onDelete={handleDeleteBatch}
+          onEdit={openEditBatch}
+          selectedIds={selectedBatchIds}
+          onSelectedIdsChange={setSelectedBatchIds}
         />
       </div>
+
+      <EditEntryModal
+        open={Boolean(editingBatch)}
+        title="Edit Raw Material Batch"
+        values={editBatchForm}
+        onChange={(name, value) => setEditBatchForm((previous) => ({ ...previous, [name]: value }))}
+        onClose={() => {
+          if (savingBatchEdit) return
+          setEditingBatch(null)
+        }}
+        onSubmit={handleSaveBatchEdit}
+        submitting={savingBatchEdit}
+        fields={[
+          {
+            name: 'material_name',
+            label: 'Material Name',
+            type: 'select',
+            required: true,
+            options: [
+              { value: '', label: loadingMaterialOptions ? 'Loading materials...' : 'Select material' },
+              ...(materialOptions || []).map((option) => ({
+                value: option.material_name,
+                label: option.material_name,
+              })),
+            ],
+          },
+          {
+            name: 'quantity_kg',
+            label: 'Quantity (kg)',
+            type: 'number',
+            step: '0.01',
+            min: '0.01',
+            required: true,
+          },
+          {
+            name: 'note',
+            label: 'Note',
+            type: 'textarea',
+            placeholder: 'Optional note',
+          },
+        ]}
+      />
 
       {showAddMaterial && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">

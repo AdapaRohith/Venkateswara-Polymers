@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import EditEntryModal from '../components/EditEntryModal'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
+import {
+  bulkDeleteProductionLogs,
+  deleteProductionLog,
+  updateProductionLog,
+} from '../utils/logActions'
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 function toNumber(v, fb = 0) {
@@ -46,8 +52,10 @@ function normalizeHistoryEntry(log) {
     id: log.id,
     time: log.time ?? log.created_at,
     machine: log.machine,
+    machineId: log.machineId ?? log.machine_id,
     machineType: log.machineType,
     material: log.material,
+    materialId: log.materialId ?? log.material_id,
     size: log.size || '—',
     worker: log.worker || '—',
     gross,
@@ -136,6 +144,18 @@ export default function Production({ user }) {
   const [grossWeight, setGrossWeight] = useState('')
   const [tareWeight, setTareWeight] = useState('')
   const [history, setHistory] = useState([])
+  const [historyMachineFilter, setHistoryMachineFilter] = useState('')
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState([])
+  const [editingHistoryRow, setEditingHistoryRow] = useState(null)
+  const [editHistoryForm, setEditHistoryForm] = useState({
+    machine_id: '',
+    material_id: '',
+    size: '',
+    worker_name: '',
+    gross_weight: '',
+    tare_weight: '',
+  })
+  const [savingHistoryEdit, setSavingHistoryEdit] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [loadingWorker, setLoadingWorker] = useState(false)
   const [loadingMaterials, setLoadingMaterials] = useState(false)
@@ -212,13 +232,12 @@ export default function Production({ user }) {
 
   /* ── Fetch production logs for selected machine ──────────────────────────── */
   const fetchLogsForMachine = useCallback(async (machineId) => {
-    if (!machineId) {
-      setHistory([])
-      return
-    }
     try {
+      const params = {}
+      if (machineId) params.machine_id = machineId
+
       const { data } = await api.get('/production/logs', {
-        params: { machine_id: machineId }
+        params
       })
       
       // Transform API response to history format
@@ -242,6 +261,11 @@ export default function Production({ user }) {
     }
   }, [])
 
+  useEffect(() => {
+    const machineId = historyMachineFilter ? Number(historyMachineFilter) : null
+    fetchLogsForMachine(machineId).catch(() => {})
+  }, [fetchLogsForMachine, historyMachineFilter])
+
   /* ── Select / deselect machine ──────────────────────────────────────────── */
   const selectMachine = useCallback((machine, type) => {
     setActiveMachine(prev => {
@@ -255,13 +279,11 @@ export default function Production({ user }) {
     
     // Fetch worker name for this machine from backend state
     const machineIdNum = parseInt(machine.id.replace(/\D/g, ''), 10) || 1
+    setHistoryMachineFilter(String(machineIdNum))
     fetchWorkerForMachine(machineIdNum)
-    
-    // Fetch production logs for this machine
-    fetchLogsForMachine(machineIdNum)
-    
+
     setTimeout(() => grossRef.current?.focus(), 100)
-  }, [fetchWorkerForMachine, fetchLogsForMachine])
+  }, [fetchWorkerForMachine])
 
   /* ── Load assigned stock for active machine ──────────────────────────────── */
   useEffect(() => {
@@ -303,6 +325,32 @@ export default function Production({ user }) {
     setGrossWeight('')
     setTareWeight('')
   }, [])
+
+  const refreshHistoryContext = useCallback(async (machineIdOverride) => {
+    const resolvedMachineId =
+      machineIdOverride ||
+      (historyMachineFilter ? Number(historyMachineFilter) : null) ||
+      (activeMachine ? parseInt(activeMachine.id.replace(/\D/g, ''), 10) || 1 : null)
+
+    const requests = [api.get('/floor/stock')]
+    if (resolvedMachineId) {
+      requests.push(api.get(`/machines/${resolvedMachineId}/assigned-stock`))
+      requests.push(fetchLogsForMachine(resolvedMachineId))
+    }
+
+    const [floorRes, assignedRes] = await Promise.allSettled(requests)
+
+    if (floorRes.status === 'fulfilled') {
+      setFloorStock(Array.isArray(floorRes.value.data) ? floorRes.value.data : [])
+    }
+
+    if (assignedRes && assignedRes.status === 'fulfilled') {
+      const assignedMaterials = Array.isArray(assignedRes.value.data?.assigned_materials)
+        ? assignedRes.value.data.assigned_materials
+        : []
+      setAssignedStock(assignedMaterials)
+    }
+  }, [activeMachine, fetchLogsForMachine, historyMachineFilter])
 
   /* ── Submit entry ───────────────────────────────────────────────────────── */
   const handleSubmit = useCallback(async (e) => {
@@ -415,6 +463,68 @@ export default function Production({ user }) {
     }
   }, [activeMachine, assignedMaterialsForSelection, assignedStock, grossWeight, tareWeight, materialId, size, workerName, isValid, materialsForProduction, toast])
 
+  const openEditHistory = useCallback((row) => {
+    setEditingHistoryRow(row)
+    setEditHistoryForm({
+      machine_id: String(row.machineId || ''),
+      material_id: String(row.materialId || ''),
+      size: row.size === '—' ? '' : row.size || '',
+      worker_name: row.worker === '—' ? '' : row.worker || '',
+      gross_weight: toNumber(row.gross).toFixed(2),
+      tare_weight: toNumber(row.tare).toFixed(2),
+    })
+  }, [])
+
+  const handleDeleteHistory = useCallback(async (rowId) => {
+    if (!window.confirm('Delete this production entry?')) return
+
+    try {
+      await deleteProductionLog(rowId)
+      setSelectedHistoryIds((previous) => previous.filter((id) => id !== rowId))
+      await refreshHistoryContext()
+      toast.success('Production entry deleted')
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to delete production entry')
+    }
+  }, [refreshHistoryContext, toast])
+
+  const handleBulkDeleteHistory = useCallback(async () => {
+    if (selectedHistoryIds.length === 0) return
+    if (!window.confirm(`Delete ${selectedHistoryIds.length} selected production entries?`)) return
+
+    try {
+      await bulkDeleteProductionLogs(selectedHistoryIds)
+      setSelectedHistoryIds([])
+      await refreshHistoryContext()
+      toast.success('Selected production entries deleted')
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to delete selected entries')
+    }
+  }, [refreshHistoryContext, selectedHistoryIds, toast])
+
+  const handleSaveHistoryEdit = useCallback(async () => {
+    if (!editingHistoryRow) return
+
+    try {
+      setSavingHistoryEdit(true)
+      await updateProductionLog(editingHistoryRow.id, {
+        machine_id: toNumber(editHistoryForm.machine_id),
+        material_type_id: toNumber(editHistoryForm.material_id),
+        size: editHistoryForm.size || null,
+        worker_name: editHistoryForm.worker_name,
+        gross_weight: toNumber(editHistoryForm.gross_weight),
+        tare_weight: toNumber(editHistoryForm.tare_weight),
+      })
+      setEditingHistoryRow(null)
+      await refreshHistoryContext(toNumber(editHistoryForm.machine_id))
+      toast.success('Production entry updated')
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to update production entry')
+    } finally {
+      setSavingHistoryEdit(false)
+    }
+  }, [editHistoryForm, editingHistoryRow, refreshHistoryContext, toast])
+
   /* ── Keyboard shortcut ──────────────────────────────────────────────────── */
   useEffect(() => {
     const handler = (e) => {
@@ -430,6 +540,7 @@ export default function Production({ user }) {
   const totalGross = useMemo(() => history.reduce((sum, row) => sum + toNumber(row.gross), 0), [history])
   const totalTare = useMemo(() => history.reduce((sum, row) => sum + toNumber(row.tare), 0), [history])
   const totalNet = useMemo(() => history.reduce((sum, row) => sum + toNumber(row.net), 0), [history])
+  const allHistorySelected = history.length > 0 && history.every((row) => selectedHistoryIds.includes(row.id))
 
   const inputClass =
     'w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:border-accent-gold focus:ring-2 focus:ring-accent-gold/20 disabled:cursor-not-allowed disabled:opacity-60'
@@ -726,21 +837,46 @@ export default function Production({ user }) {
             <div>
               <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-text-primary">Production History</h2>
               <p className="text-[11px] text-text-secondary/60 mt-0.5">
-                {history.length} {history.length === 1 ? 'entry' : 'entries'} this session
+                {history.length} {history.length === 1 ? 'entry' : 'entries'} in current filter
                 {totalNet > 0 && ` · Total: ${formatKg(totalNet)}`}
               </p>
             </div>
           </div>
 
-          {history.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setHistory([])}
-              className="px-4 py-2 text-xs font-semibold text-text-secondary border border-border-default rounded-xl hover:border-red-500/30 hover:text-red-400 hover:bg-red-500/5 transition-all"
-            >
-              Clear History
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="space-y-1">
+              <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
+                Filter Machine
+              </label>
+              <select
+                value={historyMachineFilter}
+                onChange={(event) => setHistoryMachineFilter(event.target.value)}
+                className="rounded-xl border border-border-default bg-bg-input px-4 py-2.5 text-sm text-text-primary transition-all duration-200 focus:border-accent-gold focus:ring-2 focus:ring-accent-gold/20"
+              >
+                <option value="">All machines</option>
+                {PRODUCTION_MACHINES.map((machine) => (
+                  <option key={machine.id} value={machine.id.replace(/\D/g, '')}>
+                    {machine.label}
+                  </option>
+                ))}
+                {CUTTING_MACHINES.map((machine) => (
+                  <option key={machine.id} value={machine.id.replace(/\D/g, '')}>
+                    {machine.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {history.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setHistory([])}
+                className="px-4 py-2 text-xs font-semibold text-text-secondary border border-border-default rounded-xl hover:border-red-500/30 hover:text-red-400 hover:bg-red-500/5 transition-all"
+              >
+                Clear History
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="overflow-x-auto rounded-2xl border border-border-default bg-bg-input/15">
