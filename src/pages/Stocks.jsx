@@ -61,8 +61,8 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
     // Load immediately
     loadStockData()
     
-    // Poll every 10 seconds
-    const pollInterval = setInterval(loadStockData, 10000)
+    // Poll every 50 seconds
+    const pollInterval = setInterval(loadStockData, 50000)
     
     return () => clearInterval(pollInterval)
   }, [refreshFloorStock, refreshRawTotals])

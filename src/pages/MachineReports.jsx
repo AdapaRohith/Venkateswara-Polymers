@@ -65,7 +65,7 @@ export default function MachineReports() {
   useEffect(() => {
     loadReport()
 
-    const pollInterval = setInterval(loadReport, 10000)
+    const pollInterval = setInterval(loadReport, 50000)
     return () => clearInterval(pollInterval)
   }, []) // eslint-disable-line
 

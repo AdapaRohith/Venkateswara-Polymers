@@ -163,12 +163,12 @@ export default function RawMaterial({ user }) {
     refreshMaterialOptions().catch(() => {})
     refreshBatches().catch(() => {})
     
-    // Poll every 10 seconds
+    // Poll every 50 seconds
     const pollInterval = setInterval(() => {
       refreshRawTotals().catch(() => {})
       refreshMaterialOptions().catch(() => {})
       refreshBatches().catch(() => {})
-    }, 10000)
+    }, 50000)
     
     return () => clearInterval(pollInterval)
   }, [refreshMaterialOptions, refreshRawTotals, refreshBatches])

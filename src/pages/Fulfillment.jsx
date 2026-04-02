@@ -39,7 +39,7 @@ export default function Fulfillment() {
   useEffect(() => {
     loadData()
 
-    const pollInterval = setInterval(loadData, 10000)
+    const pollInterval = setInterval(loadData, 50000)
     return () => clearInterval(pollInterval)
   }, [loadData, refreshKey])
 

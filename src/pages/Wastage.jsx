@@ -91,8 +91,8 @@ export default function Wastage({ user, ordersList = [] }) {
   useEffect(() => {
     loadWastage()
     
-    // Poll every 10 seconds
-    const pollInterval = setInterval(loadWastage, 10000)
+    // Poll every 50 seconds
+    const pollInterval = setInterval(loadWastage, 50000)
     
     return () => clearInterval(pollInterval)
   }, [loadWastage])

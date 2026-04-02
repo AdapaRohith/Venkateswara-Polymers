@@ -61,8 +61,8 @@ export default function MaterialMovement() {
     // Load immediately
     loadData()
     
-    // Poll every 10 seconds
-    const pollInterval = setInterval(loadData, 10000)
+    // Poll every 50 seconds
+    const pollInterval = setInterval(loadData, 50000)
     
     return () => clearInterval(pollInterval)
   }, [])

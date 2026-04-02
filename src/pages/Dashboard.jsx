@@ -69,8 +69,8 @@ export default function Dashboard() {
         // Call immediately
         fetchMetrics()
 
-        // Poll every 10 seconds
-        const pollInterval = setInterval(fetchMetrics, 10000)
+        // Poll every 50 seconds
+        const pollInterval = setInterval(fetchMetrics, 50000)
 
         return () => {
             cancelled = true

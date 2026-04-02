@@ -184,8 +184,8 @@ export default function Production({ user }) {
     // Load immediately
     loadFloorStock()
     
-    // Poll every 10 seconds
-    const pollInterval = setInterval(loadFloorStock, 10000)
+    // Poll every 50 seconds
+    const pollInterval = setInterval(loadFloorStock, 50000)
     
     return () => clearInterval(pollInterval)
   }, [])
