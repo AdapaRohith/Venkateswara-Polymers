@@ -37,6 +37,31 @@ function saveSize(s) {
   try { localStorage.setItem(SIZE_KEY, s) } catch { /* noop */ }
 }
 
+function normalizeHistoryEntry(log) {
+  const gross = toNumber(log.gross ?? log.gross_weight)
+  const tare = toNumber(log.tare ?? log.tare_weight)
+  const net = toNumber(log.net ?? log.net_weight, Math.max(gross - tare, 0))
+
+  return {
+    id: log.id,
+    time: log.time ?? log.created_at,
+    machine: log.machine,
+    machineType: log.machineType,
+    material: log.material,
+    size: log.size || '—',
+    worker: log.worker || '—',
+    gross,
+    tare,
+    net,
+  }
+}
+
+function getAssignedAvailableKg(material) {
+  const pooled = material?.available_quantity_kg
+  if (pooled !== undefined && pooled !== null) return toNumber(pooled)
+  return toNumber(material?.quantity_kg)
+}
+
 /* ── Machine definitions ─────────────────────────────────────────────────── */
 const PRODUCTION_MACHINES = [
   { id: 'M1', label: 'Machine 1' },
@@ -104,6 +129,7 @@ export default function Production({ user }) {
   /* ── State ──────────────────────────────────────────────────────────────── */
   const [activeMachine, setActiveMachine] = useState(null)     // { id, label, type: 'production' | 'cutting' }
   const [floorStock, setFloorStock] = useState([])            // Issued (floor) materials with quantities
+  const [assignedStock, setAssignedStock] = useState([])      // Materials assigned to active machine
   const [workerName, setWorkerName] = useState(loadWorkerName)
   const [materialId, setMaterialId] = useState('')            // Stores material_type_id for floor_material_balance
   const [size, setSize] = useState(loadSize)
@@ -118,14 +144,17 @@ export default function Production({ user }) {
   /* ── Compute available materials for production with floor stock quantities ─ */
   const materialsForProduction = useMemo(() => {
     // Floor stock is the source of truth for production - only show materials that have been issued
-    const mapped = floorStock.map(fs => ({
+    return floorStock.map(fs => ({
       id: fs.material_type_id,  // material_type_id from floor_material_balance
       material_name: fs.material_name,
       issued_quantity_kg: toNumber(fs.total_quantity_kg),
     }))
-    console.log('Materials for production (mapped):', mapped)
-    return mapped
   }, [floorStock])
+
+  const assignedMaterialsForSelection = useMemo(
+    () => assignedStock.filter((mat) => getAssignedAvailableKg(mat) > 0),
+    [assignedStock],
+  )
 
   /* ── Net weight auto-calc ───────────────────────────────────────────────── */
   const netWeight = useMemo(() => {
@@ -144,7 +173,6 @@ export default function Production({ user }) {
       setLoadingMaterials(true)
       try {
         const { data } = await api.get('/floor/stock')
-        console.log('Floor stock response:', data)
         setFloorStock(Array.isArray(data) ? data : [])
       } catch (err) {
         console.error('Failed to load floor stock:', err)
@@ -182,6 +210,38 @@ export default function Production({ user }) {
     }
   }, [])
 
+  /* ── Fetch production logs for selected machine ──────────────────────────── */
+  const fetchLogsForMachine = useCallback(async (machineId) => {
+    if (!machineId) {
+      setHistory([])
+      return
+    }
+    try {
+      const { data } = await api.get('/production/logs', {
+        params: { machine_id: machineId }
+      })
+      
+      // Transform API response to history format
+      const logs = Array.isArray(data) ? data : []
+      const historyItems = logs.map(log => normalizeHistoryEntry({
+        id: log.id,
+        time: log.created_at,
+        machine: `M${log.machine_id}`,
+        machineType: 'production',
+        material: log.material_name || `Material ${log.material_id}`,
+        size: log.size || '—',
+        worker: log.worker_name || '—',
+        gross: log.gross_weight,
+        tare: log.tare_weight,
+        net: log.net_weight,
+      }))
+      
+      setHistory(historyItems)
+    } catch (err) {
+      console.error('Failed to load production logs:', err)
+    }
+  }, [])
+
   /* ── Select / deselect machine ──────────────────────────────────────────── */
   const selectMachine = useCallback((machine, type) => {
     setActiveMachine(prev => {
@@ -189,6 +249,7 @@ export default function Production({ user }) {
       return { ...machine, type }
     })
     setMaterialId('')
+    setAssignedStock([])
     setGrossWeight('')
     setTareWeight('')
     
@@ -196,12 +257,49 @@ export default function Production({ user }) {
     const machineIdNum = parseInt(machine.id.replace(/\D/g, ''), 10) || 1
     fetchWorkerForMachine(machineIdNum)
     
+    // Fetch production logs for this machine
+    fetchLogsForMachine(machineIdNum)
+    
     setTimeout(() => grossRef.current?.focus(), 100)
-  }, [fetchWorkerForMachine])
+  }, [fetchWorkerForMachine, fetchLogsForMachine])
+
+  /* ── Load assigned stock for active machine ──────────────────────────────── */
+  useEffect(() => {
+    const loadAssignedStock = async () => {
+      if (!activeMachine) {
+        setAssignedStock([])
+        return
+      }
+
+      try {
+        const machineIdNum = parseInt(activeMachine.id.replace(/\D/g, ''), 10) || 1
+        const { data } = await api.get(`/machines/${machineIdNum}/assigned-stock`)
+        
+        if (data?.assigned_materials) {
+          const assignedMaterials = Array.isArray(data.assigned_materials) ? data.assigned_materials : []
+          const availableAssignedMaterials = assignedMaterials.filter((mat) => getAssignedAvailableKg(mat) > 0)
+
+          setAssignedStock(assignedMaterials)
+          
+          // Auto-select material if only one is assigned
+          if (availableAssignedMaterials.length === 1) {
+            setMaterialId(String(availableAssignedMaterials[0].material_type_id))
+          }
+        }
+      } catch (err) {
+        // Assignment table might not exist yet, fall back to floor stock
+        console.debug('Could not load assigned stock:', err.message)
+        setAssignedStock([])
+      }
+    }
+    
+    loadAssignedStock()
+  }, [activeMachine])
 
   const deselectMachine = useCallback(() => {
     setActiveMachine(null)
     setMaterialId('')
+    setAssignedStock([])
     setGrossWeight('')
     setTareWeight('')
   }, [])
@@ -240,21 +338,29 @@ export default function Production({ user }) {
       const materialIdNum = parseInt(materialId, 10)
 
       // New API: POST /production/logs
+      // Send as material_type_id for auto-assignment system
       const { data } = await api.post('/production/logs', {
         machine_id: machineIdNum,
-        material_id: materialIdNum,
+        material_type_id: materialIdNum, // Use material_type_id for auto-assignment
         size: size || null,
         worker_name: workerName,
         gross_weight: gross,
         tare_weight: tare,
       })
 
-      // Find material name from materialsForProduction for history display
-      const selectedMaterial = materialsForProduction.find(mat => mat.id === materialIdNum)
+      // Find material name from assigned stock or floor stock for history display
+      const selectedAssignedMaterial = assignedStock.find(mat => String(mat.material_type_id) === String(materialIdNum))
+      let selectedMaterial = selectedAssignedMaterial
+      if (!selectedMaterial) {
+        selectedMaterial = materialsForProduction.find(mat => String(mat.id) === String(materialIdNum))
+      }
       const materialName = selectedMaterial?.material_name || `Material ${materialIdNum}`
+      const nextSelectedAvailableKg = selectedAssignedMaterial
+        ? Math.max(getAssignedAvailableKg(selectedAssignedMaterial) - net, 0)
+        : null
 
       // Add to local history
-      setHistory(prev => [{
+      setHistory(prev => [normalizeHistoryEntry({
         id: data?.id || Date.now(),
         time: new Date().toISOString(),
         machine: activeMachine.label,
@@ -265,13 +371,40 @@ export default function Production({ user }) {
         gross,
         tare,
         net,
-      }, ...prev])
+      }), ...prev])
+
+      setFloorStock((prev) =>
+        prev
+          .map((row) => {
+            if (String(row.material_type_id) !== String(materialIdNum)) return row
+            return {
+              ...row,
+              total_quantity_kg: Math.max(toNumber(row.total_quantity_kg) - net, 0),
+            }
+          })
+          .filter((row) => toNumber(row.total_quantity_kg) > 0),
+      )
+
+      setAssignedStock((prev) =>
+        prev.map((row) => {
+          if (String(row.material_type_id) !== String(materialIdNum)) return row
+          return {
+            ...row,
+            available_quantity_kg: Math.max(getAssignedAvailableKg(row) - net, 0),
+          }
+        }),
+      )
 
       toast.success(`✓ Entry logged for ${activeMachine.label}`)
 
       // Reset form (keep machine, worker, material selection)
       setGrossWeight('')
       setTareWeight('')
+      if (assignedMaterialsForSelection.length === 1 && (nextSelectedAvailableKg === null || nextSelectedAvailableKg > 0)) {
+        setMaterialId(String(assignedMaterialsForSelection[0].material_type_id))
+      } else if (assignedMaterialsForSelection.length === 1 && nextSelectedAvailableKg === 0) {
+        setMaterialId('')
+      }
       setTimeout(() => grossRef.current?.focus(), 50)
     } catch (err) {
       const errorMsg = err?.response?.data?.error || err?.message || 'Failed to log entry'
@@ -280,7 +413,7 @@ export default function Production({ user }) {
     } finally {
       setSubmitting(false)
     }
-  }, [activeMachine, grossWeight, tareWeight, materialId, size, workerName, isValid, materialsForProduction, toast])
+  }, [activeMachine, assignedMaterialsForSelection, assignedStock, grossWeight, tareWeight, materialId, size, workerName, isValid, materialsForProduction, toast])
 
   /* ── Keyboard shortcut ──────────────────────────────────────────────────── */
   useEffect(() => {
@@ -294,7 +427,9 @@ export default function Production({ user }) {
   }, [activeMachine, isValid, submitting, handleSubmit])
 
   /* ── Totals ─────────────────────────────────────────────────────────────── */
-  const totalNet = useMemo(() => history.reduce((s, h) => s + h.net, 0), [history])
+  const totalGross = useMemo(() => history.reduce((sum, row) => sum + toNumber(row.gross), 0), [history])
+  const totalTare = useMemo(() => history.reduce((sum, row) => sum + toNumber(row.tare), 0), [history])
+  const totalNet = useMemo(() => history.reduce((sum, row) => sum + toNumber(row.net), 0), [history])
 
   const inputClass =
     'w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:border-accent-gold focus:ring-2 focus:ring-accent-gold/20 disabled:cursor-not-allowed disabled:opacity-60'
@@ -395,24 +530,70 @@ export default function Production({ user }) {
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-6 border-t border-border-default">
+            {/* Show assigned stock info */}
+            {assignedStock.length > 0 && (
+              <div className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-5">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-blue-300/70 mb-3">
+                  Assigned Materials for {activeMachine.label}
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {assignedStock.map(mat => (
+                    <div
+                      key={`${mat.machine_id}-${mat.material_type_id}`}
+                      className="flex items-center justify-between bg-blue-500/5 rounded-xl px-4 py-3 border border-blue-500/10"
+                    >
+                      <div>
+                        <p className="text-sm font-semibold text-blue-200">{mat.material_name}</p>
+                        <p className="text-xs text-blue-300/70 mt-1">{toNumber(mat.quantity_kg).toFixed(1)} kg linked</p>
+                        <p className="text-xs text-blue-200/80 mt-1">{getAssignedAvailableKg(mat).toFixed(1)} kg available in floor pool</p>
+                      </div>
+                      <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
+                        <svg className="w-4 h-4 text-blue-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Row 1: Material + Size + Worker */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
               <div className="space-y-2">
                 <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
                   Material
+                  {assignedStock.length > 0 && <span className="ml-2 text-blue-300 normal-case tracking-normal">(auto-assigned)</span>}
                 </label>
                 <select
                   value={materialId}
                   onChange={e => setMaterialId(e.target.value)}
                   className={inputClass}
-                  disabled={submitting || loadingMaterials}
+                  disabled={submitting || loadingMaterials || (assignedMaterialsForSelection.length === 1 && materialId !== '')}
                 >
-                  <option value="">{loadingMaterials ? 'Loading materials...' : 'Select material...'}</option>
-                  {materialsForProduction.map((mat, i) => (
-                    <option key={mat.id ?? i} value={mat.id}>
-                      {mat.material_name} ({toNumber(mat.issued_quantity_kg).toFixed(1)} kg issued)
-                    </option>
-                  ))}
+                  {assignedStock.length === 0 ? (
+                    <>
+                      <option value="">{loadingMaterials ? 'Loading materials...' : 'Select material...'}</option>
+                      {materialsForProduction.map((mat, i) => (
+                        <option key={mat.id ?? i} value={mat.id}>
+                          {mat.material_name} ({toNumber(mat.issued_quantity_kg).toFixed(1)} kg issued)
+                        </option>
+                      ))}
+                    </>
+                  ) : assignedMaterialsForSelection.length === 0 ? (
+                    <>
+                      <option value="">No assigned material available</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="">{assignedMaterialsForSelection.length === 1 ? 'Auto-selected' : 'Select assigned material...'}</option>
+                      {assignedMaterialsForSelection.map((mat) => (
+                        <option key={mat.material_type_id} value={mat.material_type_id}>
+                          {mat.material_name} ({getAssignedAvailableKg(mat).toFixed(1)} kg available)
+                        </option>
+                      ))}
+                    </>
+                  )}
                 </select>
               </div>
 
@@ -612,9 +793,9 @@ export default function Production({ user }) {
                     <td className="px-4 py-3 text-text-primary/80">{row.material}</td>
                     <td className="px-4 py-3 text-text-primary/80">{row.size}</td>
                     <td className="px-4 py-3 text-text-primary/80 font-medium">{row.worker}</td>
-                    <td className="px-4 py-3 text-right font-mono text-text-secondary/80">{row.gross.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right font-mono text-text-secondary/60">{row.tare.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right font-mono font-bold text-accent-gold">{row.net.toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-text-secondary/80">{toNumber(row.gross).toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-text-secondary/60">{toNumber(row.tare).toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right font-mono font-bold text-accent-gold">{toNumber(row.net).toFixed(2)}</td>
                   </tr>
                 ))
               )}
@@ -626,10 +807,10 @@ export default function Production({ user }) {
                     Session Total
                   </td>
                   <td className="px-4 py-3 text-right font-mono font-bold text-text-secondary/80">
-                    {history.reduce((s, h) => s + h.gross, 0).toFixed(2)}
+                    {totalGross.toFixed(2)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono font-bold text-text-secondary/60">
-                    {history.reduce((s, h) => s + h.tare, 0).toFixed(2)}
+                    {totalTare.toFixed(2)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono font-bold text-accent-gold text-base">
                     {totalNet.toFixed(2)}

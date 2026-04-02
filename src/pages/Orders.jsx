@@ -1,8 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import DataTable from '../components/DataTable'
 import { useToast } from '../components/Toast'
-import usePersistentState from '../hooks/usePersistentState'
-import api from '../utils/api'
+import { createOrder, deleteOrder, updateOrderStatus } from '../utils/orders'
 
 const ORDER_STATUS_FILTERS = [
   { value: 'all', label: 'All' },
@@ -20,13 +19,14 @@ const ORDER_STATUS_PRIORITY = {
 export default function Orders({ user, orders = [], loading = false, refreshOrders }) {
   const toast = useToast()
   const isWorker = user?.role === 'worker'
-  const [form, setForm] = usePersistentState('vp_orders_form', { order_number: '', client_name: '' })
-  const [statusFilter, setStatusFilter] = usePersistentState(
-    `vp_orders_status_filter_${isWorker ? 'worker' : 'owner'}`,
-    isWorker ? 'active' : 'all',
-  )
+  const [form, setForm] = useState({ order_number: '', client_name: '' })
+  const [statusFilter, setStatusFilter] = useState(isWorker ? 'active' : 'all')
   const [submitting, setSubmitting] = useState(false)
   const [updatingId, setUpdatingId] = useState(null)
+
+  useEffect(() => {
+    refreshOrders?.()
+  }, [refreshOrders])
 
   const normalizedOrders = useMemo(
     () => orders.map((order) => ({
@@ -77,12 +77,12 @@ export default function Orders({ user, orders = [], loading = false, refreshOrde
 
     setSubmitting(true)
     try {
-      await api.post('/orders', form)
+      await createOrder(form)
       await refreshOrders?.()
       toast.success('Order created')
       setForm({ order_number: '', client_name: '' })
     } catch (error) {
-      toast.error(error.response?.data?.error || 'Failed to create order')
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to create order')
     } finally {
       setSubmitting(false)
     }
@@ -90,22 +90,22 @@ export default function Orders({ user, orders = [], loading = false, refreshOrde
 
   const handleDelete = async (id) => {
     try {
-      await api.delete(`/orders/${id}`)
+      await deleteOrder(id)
       await refreshOrders?.()
       toast.success('Order deleted')
     } catch (error) {
-      toast.error(error.response?.data?.error || 'Failed to delete order')
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to delete order')
     }
   }
 
   const handleStatusChange = async (id, status) => {
     setUpdatingId(id)
     try {
-      await api.put(`/orders/${id}/status`, { status })
+      await updateOrderStatus(id, status)
       await refreshOrders?.()
       toast.success(`Order status updated to ${status}`)
     } catch (error) {
-      toast.error(error.response?.data?.error || 'Failed to update order status')
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to update order status')
     } finally {
       setUpdatingId(null)
     }

@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import api from './utils/api'
 import { ToastProvider } from './components/Toast'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
@@ -15,6 +14,7 @@ import MaterialMovement from './pages/MaterialMovement'
 import ProductionOrders from './pages/ProductionOrders'
 import Fulfillment from './pages/Fulfillment'
 import MachineReports from './pages/MachineReports'
+import { getOrders } from './utils/orders'
 import avlokaiLogo from '../avlokai_logo.png'
 
 const AUTH_TOKEN_KEY = 'token'
@@ -38,10 +38,6 @@ function ProtectedRoute({ element, allowedRoles, user }) {
 function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refreshOrders }) {
   const location = useLocation()
   const userRole = normalizeRole(user?.role)
-  const activeOrdersList = ordersList.filter(o => {
-    const s = String(o.status || 'active').toLowerCase()
-    return s !== 'completed' && s !== 'cancelled'
-  })
 
   if (!user) return <Navigate to="/login" />
 
@@ -107,7 +103,7 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['owner', 'worker']}
-                      element={<Wastage user={user} ordersList={activeOrdersList} />}
+                      element={<Wastage user={user} />}
                     />
                   }
                 />
@@ -215,14 +211,17 @@ function App() {
   })
 
   const [ordersList, setOrdersList] = useState([])
-  const [ordersLoading, setOrdersLoading] = useState(true)
-  const hasLoadedRef = useRef(false)
+  const [ordersLoading, setOrdersLoading] = useState(false)
 
   const refreshOrders = useCallback(async () => {
     setOrdersLoading(true)
     try {
-      const { data } = await api.get('/orders')
-      setOrdersList(Array.isArray(data) ? data : [])
+      const orders = await getOrders()
+      setOrdersList(orders)
+      return orders
+    } catch {
+      setOrdersList([])
+      return []
     } finally {
       setOrdersLoading(false)
     }
@@ -239,12 +238,10 @@ function App() {
     localStorage.setItem(AUTH_USER_ID_KEY, String(id))
     localStorage.setItem(AUTH_ROLE_KEY, role)
     localStorage.setItem('demo_user', JSON.stringify(u))
-    hasLoadedRef.current = false
     setUser(u)
   }
 
   const handleLogout = () => {
-    hasLoadedRef.current = false
     setUser(null)
     localStorage.removeItem(AUTH_TOKEN_KEY)
     localStorage.removeItem(AUTH_USER_ID_KEY)
@@ -253,9 +250,8 @@ function App() {
   }
 
   useEffect(() => {
-    if (!user || hasLoadedRef.current) return
-    hasLoadedRef.current = true
-    refreshOrders().catch(console.warn)
+    if (!user) return
+    refreshOrders().catch(() => {})
   }, [user, refreshOrders])
 
   return (

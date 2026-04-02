@@ -1,18 +1,22 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useToast } from '../components/Toast'
-import api from '../utils/api'
+import { getOrders, recordFulfillment } from '../utils/orders'
+
+function toNumber(value, fallback = 0) {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : fallback
+}
 
 export default function Fulfillment() {
   const toast = useToast()
   const [orders, setOrders] = useState([])
-  const [poItems, setPoItems] = useState({})
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
 
   const [form, setForm] = useState({
     order_number: '',
-    item_index: '',
+    item_id: '',
     supplied_quantity: '',
     note: '',
   })
@@ -20,67 +24,64 @@ export default function Fulfillment() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await api.get('/orders')
-      const activeOrders = Array.isArray(data)
-        ? data.filter(o => String(o.status || '').toLowerCase() !== 'completed' && String(o.status || '').toLowerCase() !== 'cancelled')
-        : []
+      const data = await getOrders({ includeItems: true })
+      const activeOrders = data.filter(
+        (order) => String(order.status || '').toLowerCase() !== 'completed' && String(order.status || '').toLowerCase() !== 'cancelled',
+      )
       setOrders(activeOrders)
-
-      const stored = JSON.parse(localStorage.getItem('vp_po_items') || '{}')
-      setPoItems(stored)
-    } catch {/* ignore */} finally {
+    } catch {
+      setOrders([])
+    } finally {
       setLoading(false)
     }
   }, [])
 
   useEffect(() => {
     loadData()
-    
-    // Poll every 10 seconds
+
     const pollInterval = setInterval(loadData, 10000)
-    
     return () => clearInterval(pollInterval)
   }, [loadData, refreshKey])
 
-  const selectedPO = form.order_number ? poItems[form.order_number] : null
-  const selectedItem = selectedPO && form.item_index !== '' ? selectedPO.items[parseInt(form.item_index)] : null
+  const selectedPO = form.order_number ? orders.find((order) => order.order_number === form.order_number) : null
+  const selectedItem = selectedPO && form.item_id
+    ? (selectedPO.items || []).find((item) => String(item.id) === String(form.item_id))
+    : null
   const remaining = selectedItem
-    ? Math.max(0, (selectedItem.required_quantity || 0) - (selectedItem.fulfilled_quantity || 0))
+    ? Math.max(0, toNumber(selectedItem.required_quantity) - toNumber(selectedItem.fulfilled_quantity))
     : null
 
-  const handleSubmit = async e => {
-    e.preventDefault()
-    const qty = parseFloat(form.supplied_quantity)
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+
+    const quantity = toNumber(form.supplied_quantity)
     if (!form.order_number) return toast.error('Select an order')
-    if (form.item_index === '') return toast.error('Select an item')
-    if (!qty || qty <= 0) return toast.error('Supplied quantity must be > 0')
-    if (remaining !== null && qty > remaining) {
+    if (!form.item_id) return toast.error('Select an item')
+    if (quantity <= 0) return toast.error('Supplied quantity must be > 0')
+    if (remaining !== null && quantity > remaining) {
       return toast.error(`Cannot supply more than remaining quantity (${remaining.toFixed(2)} kg)`)
     }
 
     setSubmitting(true)
     try {
-      // Update poItems in localStorage
-      const stored = JSON.parse(localStorage.getItem('vp_po_items') || '{}')
-      const idx = parseInt(form.item_index)
-      if (stored[form.order_number]?.items?.[idx]) {
-        stored[form.order_number].items[idx].fulfilled_quantity =
-          (stored[form.order_number].items[idx].fulfilled_quantity || 0) + qty
-        localStorage.setItem('vp_po_items', JSON.stringify(stored))
-      }
+      await recordFulfillment({
+        order_number: form.order_number,
+        item_id: Number(form.item_id),
+        supplied_quantity: quantity,
+        note: form.note || null,
+      })
 
-      // Also update order status to 'Active' with fulfillment note (optional call)
-      toast.success(`Fulfilled ${qty} kg for ${form.order_number}`)
-      setForm(prev => ({ ...prev, supplied_quantity: '', note: '' }))
-      setRefreshKey(k => k + 1)
+      toast.success(`Fulfilled ${quantity} kg for ${form.order_number}`)
+      setForm((prev) => ({ ...prev, supplied_quantity: '', note: '' }))
+      setRefreshKey((prev) => prev + 1)
     } catch (err) {
-      toast.error(err?.response?.data?.error || 'Failed to record fulfillment')
+      toast.error(err?.response?.data?.error || err?.message || 'Failed to record fulfillment')
     } finally {
       setSubmitting(false)
     }
   }
 
-  const ordersWithItems = orders.filter(o => poItems[o.order_number])
+  const ordersWithItems = orders.filter((order) => Array.isArray(order.items) && order.items.length > 0)
 
   return (
     <div className="space-y-8">
@@ -90,49 +91,46 @@ export default function Fulfillment() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
-        {/* Form */}
         <div className="xl:col-span-1">
           <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm p-6">
             <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60 mb-6">Record Supply</h2>
             <form onSubmit={handleSubmit} className="space-y-5">
-              {/* Order */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">
                   Production Order
                 </label>
                 <select
                   value={form.order_number}
-                  onChange={e => setForm(prev => ({ ...prev, order_number: e.target.value, item_index: '' }))}
+                  onChange={(e) => setForm((prev) => ({ ...prev, order_number: e.target.value, item_id: '' }))}
                   required
                   className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all"
                 >
                   <option value="">Select order...</option>
-                  {ordersWithItems.map(o => (
-                    <option key={o.order_number} value={o.order_number}>
-                      {o.order_number} — {o.client_name || 'Unknown'}
+                  {ordersWithItems.map((order) => (
+                    <option key={order.id || order.order_number} value={order.order_number}>
+                      {order.order_number} - {order.client_name || 'Unknown'}
                     </option>
                   ))}
                 </select>
               </div>
 
-              {/* Item */}
               {selectedPO && (
                 <div>
                   <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">
                     Item
                   </label>
                   <select
-                    value={form.item_index}
-                    onChange={e => setForm(prev => ({ ...prev, item_index: e.target.value }))}
+                    value={form.item_id}
+                    onChange={(e) => setForm((prev) => ({ ...prev, item_id: e.target.value }))}
                     required
                     className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all"
                   >
                     <option value="">Select item...</option>
-                    {selectedPO.items.map((it, i) => {
-                      const rem = Math.max(0, (it.required_quantity || 0) - (it.fulfilled_quantity || 0))
+                    {(selectedPO.items || []).map((item) => {
+                      const itemRemaining = Math.max(0, toNumber(item.required_quantity) - toNumber(item.fulfilled_quantity))
                       return (
-                        <option key={i} value={i} disabled={rem === 0}>
-                          {it.item_name} — {rem.toFixed(2)} kg remaining
+                        <option key={item.id} value={item.id} disabled={itemRemaining === 0}>
+                          {item.item_name} - {itemRemaining.toFixed(2)} kg remaining
                         </option>
                       )
                     })}
@@ -140,16 +138,15 @@ export default function Fulfillment() {
                 </div>
               )}
 
-              {/* Remaining display */}
               {selectedItem && (
                 <div className="rounded-xl bg-bg-primary border border-border-default p-4 space-y-2">
                   <div className="flex justify-between text-xs">
                     <span className="text-text-secondary">Required</span>
-                    <span className="font-mono font-semibold">{selectedItem.required_quantity?.toFixed(2)} kg</span>
+                    <span className="font-mono font-semibold">{toNumber(selectedItem.required_quantity).toFixed(2)} kg</span>
                   </div>
                   <div className="flex justify-between text-xs">
                     <span className="text-green-400">Fulfilled</span>
-                    <span className="font-mono font-semibold text-green-400">{selectedItem.fulfilled_quantity?.toFixed(2)} kg</span>
+                    <span className="font-mono font-semibold text-green-400">{toNumber(selectedItem.fulfilled_quantity).toFixed(2)} kg</span>
                   </div>
                   <div className="border-t border-border-subtle pt-2 flex justify-between text-xs">
                     <span className="text-orange-400 font-semibold">Remaining</span>
@@ -159,14 +156,13 @@ export default function Fulfillment() {
                     <div className="h-1.5 bg-border-default rounded-full overflow-hidden mt-2">
                       <div
                         className="h-full bg-accent-gold rounded-full"
-                        style={{ width: `${selectedItem.required_quantity ? 100 - (remaining / selectedItem.required_quantity) * 100 : 0}%` }}
+                        style={{ width: `${toNumber(selectedItem.required_quantity) ? 100 - (remaining / toNumber(selectedItem.required_quantity)) * 100 : 0}%` }}
                       />
                     </div>
                   )}
                 </div>
               )}
 
-              {/* Quantity */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">
                   Supplied Quantity (kg)
@@ -174,7 +170,7 @@ export default function Fulfillment() {
                 <input
                   type="number"
                   value={form.supplied_quantity}
-                  onChange={e => setForm(prev => ({ ...prev, supplied_quantity: e.target.value }))}
+                  onChange={(e) => setForm((prev) => ({ ...prev, supplied_quantity: e.target.value }))}
                   step="0.001"
                   min="0.001"
                   max={remaining || undefined}
@@ -182,12 +178,11 @@ export default function Fulfillment() {
                   placeholder="0.000"
                   className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm font-mono focus:border-accent-gold transition-all"
                 />
-                {remaining !== null && parseFloat(form.supplied_quantity) > remaining && (
+                {remaining !== null && toNumber(form.supplied_quantity) > remaining && (
                   <p className="text-[11px] text-red-400 mt-1">Exceeds remaining quantity</p>
                 )}
               </div>
 
-              {/* Note */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">
                   Note (optional)
@@ -195,7 +190,7 @@ export default function Fulfillment() {
                 <input
                   type="text"
                   value={form.note}
-                  onChange={e => setForm(prev => ({ ...prev, note: e.target.value }))}
+                  onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
                   placeholder="Dispatch note..."
                   className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all"
                 />
@@ -203,7 +198,7 @@ export default function Fulfillment() {
 
               <button
                 type="submit"
-                disabled={submitting || !form.order_number || form.item_index === ''}
+                disabled={submitting || !form.order_number || !form.item_id}
                 className="w-full py-3 rounded-xl bg-accent-gold text-white text-sm font-bold hover:bg-accent-gold-hover shadow-lg shadow-accent-gold/20 transition-all disabled:opacity-40"
               >
                 {submitting ? 'Recording...' : 'Record Fulfillment'}
@@ -212,13 +207,12 @@ export default function Fulfillment() {
           </div>
         </div>
 
-        {/* Live PO summary */}
         <div className="xl:col-span-2">
           <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60 mb-5">Live Status</h2>
           {loading ? (
             <div className="space-y-4">
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="h-24 bg-bg-card rounded-2xl border border-border-default animate-pulse" />
+              {[...Array(3)].map((_, index) => (
+                <div key={index} className="h-24 bg-bg-card rounded-2xl border border-border-default animate-pulse" />
               ))}
             </div>
           ) : ordersWithItems.length === 0 ? (
@@ -227,20 +221,18 @@ export default function Fulfillment() {
             </div>
           ) : (
             <div className="space-y-4">
-              {ordersWithItems.map(o => {
-                const po = poItems[o.order_number]
-                if (!po) return null
-                const items = po.items || []
-                const totalRequired = items.reduce((s, it) => s + (it.required_quantity || 0), 0)
-                const totalFulfilled = items.reduce((s, it) => s + (it.fulfilled_quantity || 0), 0)
+              {ordersWithItems.map((order) => {
+                const items = Array.isArray(order.items) ? order.items : []
+                const totalRequired = items.reduce((sum, item) => sum + toNumber(item.required_quantity), 0)
+                const totalFulfilled = items.reduce((sum, item) => sum + toNumber(item.fulfilled_quantity), 0)
                 const pct = totalRequired > 0 ? Math.min(100, (totalFulfilled / totalRequired) * 100) : 0
 
                 return (
-                  <div key={o.order_number} className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
+                  <div key={order.id || order.order_number} className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
                     <div className="px-5 py-4 border-b border-border-subtle flex items-center justify-between">
                       <div>
-                        <p className="font-bold text-text-primary">{o.order_number}</p>
-                        <p className="text-xs text-text-secondary">{o.client_name}</p>
+                        <p className="font-bold text-text-primary">{order.order_number}</p>
+                        <p className="text-xs text-text-secondary">{order.client_name}</p>
                       </div>
                       <div className="text-right">
                         <p className="text-lg font-bold text-accent-gold font-mono">{pct.toFixed(0)}%</p>
@@ -255,16 +247,16 @@ export default function Fulfillment() {
                         />
                       </div>
                       <div className="divide-y divide-border-subtle">
-                        {items.map((it, i) => {
-                          const rem = Math.max(0, (it.required_quantity || 0) - (it.fulfilled_quantity || 0))
+                        {items.map((item) => {
+                          const itemRemaining = Math.max(0, toNumber(item.required_quantity) - toNumber(item.fulfilled_quantity))
                           return (
-                            <div key={i} className="py-2.5 flex items-center justify-between text-xs">
-                              <span className="text-text-primary/80 font-medium">{it.item_name}</span>
+                            <div key={item.id} className="py-2.5 flex items-center justify-between text-xs">
+                              <span className="text-text-primary/80 font-medium">{item.item_name}</span>
                               <div className="flex gap-4 items-center">
-                                <span className="text-text-secondary font-mono">{it.required_quantity?.toFixed(2)} kg</span>
-                                <span className="text-green-400 font-mono">{it.fulfilled_quantity?.toFixed(2)} done</span>
-                                <span className={`font-mono font-bold ${rem > 0 ? 'text-orange-400' : 'text-green-400'}`}>
-                                  {rem > 0 ? `${rem.toFixed(2)} rem` : '✓ Complete'}
+                                <span className="text-text-secondary font-mono">{toNumber(item.required_quantity).toFixed(2)} kg</span>
+                                <span className="text-green-400 font-mono">{toNumber(item.fulfilled_quantity).toFixed(2)} done</span>
+                                <span className={`font-mono font-bold ${itemRemaining > 0 ? 'text-orange-400' : 'text-green-400'}`}>
+                                  {itemRemaining > 0 ? `${itemRemaining.toFixed(2)} rem` : 'Complete'}
                                 </span>
                               </div>
                             </div>
