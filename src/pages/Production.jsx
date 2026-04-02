@@ -30,6 +30,7 @@ function formatTime(iso) {
 /* ── Persistent worker name & size ───────────────────────────────────────── */
 const WORKER_KEY = 'vp_production_worker_name'
 const SIZE_KEY = 'vp_production_size'
+const MATERIAL_KEY = 'vp_production_material_id'
 function loadWorkerName() {
   try { return localStorage.getItem(WORKER_KEY) || '' } catch { return '' }
 }
@@ -41,6 +42,20 @@ function loadSize() {
 }
 function saveSize(s) {
   try { localStorage.setItem(SIZE_KEY, s) } catch { /* noop */ }
+}
+function loadMaterialId() {
+  try { return localStorage.getItem(MATERIAL_KEY) || '' } catch { return '' }
+}
+function saveMaterialId(id) {
+  try {
+    if (id) {
+      localStorage.setItem(MATERIAL_KEY, id)
+      return
+    }
+    localStorage.removeItem(MATERIAL_KEY)
+  } catch {
+    /* noop */
+  }
 }
 
 function normalizeHistoryEntry(log) {
@@ -139,7 +154,7 @@ export default function Production({ user }) {
   const [floorStock, setFloorStock] = useState([])            // Issued (floor) materials with quantities
   const [assignedStock, setAssignedStock] = useState([])      // Materials assigned to active machine
   const [workerName, setWorkerName] = useState(loadWorkerName)
-  const [materialId, setMaterialId] = useState('')            // Stores material_type_id for floor_material_balance
+  const [materialId, setMaterialId] = useState(loadMaterialId) // Stores material_type_id for floor_material_balance
   const [size, setSize] = useState(loadSize)
   const [grossWeight, setGrossWeight] = useState('')
   const [tareWeight, setTareWeight] = useState('')
@@ -159,6 +174,7 @@ export default function Production({ user }) {
   const [submitting, setSubmitting] = useState(false)
   const [loadingWorker, setLoadingWorker] = useState(false)
   const [loadingMaterials, setLoadingMaterials] = useState(false)
+  const [hasLoadedMaterialsOnce, setHasLoadedMaterialsOnce] = useState(false)
   const grossRef = useRef(null)
 
   /* ── Compute available materials for production with floor stock quantities ─ */
@@ -171,9 +187,9 @@ export default function Production({ user }) {
     }))
   }, [floorStock])
 
-  const assignedMaterialsForSelection = useMemo(
-    () => assignedStock.filter((mat) => getAssignedAvailableKg(mat) > 0),
-    [assignedStock],
+  const selectedMaterialAvailable = useMemo(
+    () => materialsForProduction.some((mat) => String(mat.id) === String(materialId)),
+    [materialId, materialsForProduction],
   )
 
   /* ── Net weight auto-calc ───────────────────────────────────────────────── */
@@ -184,7 +200,7 @@ export default function Production({ user }) {
     return Math.max(g - t, 0)
   }, [grossWeight, tareWeight])
 
-  const isValid = netWeight !== null && netWeight > 0 && materialId !== '' && activeMachine !== null
+  const isValid = netWeight !== null && netWeight > 0 && materialId !== '' && selectedMaterialAvailable && activeMachine !== null
   const isInvalid = grossWeight !== '' && tareWeight !== '' && netWeight !== null && netWeight <= 0
 
   /* ── Load floor stock (issued materials) for production ───────────────────── */
@@ -194,6 +210,7 @@ export default function Production({ user }) {
       try {
         const { data } = await api.get('/floor/stock')
         setFloorStock(Array.isArray(data) ? data : [])
+        setHasLoadedMaterialsOnce(true)
       } catch (err) {
         console.error('Failed to load floor stock:', err)
       } finally {
@@ -213,6 +230,14 @@ export default function Production({ user }) {
   /* ── Persist worker name & size ─────────────────────────────────────────── */
   useEffect(() => { saveWorkerName(workerName) }, [workerName])
   useEffect(() => { saveSize(size) }, [size])
+  useEffect(() => { saveMaterialId(materialId) }, [materialId])
+
+  useEffect(() => {
+    if (loadingMaterials || !hasLoadedMaterialsOnce) return
+    if (materialId && !selectedMaterialAvailable) {
+      setMaterialId('')
+    }
+  }, [hasLoadedMaterialsOnce, loadingMaterials, materialId, selectedMaterialAvailable])
 
   /* ── Fetch worker name from machine state ────────────────────────────────── */
   const fetchWorkerForMachine = useCallback(async (machineId) => {
@@ -272,7 +297,6 @@ export default function Production({ user }) {
       if (prev && prev.id === machine.id && prev.type === type) return null
       return { ...machine, type }
     })
-    setMaterialId('')
     setAssignedStock([])
     setGrossWeight('')
     setTareWeight('')
@@ -299,14 +323,7 @@ export default function Production({ user }) {
         
         if (data?.assigned_materials) {
           const assignedMaterials = Array.isArray(data.assigned_materials) ? data.assigned_materials : []
-          const availableAssignedMaterials = assignedMaterials.filter((mat) => getAssignedAvailableKg(mat) > 0)
-
           setAssignedStock(assignedMaterials)
-          
-          // Auto-select material if only one is assigned
-          if (availableAssignedMaterials.length === 1) {
-            setMaterialId(String(availableAssignedMaterials[0].material_type_id))
-          }
         }
       } catch (err) {
         // Assignment table might not exist yet, fall back to floor stock
@@ -320,7 +337,6 @@ export default function Production({ user }) {
 
   const deselectMachine = useCallback(() => {
     setActiveMachine(null)
-    setMaterialId('')
     setAssignedStock([])
     setGrossWeight('')
     setTareWeight('')
@@ -342,6 +358,7 @@ export default function Production({ user }) {
 
     if (floorRes.status === 'fulfilled') {
       setFloorStock(Array.isArray(floorRes.value.data) ? floorRes.value.data : [])
+      setHasLoadedMaterialsOnce(true)
     }
 
     if (assignedRes && assignedRes.status === 'fulfilled') {
@@ -403,9 +420,6 @@ export default function Production({ user }) {
         selectedMaterial = materialsForProduction.find(mat => String(mat.id) === String(materialIdNum))
       }
       const materialName = selectedMaterial?.material_name || `Material ${materialIdNum}`
-      const nextSelectedAvailableKg = selectedAssignedMaterial
-        ? Math.max(getAssignedAvailableKg(selectedAssignedMaterial) - net, 0)
-        : null
 
       // Add to local history
       setHistory(prev => [normalizeHistoryEntry({
@@ -448,11 +462,6 @@ export default function Production({ user }) {
       // Reset form (keep machine, worker, material selection)
       setGrossWeight('')
       setTareWeight('')
-      if (assignedMaterialsForSelection.length === 1 && (nextSelectedAvailableKg === null || nextSelectedAvailableKg > 0)) {
-        setMaterialId(String(assignedMaterialsForSelection[0].material_type_id))
-      } else if (assignedMaterialsForSelection.length === 1 && nextSelectedAvailableKg === 0) {
-        setMaterialId('')
-      }
       setTimeout(() => grossRef.current?.focus(), 50)
     } catch (err) {
       const errorMsg = err?.response?.data?.error || err?.message || 'Failed to log entry'
@@ -461,7 +470,7 @@ export default function Production({ user }) {
     } finally {
       setSubmitting(false)
     }
-  }, [activeMachine, assignedMaterialsForSelection, assignedStock, grossWeight, tareWeight, materialId, size, workerName, isValid, materialsForProduction, toast])
+  }, [activeMachine, assignedStock, grossWeight, tareWeight, materialId, size, workerName, isValid, materialsForProduction, toast])
 
   const openEditHistory = useCallback((row) => {
     setEditingHistoryRow(row)
@@ -674,37 +683,25 @@ export default function Production({ user }) {
               <div className="space-y-2">
                 <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
                   Material
-                  {assignedStock.length > 0 && <span className="ml-2 text-blue-300 normal-case tracking-normal">(auto-assigned)</span>}
                 </label>
                 <select
                   value={materialId}
                   onChange={e => setMaterialId(e.target.value)}
                   className={inputClass}
-                  disabled={submitting || loadingMaterials || (assignedMaterialsForSelection.length === 1 && materialId !== '')}
+                  disabled={submitting || loadingMaterials}
                 >
-                  {assignedStock.length === 0 ? (
-                    <>
-                      <option value="">{loadingMaterials ? 'Loading materials...' : 'Select material...'}</option>
-                      {materialsForProduction.map((mat, i) => (
-                        <option key={mat.id ?? i} value={mat.id}>
-                          {mat.material_name} ({toNumber(mat.issued_quantity_kg).toFixed(1)} kg issued)
-                        </option>
-                      ))}
-                    </>
-                  ) : assignedMaterialsForSelection.length === 0 ? (
-                    <>
-                      <option value="">No assigned material available</option>
-                    </>
-                  ) : (
-                    <>
-                      <option value="">{assignedMaterialsForSelection.length === 1 ? 'Auto-selected' : 'Select assigned material...'}</option>
-                      {assignedMaterialsForSelection.map((mat) => (
-                        <option key={mat.material_type_id} value={mat.material_type_id}>
-                          {mat.material_name} ({getAssignedAvailableKg(mat).toFixed(1)} kg available)
-                        </option>
-                      ))}
-                    </>
-                  )}
+                  <option value="">
+                    {loadingMaterials
+                      ? 'Loading materials...'
+                      : materialsForProduction.length > 0
+                        ? 'Select material...'
+                        : 'No floor stock available'}
+                  </option>
+                  {materialsForProduction.map((mat, i) => (
+                    <option key={mat.id ?? i} value={mat.id}>
+                      {mat.material_name} ({toNumber(mat.issued_quantity_kg).toFixed(1)} kg issued)
+                    </option>
+                  ))}
                 </select>
               </div>
 
