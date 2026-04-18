@@ -14,7 +14,7 @@ function formatDate(value) {
   return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
-export default function Wastage({ user, ordersList = [] }) {
+export default function Wastage({ user }) {
   const isOwner = user?.role === 'owner'
   const toast = useToast()
   const [loading, setLoading] = useState(false)
@@ -24,34 +24,41 @@ export default function Wastage({ user, ordersList = [] }) {
 
   const [form, setForm] = useState({
     date: new Date().toISOString().split('T')[0],
-    wastage_generated: '',
+    weight: '',
   })
-
-  // Compute sno from existing rows
-  const nextSno = wastageRows.length + 1
+  const [deletingId, setDeletingId] = useState(null)
 
   const handleChange = e => setForm(prev => ({ ...prev, [e.target.name]: e.target.value }))
 
+  const handleDelete = async (id) => {
+    if (!window.confirm('Delete this wastage entry?')) return
+    setDeletingId(id)
+    try {
+      await api.delete(`/wastage/${id}`)
+      toast.success('Entry deleted')
+      loadWastage()
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to delete entry')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const handleSubmit = async e => {
     e.preventDefault()
-    if (!form.date || !form.wastage_generated) {
-      toast.error('Please fill all required fields')
-      return
-    }
-    if (Number(form.wastage_generated) <= 0) {
-      toast.error('Wastage generated must be greater than 0')
+    if (!form.weight || Number(form.weight) <= 0) {
+      toast.error('Please enter a valid wastage amount')
       return
     }
 
     setSubmitting(true)
     try {
       await api.post('/wastage', {
-        sno: nextSno,
         date: form.date,
-        wastage_generated: Number(form.wastage_generated),
+        weight: Number(form.weight),
       })
       toast.success('Wastage logged successfully')
-      setForm(prev => ({ ...prev, wastage_generated: '' }))
+      setForm(prev => ({ ...prev, weight: '' }))
       loadWastage()
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to log wastage')
@@ -79,8 +86,8 @@ export default function Wastage({ user, ordersList = [] }) {
   const loadWastage = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await api.get('/reports/logs?limit=200')
-      setWastageRows(Array.isArray(data) ? [] : [])
+      const { data } = await api.get('/wastage')
+      setWastageRows(Array.isArray(data) ? data : [])
     } catch {
       setWastageRows([])
     } finally {
@@ -90,14 +97,11 @@ export default function Wastage({ user, ordersList = [] }) {
 
   useEffect(() => {
     loadWastage()
-    
-    // Poll every 50 seconds
     const pollInterval = setInterval(loadWastage, 50000)
-    
     return () => clearInterval(pollInterval)
   }, [loadWastage])
 
-  const totalWastage = wastageRows.reduce((s, r) => s + toNumber(r.wastage_generated || r.net_weight || r.netWeight), 0)
+  const totalWastage = wastageRows.reduce((s, r) => s + toNumber(r.weight), 0)
 
   return (
     <div className="space-y-6">
@@ -121,8 +125,8 @@ export default function Wastage({ user, ordersList = [] }) {
       {/* Entry Form */}
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm p-6">
         <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60 mb-6">Log Wastage</h2>
-        <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-          <div>
+        <form onSubmit={handleSubmit} className="flex flex-wrap gap-4 items-end">
+          <div className="flex-1 min-w-[160px]">
             <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Date</label>
             <input
               type="date"
@@ -134,26 +138,26 @@ export default function Wastage({ user, ordersList = [] }) {
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Wastage Generated (kg)</label>
+          <div className="flex-1 min-w-[160px]">
+            <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Wastage (kg)</label>
             <input
               type="number"
-              name="wastage_generated"
-              value={form.wastage_generated}
+              name="weight"
+              value={form.weight}
               onChange={handleChange}
               required
               step="0.01"
-              min="0"
+              min="0.01"
               placeholder="0.00"
               className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm font-mono focus:border-accent-gold transition-all"
             />
           </div>
 
-          <div className="flex items-end">
+          <div>
             <button
               type="submit"
               disabled={submitting}
-              className="w-full py-2.5 rounded-xl bg-accent-gold text-white text-sm font-bold hover:bg-accent-gold-hover shadow-lg shadow-accent-gold/20 transition-all disabled:opacity-40"
+              className="px-8 py-2.5 rounded-xl bg-accent-gold text-white text-sm font-bold hover:bg-accent-gold-hover shadow-lg shadow-accent-gold/20 transition-all disabled:opacity-40"
             >
               {submitting ? 'Logging...' : 'Log Wastage'}
             </button>
@@ -164,7 +168,7 @@ export default function Wastage({ user, ordersList = [] }) {
       {/* Table */}
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between">
-          <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Recent Wastage Logs</h2>
+          <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Wastage Logs</h2>
           {totalWastage > 0 && (
             <span className="text-xs font-semibold font-mono text-accent-gold bg-accent-gold/10 border border-accent-gold/20 rounded-lg px-3 py-1">
               Total: {totalWastage.toFixed(2)} kg
@@ -178,7 +182,8 @@ export default function Wastage({ user, ordersList = [] }) {
               <tr className="border-b border-border-subtle bg-bg-primary/30">
                 <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">S.No</th>
                 <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Date</th>
-                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Wastage Generated (kg)</th>
+                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Wastage (kg)</th>
+                <th className="px-6 py-3 text-center text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border-subtle">
@@ -186,21 +191,27 @@ export default function Wastage({ user, ordersList = [] }) {
                 <tr><td colSpan={3} className="py-10 text-center text-text-secondary/50">Loading...</td></tr>
               ) : wastageRows.length === 0 ? (
                 <tr>
-                  <td colSpan={3} className="py-12 text-center text-sm text-text-secondary/40">
+                  <td colSpan={4} className="py-12 text-center text-sm text-text-secondary/40">
                     No wastage entries logged yet. Submit above to see records.
                   </td>
                 </tr>
               ) : (
-                wastageRows.map((row, i) => {
-                  const wastage = toNumber(row.wastage_generated || row.net_weight || row.netWeight)
-                  return (
-                    <tr key={row.id || i} className="hover:bg-white/[0.02] transition-colors">
-                      <td className="px-6 py-3.5 text-text-secondary/60">{row.sno || i + 1}</td>
-                      <td className="px-6 py-3.5 text-text-primary/90">{formatDate(row.date)}</td>
-                      <td className="px-6 py-3.5 text-right font-mono font-bold text-accent-gold">{wastage.toFixed(2)}</td>
-                    </tr>
-                  )
-                })
+                wastageRows.map((row, i) => (
+                  <tr key={row.id || i} className="hover:bg-white/[0.02] transition-colors">
+                    <td className="px-6 py-3.5 text-text-secondary/60">{row.sno || i + 1}</td>
+                    <td className="px-6 py-3.5 text-text-primary/90">{formatDate(row.date)}</td>
+                    <td className="px-6 py-3.5 text-right font-mono font-bold text-accent-gold">{toNumber(row.weight).toFixed(2)}</td>
+                    <td className="px-6 py-3.5 text-center">
+                      <button
+                        onClick={() => handleDelete(row.id)}
+                        disabled={deletingId === row.id}
+                        className="text-red-400 hover:text-red-300 disabled:opacity-40 transition-colors text-xs font-semibold px-3 py-1 rounded-lg border border-red-500/20 hover:border-red-400/40 hover:bg-red-500/10"
+                      >
+                        {deletingId === row.id ? 'Deleting…' : 'Delete'}
+                      </button>
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>

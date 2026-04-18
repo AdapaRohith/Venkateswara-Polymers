@@ -2,960 +2,18 @@ require("dotenv").config();
 const express = require("express");
 const { Pool } = require("pg");
 const cors = require("cors");
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-// PostgreSQL Pool
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-});
-
-// =====================================================
-// HEALTH CHECK
-// =====================================================
-app.get("/", (req, res) => {
-  res.send("API is running");
-});
-
-// =====================================================
-// USERS
-// =====================================================
-app.post("/users", async (req, res) => {
-  const { email, password, name, role } = req.body;
-
-  try {
-    const result = await pool.query(
-      `INSERT INTO users (email, password, name, role)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [email, password, name, role]
-    );
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/users", async (req, res) => {
-  const result = await pool.query(`SELECT * FROM users`);
-  res.json(result.rows);
-});
-
-// =====================================================
-// ORDERS
-// =====================================================
-app.post("/orders", async (req, res) => {
-  const { order_number, client_name, status = "Active" } = req.body;
-
-  try {
-    const result = await pool.query(
-      `INSERT INTO orders (order_number, client_name, status)
-       VALUES ($1, $2, $3) RETURNING *`,
-      [order_number, client_name, status]
-    );
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/orders", async (req, res) => {
-  const result = await pool.query(`SELECT * FROM orders`);
-  res.json(result.rows);
-});
-
-app.delete("/orders/:id", async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const result = await pool.query(
-      `DELETE FROM orders WHERE id = $1 RETURNING *`,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Order not found" });
-    }
-
-    res.json({
-      message: "Order deleted",
-      deleted: result.rows[0],
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.put("/orders/:id/status", async (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-  const allowedStatuses = ["Active", "completed", "cancelled"];
-
-  if (!allowedStatuses.includes(status)) {
-    return res.status(400).json({ error: "Invalid order status" });
-  }
-
-  try {
-    const result = await pool.query(
-      `UPDATE orders
-       SET status = $1
-       WHERE id = $2
-       RETURNING *`,
-      [status, id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Order not found" });
-    }
-
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// INVENTORY TRANSACTIONS (UNIFIED SYSTEM)
-// =====================================================
-
-// Helper: get current stock balance
-const getStockBalance = async (client, stock_id) => {
-  const result = await client.query(
-    `
-    SELECT COALESCE(SUM(
-      CASE 
-        WHEN direction = 'IN' THEN quantity_in_kg
-        ELSE -quantity_in_kg
-      END
-    ), 0) AS balance
-    FROM inventory_transactions
-    WHERE stock_id = $1
-    `,
-    [stock_id]
-  );
-
-  return Number(result.rows[0].balance);
-};
-
-// =====================================================
-// CREATE TRANSACTION (CORE ENDPOINT)
-// =====================================================
-app.post("/inventory/transaction", async (req, res) => {
-  const client = await pool.connect();
-
-  try {
-    const {
-      stock_id,
-      transaction_type,
-      direction,
-      quantity_in_kg,
-      quantity_display,
-      quantity_unit,
-      worker_id,
-      order_number,
-      reference_id,
-      note,
-      created_by,
-    } = req.body;
-
-    if (!stock_id || !transaction_type || !direction || !quantity_in_kg) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    await client.query("BEGIN");
-
-    // 🔍 Get current balance
-    const currentBalance = await getStockBalance(client, stock_id);
-
-    // ❌ Prevent negative stock
-    if (direction === "OUT" && currentBalance < quantity_in_kg) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "Insufficient stock",
-        currentBalance,
-      });
-    }
-
-    // ✅ Insert transaction
-    const result = await client.query(
-      `
-      INSERT INTO inventory_transactions
-      (stock_id, transaction_type, direction, quantity_in_kg,
-       quantity_display, quantity_unit, worker_id, order_number,
-       reference_id, note, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-      RETURNING *
-      `,
-      [
-        stock_id,
-        transaction_type,
-        direction,
-        quantity_in_kg,
-        quantity_display,
-        quantity_unit,
-        worker_id,
-        order_number,
-        reference_id,
-        note,
-        created_by,
-      ]
-    );
-
-    await client.query("COMMIT");
-
-    res.json({
-      message: "Transaction successful",
-      data: result.rows[0],
-    });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-});
-
-// =====================================================
-// GET ALL TRANSACTIONS
-// =====================================================
-app.get("/inventory/transactions", async (req, res) => {
-  try {
-    const { stock_id, type, worker_id } = req.query;
-
-    let query = `SELECT * FROM inventory_transactions WHERE 1=1`;
-    let values = [];
-
-    if (stock_id) {
-      values.push(stock_id);
-      query += ` AND stock_id = $${values.length}`;
-    }
-
-    if (type) {
-      values.push(type);
-      query += ` AND transaction_type = $${values.length}`;
-    }
-
-    if (worker_id) {
-      values.push(worker_id);
-      query += ` AND worker_id = $${values.length}`;
-    }
-
-    query += ` ORDER BY created_at DESC`;
-
-    const result = await pool.query(query, values);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// GET ALL STOCK BALANCES
-// =====================================================
-app.get("/inventory/balance", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `
-      SELECT 
-        stock_id,
-        SUM(
-          CASE 
-            WHEN direction = 'IN' THEN quantity_in_kg
-            ELSE -quantity_in_kg
-          END
-        ) AS balance
-      FROM inventory_transactions
-      GROUP BY stock_id
-      ORDER BY stock_id
-      `
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// GET SINGLE STOCK BALANCE
-// =====================================================
-app.get("/inventory/balance/:stock_id", async (req, res) => {
-  try {
-    const { stock_id } = req.params;
-
-    const result = await pool.query(
-      `
-      SELECT COALESCE(SUM(
-        CASE 
-          WHEN direction = 'IN' THEN quantity_in_kg
-          ELSE -quantity_in_kg
-        END
-      ), 0) AS balance
-      FROM inventory_transactions
-      WHERE stock_id = $1
-      `,
-      [stock_id]
-    );
-
-    res.json({
-      stock_id,
-      balance: Number(result.rows[0].balance),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// DELETE TRANSACTION (REVERSAL SAFE VERSION RECOMMENDED)
-// =====================================================
-app.delete("/inventory/transaction/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const result = await pool.query(
-      `DELETE FROM inventory_transactions WHERE id = $1 RETURNING *`,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Transaction not found" });
-    }
-
-    res.json({
-      message: "Transaction deleted",
-      deleted: result.rows[0],
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// START SERVER
-// =====================================================
-app.listen(process.env.PORT, () => {
-  console.log(`Server running on port ${process.env.PORT}`);
-});
-
-//==================================
-// Updated version:
-//===================================
-/*
-require("dotenv").config();
-const express = require("express");
-const { Pool } = require("pg");
-const cors = require("cors");
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-// ================= DB =================
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-});
-
-// ================= HEALTH =================
-app.get("/", (req, res) => {
-  res.send("API running");
-});
-
-// =====================================================
-// HELPER: GET STOCK BALANCE
-// =====================================================
-const getStockBalance = async (client, stock_id) => {
-  const result = await client.query(
-    `
-    SELECT COALESCE(SUM(
-      CASE 
-        WHEN direction = 'IN' THEN quantity_in_kg
-        ELSE -quantity_in_kg
-      END
-    ), 0) AS balance
-    FROM inventory_transactions
-    WHERE stock_id = $1
-    `,
-    [stock_id]
-  );
-
-  return Number(result.rows[0].balance);
-};
-
-// =====================================================
-// CORE: INSERT INVENTORY TRANSACTION (REUSABLE)
-// =====================================================
-const insertTransaction = async (
-  client,
-  {
-    stock_id,
-    transaction_type,
-    direction,
-    quantity_in_kg,
-    worker_id,
-    order_number,
-    note,
-    created_by,
-  }
-) => {
-  // Prevent negative stock
-  if (direction === "OUT") {
-    const balance = await getStockBalance(client, stock_id);
-    if (balance < quantity_in_kg) {
-      throw new Error(
-        `Insufficient stock for stock_id ${stock_id}. Available: ${balance}`
-      );
-    }
-  }
-
-  await client.query(
-    `
-    INSERT INTO inventory_transactions
-    (stock_id, transaction_type, direction, quantity_in_kg,
-     worker_id, order_number, note, created_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    `,
-    [
-      stock_id,
-      transaction_type,
-      direction,
-      quantity_in_kg,
-      worker_id,
-      order_number,
-      note,
-      created_by,
-    ]
-  );
-};
-
-// =====================================================
-// MACHINES
-// =====================================================
-app.get("/machines", async (req, res) => {
-  try {
-    const result = await pool.query(`SELECT * FROM machines`);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// CREATE PRODUCTION BATCH
-// =====================================================
-app.post("/production/create", async (req, res) => {
-  const client = await pool.connect();
-
-  try {
-    const {
-      machine_id,
-      order_number,
-      inputs, // [{stock_id, quantity}]
-      outputs, // [{stock_id, quantity}]
-      worker_id,
-      created_by,
-      note,
-    } = req.body;
-
-    if (!machine_id || !inputs || inputs.length === 0 || !outputs || outputs.length === 0) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    await client.query("BEGIN");
-
-    // ================= CALCULATE TOTALS =================
-    const totalInput = inputs.reduce((sum, i) => sum + Number(i.quantity), 0);
-    const totalOutput = outputs.reduce((sum, o) => sum + Number(o.quantity), 0);
-    const waste = totalInput - totalOutput;
-
-    if (waste < 0) {
-      throw new Error("Output cannot exceed input");
-    }
-
-    // ================= CREATE BATCH =================
-    const batchResult = await client.query(
-      `
-      INSERT INTO production_batches
-      (machine_id, order_number, total_input_kg, total_output_kg, total_waste_kg)
-      VALUES ($1,$2,$3,$4,$5)
-      RETURNING *
-      `,
-      [machine_id, order_number, totalInput, totalOutput, waste]
-    );
-
-    const batchId = batchResult.rows[0].id;
-
-    // ================= HANDLE INPUTS =================
-    for (const input of inputs) {
-      await client.query(
-        `
-        INSERT INTO production_inputs (batch_id, stock_id, quantity_kg)
-        VALUES ($1,$2,$3)
-        `,
-        [batchId, input.stock_id, input.quantity]
-      );
-
-      await insertTransaction(client, {
-        stock_id: input.stock_id,
-        transaction_type: "production_input",
-        direction: "OUT",
-        quantity_in_kg: input.quantity,
-        worker_id,
-        order_number,
-        note,
-        created_by,
-      });
-    }
-
-    // ================= HANDLE OUTPUTS =================
-    for (const output of outputs) {
-      await client.query(
-        `
-        INSERT INTO production_outputs (batch_id, stock_id, quantity_kg)
-        VALUES ($1,$2,$3)
-        `,
-        [batchId, output.stock_id, output.quantity]
-      );
-
-      await insertTransaction(client, {
-        stock_id: output.stock_id,
-        transaction_type: "production_output",
-        direction: "IN",
-        quantity_in_kg: output.quantity,
-        worker_id,
-        order_number,
-        note,
-        created_by,
-      });
-    }
-
-    // ================= HANDLE WASTE =================
-    const WASTE_STOCK_ID = 9999; // change if needed
-
-    if (waste > 0) {
-      await insertTransaction(client, {
-        stock_id: WASTE_STOCK_ID,
-        transaction_type: "waste_generated",
-        direction: "IN",
-        quantity_in_kg: waste,
-        worker_id,
-        order_number,
-        note,
-        created_by,
-      });
-    }
-
-    await client.query("COMMIT");
-
-    res.json({
-      message: "Production batch created",
-      batch: batchResult.rows[0],
-    });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-});
-
-// =====================================================
-// GET ALL PRODUCTION BATCHES
-// =====================================================
-app.get("/production/batches", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `
-      SELECT pb.*, m.name AS machine_name
-      FROM production_batches pb
-      JOIN machines m ON pb.machine_id = m.id
-      ORDER BY pb.created_at DESC
-      `
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// MACHINE ANALYTICS
-// =====================================================
-app.get("/analytics/machines", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `
-      SELECT 
-        m.id,
-        m.name,
-        SUM(pb.total_input_kg) AS total_input,
-        SUM(pb.total_output_kg) AS total_output,
-        SUM(pb.total_waste_kg) AS total_waste,
-        CASE 
-          WHEN SUM(pb.total_input_kg) > 0 
-          THEN SUM(pb.total_output_kg) / SUM(pb.total_input_kg)
-          ELSE 0
-        END AS efficiency
-      FROM machines m
-      LEFT JOIN production_batches pb ON pb.machine_id = m.id
-      GROUP BY m.id
-      ORDER BY m.id
-      `
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// USERS
-// =====================================================
-app.post("/users", async (req, res) => {
-  const { email, password, name, role } = req.body;
-
-  try {
-    const result = await pool.query(
-      `INSERT INTO users (email, password, name, role)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [email, password, name, role || "worker"]
-    );
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/users", async (req, res) => {
-  try {
-    const result = await pool.query(`SELECT id, email, name, role FROM users`);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// ORDERS
-// =====================================================
-app.post("/orders", async (req, res) => {
-  let { order_number, client_name, status = "Active" } = req.body;
-
-  // Normalize status: capitalize 'active' if needed, keep others lowercase
-  if (status) {
-    const normalized = String(status).toLowerCase();
-    if (normalized === "active") {
-      status = "Active";
-    } else {
-      status = normalized;
-    }
-  }
-
-  try {
-    const result = await pool.query(
-      `INSERT INTO orders (order_number, client_name, status)
-       VALUES ($1, $2, $3) RETURNING *`,
-      [order_number, client_name, status]
-    );
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/orders", async (req, res) => {
-  try {
-    const result = await pool.query(`SELECT * FROM orders`);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete("/orders/:id", async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const result = await pool.query(
-      `DELETE FROM orders WHERE id = $1 RETURNING *`,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Order not found" });
-    }
-
-    res.json({
-      message: "Order deleted",
-      deleted: result.rows[0],
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.put("/orders/:id/status", async (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-  const allowedStatuses = ["Active", "completed", "cancelled"];
-
-  // Normalize input: capitalize 'active' if needed, keep others lowercase
-  let normalizedStatus = String(status).toLowerCase();
-  if (normalizedStatus === "active") {
-    normalizedStatus = "Active";
-  }
-
-  if (!allowedStatuses.includes(normalizedStatus)) {
-    return res.status(400).json({ error: "Invalid order status" });
-  }
-
-  try {
-    const result = await pool.query(
-      `UPDATE orders
-       SET status = $1
-       WHERE id = $2
-       RETURNING *`,
-      [normalizedStatus, id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Order not found" });
-    }
-
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// INVENTORY TRANSACTIONS (UNIFIED SYSTEM)
-// =====================================================
-
-// =====================================================
-// CREATE TRANSACTION (CORE ENDPOINT)
-// =====================================================
-app.post("/inventory/transaction", async (req, res) => {
-  const client = await pool.connect();
-
-  try {
-    const {
-      stock_id,
-      transaction_type,
-      direction,
-      quantity_in_kg,
-      quantity_display,
-      quantity_unit,
-      worker_id,
-      order_number,
-      reference_id,
-      note,
-      created_by,
-    } = req.body;
-
-    if (!stock_id || !transaction_type || !direction || !quantity_in_kg) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    await client.query("BEGIN");
-
-    // 🔍 Get current balance
-    const currentBalance = await getStockBalance(client, stock_id);
-
-    // ❌ Prevent negative stock
-    if (direction === "OUT" && currentBalance < quantity_in_kg) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "Insufficient stock",
-        currentBalance,
-      });
-    }
-
-    // ✅ Insert transaction
-    const result = await client.query(
-      `
-      INSERT INTO inventory_transactions
-      (stock_id, transaction_type, direction, quantity_in_kg,
-       quantity_display, quantity_unit, worker_id, order_number,
-       reference_id, note, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-      RETURNING *
-      `,
-      [
-        stock_id,
-        transaction_type,
-        direction,
-        quantity_in_kg,
-        quantity_display,
-        quantity_unit,
-        worker_id,
-        order_number,
-        reference_id,
-        note,
-        created_by,
-      ]
-    );
-
-    await client.query("COMMIT");
-
-    res.json({
-      message: "Transaction successful",
-      data: result.rows[0],
-    });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-});
-
-// =====================================================
-// GET ALL TRANSACTIONS
-// =====================================================
-app.get("/inventory/transactions", async (req, res) => {
-  try {
-    const { stock_id, type, worker_id } = req.query;
-
-    let query = `SELECT * FROM inventory_transactions WHERE 1=1`;
-    let values = [];
-
-    if (stock_id) {
-      values.push(stock_id);
-      query += ` AND stock_id = $${values.length}`;
-    }
-
-    if (type) {
-      values.push(type);
-      query += ` AND transaction_type = $${values.length}`;
-    }
-
-    if (worker_id) {
-      values.push(worker_id);
-      query += ` AND worker_id = $${values.length}`;
-    }
-
-    const result = await pool.query(query, values);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// GET ALL STOCK BALANCES
-// =====================================================
-app.get("/inventory/balance", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `
-      SELECT 
-        stock_id,
-        SUM(
-          CASE 
-            WHEN direction = 'IN' THEN quantity_in_kg
-            ELSE -quantity_in_kg
-          END
-        ) AS balance
-      FROM inventory_transactions
-      GROUP BY stock_id
-      ORDER BY stock_id
-      `
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// GET SINGLE STOCK BALANCE
-// =====================================================
-app.get("/inventory/balance/:stock_id", async (req, res) => {
-  try {
-    const { stock_id } = req.params;
-
-    const result = await pool.query(
-      `
-      SELECT COALESCE(SUM(
-        CASE 
-          WHEN direction = 'IN' THEN quantity_in_kg
-          ELSE -quantity_in_kg
-        END
-      ), 0) AS balance
-      FROM inventory_transactions
-      WHERE stock_id = $1
-      `,
-      [stock_id]
-    );
-
-    res.json({
-      stock_id,
-      balance: Number(result.rows[0].balance),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// DELETE TRANSACTION
-// =====================================================
-app.delete("/inventory/transaction/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const result = await pool.query(
-      `DELETE FROM inventory_transactions WHERE id = $1 RETURNING *`,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Transaction not found" });
-    }
-
-    res.json({
-      message: "Transaction deleted",
-      deleted: result.rows[0],
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// START SERVER
-// =====================================================
-app.listen(process.env.PORT, () => {
-  console.log(`Server running on port ${process.env.PORT}`);
-}); */
-/*require("dotenv").config();
-const express = require("express");
-const { Pool } = require("pg");
-const cors = require("cors");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 
 const app = express();
 
-// ================= CORS (FIXED) =================
+// ================= CORS =================
 const allowedOriginPatterns = [
   /^https:\/\/.*\.avlokai\.com$/,
   /^https:\/\/.*\.vercel\.app$/,
   /^https:\/\/.*\.pages\.dev$/,
-  /^http:\/\/localhost:\d+$/
+  /^http:\/\/localhost:\d+$/,
+  /^http:\/\/.*\.devtunnels\.ms$/
 ];
 
 app.use(
@@ -971,10 +29,9 @@ app.use(
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
   })
 );
-/*
 app.options(/.*/, cors());
 app.use(express.json());
-/*
+
 // ================= DB =================
 const pool = new Pool({
   host: process.env.DB_HOST,
@@ -984,264 +41,462 @@ const pool = new Pool({
   database: process.env.DB_NAME,
 });
 
-// ================= HEALTH =================
-app.get("/", (req, res) => {
-  res.send("API running");
-});
+// ====================================================
+// HELPERS
+// ====================================================
 
-// =====================================================
-// HELPER: GET STOCK BALANCE
-// =====================================================
-const getStockBalance = async (client, stock_id) => {
+/**
+ * Find an existing material by name (case-insensitive) or create it.
+ * Must be called inside an active transaction.
+ * @returns {Promise<number>} material id from materials_master
+ */
+async function getOrCreateMaterial(client, name) {
+  const normalized = String(name || '').trim();
+  if (!normalized) throw new Error('material_name cannot be empty');
+
+  const findRes = await client.query(
+    `SELECT id FROM materials_master WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+    [normalized]
+  );
+
+  if (findRes.rows.length > 0) return findRes.rows[0].id;
+
+  const insertRes = await client.query(
+    `INSERT INTO materials_master (name)
+     VALUES ($1)
+     ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`,
+    [normalized]
+  );
+
+  return insertRes.rows[0].id;
+}
+
+function getMachineIdVariants(machineId) {
+  const raw = String(machineId ?? "").trim();
+  if (!raw) return [];
+
+  const digits = raw.replace(/\D/g, "");
+  const normalizedDigits = digits ? String(Number(digits)) : "";
+  const variants = new Set([raw, raw.toUpperCase()]);
+
+  if (digits) {
+    variants.add(digits);
+    if (normalizedDigits && normalizedDigits !== "NaN") {
+      variants.add(normalizedDigits);
+      variants.add(`M${normalizedDigits}`);
+    }
+  }
+
+  return Array.from(variants).filter(Boolean);
+}
+
+function normalizeOrderStatus(status) {
+  const normalized = String(status || "Active").trim().toLowerCase();
+  if (normalized === "active") return "Active";
+  if (normalized === "completed") return "completed";
+  if (normalized === "cancelled") return "cancelled";
+  return "Active";
+}
+
+async function fetchOrderItems(client, orderId) {
   const result = await client.query(
     `
-    SELECT COALESCE(SUM(
-      CASE
-        WHEN direction = 'IN' THEN quantity_in_kg
-        ELSE -quantity_in_kg
-      END
-    ), 0) AS balance
-    FROM inventory_transactions
-    WHERE stock_id = $1
+    SELECT
+      oi.id,
+      oi.order_id,
+      oi.item_name,
+      oi.required_quantity::float AS required_quantity,
+      COALESCE(SUM(fr.supplied_quantity), 0)::float AS fulfilled_quantity,
+      GREATEST(oi.required_quantity - COALESCE(SUM(fr.supplied_quantity), 0), 0)::float AS remaining_quantity,
+      oi.created_at
+    FROM order_items oi
+    LEFT JOIN fulfillment_records fr ON fr.order_item_id = oi.id
+    WHERE oi.order_id = $1
+    GROUP BY oi.id, oi.order_id, oi.item_name, oi.required_quantity, oi.created_at
+    ORDER BY oi.created_at ASC, oi.id ASC
     `,
-    [stock_id]
+    [orderId]
   );
 
-  return Number(result.rows[0].balance);
-};
-//====================================================
-// start production
-//====================================================
-app.post("/production/start", authMiddleware, async (req, res) => {
-  const client = await pool.connect();
+  return result.rows;
+}
 
-  try {
-    const { machine_id, materials } = req.body;
+async function hydrateOrders(client, orders) {
+  const list = Array.isArray(orders) ? orders : [];
+  return Promise.all(
+    list.map(async (order) => ({
+      ...order,
+      items: await fetchOrderItems(client, order.id),
+    }))
+  );
+}
 
-    await client.query("BEGIN");
+async function syncOrderStatus(client, orderId) {
+  const orderRes = await client.query(
+    `SELECT status FROM orders WHERE id = $1 FOR UPDATE`,
+    [orderId]
+  );
 
-    // ensure only one active session per machine
-    const active = await client.query(
-      `SELECT id FROM production_sessions 
-       WHERE machine_id = $1 AND status = 'active'`,
-      [machine_id]
+  if (orderRes.rows.length === 0) return null;
+  if (orderRes.rows[0].status === "cancelled") return "cancelled";
+
+  const summaryRes = await client.query(
+    `
+    SELECT
+      COUNT(*)::int AS total_items,
+      COUNT(*) FILTER (
+        WHERE COALESCE(fr.fulfilled_quantity, 0) >= oi.required_quantity
+      )::int AS completed_items
+    FROM order_items oi
+    LEFT JOIN (
+      SELECT order_item_id, COALESCE(SUM(supplied_quantity), 0) AS fulfilled_quantity
+      FROM fulfillment_records
+      GROUP BY order_item_id
+    ) fr ON fr.order_item_id = oi.id
+    WHERE oi.order_id = $1
+    `,
+    [orderId]
+  );
+
+  const summary = summaryRes.rows[0] || {};
+  const totalItems = Number(summary.total_items) || 0;
+  const completedItems = Number(summary.completed_items) || 0;
+  const nextStatus = totalItems > 0 && totalItems === completedItems ? "completed" : "Active";
+
+  await client.query(
+    `
+    UPDATE orders
+    SET status = $1, updated_at = NOW()
+    WHERE id = $2
+    `,
+    [nextStatus, orderId]
+  );
+
+  return nextStatus;
+}
+
+function toNumber(value, fallback = 0) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
+async function getMaterialNameById(client, materialId) {
+  const parsedId = Number(materialId);
+  if (!Number.isFinite(parsedId) || parsedId <= 0) return "";
+
+  const result = await client.query(
+    `SELECT name FROM materials_master WHERE id = $1 LIMIT 1`,
+    [parsedId]
+  );
+
+  return result.rows[0]?.name || "";
+}
+
+async function getOrCreateMaterialType(client, name) {
+  const normalized = String(name || "").trim();
+  if (!normalized) throw new Error("material_name cannot be empty");
+
+  const existing = await client.query(
+    `SELECT id FROM material_types WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+    [normalized]
+  );
+
+  if (existing.rows.length > 0) return existing.rows[0].id;
+
+  const inserted = await client.query(
+    `INSERT INTO material_types (name)
+     VALUES ($1)
+     ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`,
+    [normalized]
+  );
+
+  return inserted.rows[0].id;
+}
+
+async function resolveMaterialTypeId(client, materialId, materialName) {
+  const parsedId = Number(materialId);
+
+  if (Number.isFinite(parsedId) && parsedId > 0) {
+    const typeMatch = await client.query(
+      `SELECT id FROM material_types WHERE id = $1 LIMIT 1`,
+      [parsedId]
     );
+    if (typeMatch.rows.length > 0) return typeMatch.rows[0].id;
 
-    if (active.rows.length > 0) {
-      throw new Error("Machine already has an active session");
-    }
-
-    // create session
-    const sessionResult = await client.query(
-      `INSERT INTO production_sessions (machine_id)
-       VALUES ($1)
-       RETURNING *`,
-      [machine_id]
+    const masterMatch = await client.query(
+      `SELECT name FROM materials_master WHERE id = $1 LIMIT 1`,
+      [parsedId]
     );
-
-    const session = sessionResult.rows[0];
-
-    // insert materials
-    for (const mat of materials) {
-      await client.query(
-        `
-        INSERT INTO session_materials
-        (session_id, stock_id, initial_quantity_kg, remaining_quantity_kg)
-        VALUES ($1, $2, $3, $3)
-        `,
-        [session.id, mat.stock_id, mat.quantity]
-      );
+    if (masterMatch.rows.length > 0) {
+      return getOrCreateMaterialType(client, masterMatch.rows[0].name);
     }
-
-    await client.query("COMMIT");
-    res.json(session);
-
-  } catch (err) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
   }
-});
-//====================================================
-// log production
-//====================================================
-app.post("/production/log", authMiddleware, async (req, res) => {
-  const client = await pool.connect();
 
-  try {
-    const { session_id, gross_weight, tare_weight } = req.body;
-    const net = gross_weight - tare_weight;
-
-    await client.query("BEGIN");
-
-    // get materials
-    const mats = await client.query(
-      `SELECT * FROM session_materials WHERE session_id = $1`,
-      [session_id]
-    );
-
-    if (mats.rows.length === 0) {
-      throw new Error("No materials found for session");
-    }
-
-    // simple proportional distribution
-    const totalRemaining = mats.rows.reduce(
-      (sum, m) => sum + Number(m.remaining_quantity_kg),
-      0
-    );
-
-    for (const m of mats.rows) {
-      const proportion = m.remaining_quantity_kg / totalRemaining;
-      const consume = net * proportion;
-
-      if (m.remaining_quantity_kg < consume) {
-        throw new Error("Insufficient stock");
-      }
-
-      await client.query(
-        `
-        UPDATE session_materials
-        SET remaining_quantity_kg = remaining_quantity_kg - $1
-        WHERE id = $2
-        `,
-        [consume, m.id]
-      );
-    }
-
-    // log entry
-    const log = await client.query(
-      `
-      INSERT INTO session_logs (session_id, gross_weight, tare_weight, net_weight)
-      VALUES ($1, $2, $3, $4)
-      RETURNING *
-      `,
-      [session_id, gross_weight, tare_weight, net]
-    );
-
-    await client.query("COMMIT");
-    res.json(log.rows[0]);
-
-  } catch (err) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
+  if (String(materialName || "").trim()) {
+    return getOrCreateMaterialType(client, materialName);
   }
-});
-//====================================================
-// Get production details
-//====================================================
-app.get("/production/:id", authMiddleware, async (req, res) => {
-  try {
-    const { id } = req.params;
 
-    const session = await pool.query(
-      `SELECT * FROM production_sessions WHERE id = $1`,
-      [id]
-    );
+  return null;
+}
 
-    const materials = await pool.query(
-      `SELECT * FROM session_materials WHERE session_id = $1`,
-      [id]
-    );
+async function adjustRawMaterialTotal(client, materialId, deltaKg) {
+  const parsedMaterialId = Number(materialId);
+  const delta = toNumber(deltaKg);
 
-    const logs = await pool.query(
-      `SELECT * FROM session_logs WHERE session_id = $1 ORDER BY created_at DESC`,
-      [id]
-    );
-
-    res.json({
-      session: session.rows[0],
-      materials: materials.rows,
-      logs: logs.rows
-    });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  if (!Number.isFinite(parsedMaterialId) || parsedMaterialId <= 0) {
+    throw new Error("Invalid material id");
   }
-});
-//====================================================
-//end production
-//====================================================
-app.post("/production/end", authMiddleware, async (req, res) => {
-  const client = await pool.connect();
+  if (!delta) return;
 
-  try {
-    const { session_id } = req.body;
-
-    await client.query("BEGIN");
-
-    const mats = await client.query(
-      `SELECT * FROM session_materials WHERE session_id = $1`,
-      [session_id]
-    );
-
-    const logs = await client.query(
-      `SELECT SUM(net_weight) as total_output 
-       FROM session_logs WHERE session_id = $1`,
-      [session_id]
-    );
-
-    const totalOutput = Number(logs.rows[0].total_output || 0);
-
-    let totalWaste = 0;
-
-    for (const m of mats.rows) {
-      totalWaste += Number(m.remaining_quantity_kg);
-
-      // log waste into inventory
-      await client.query(
-        `
-        INSERT INTO inventory_transactions
-        (stock_id, quantity_in_kg, direction)
-        VALUES ($1, $2, 'OUT')
-        `,
-        [m.stock_id, m.remaining_quantity_kg]
-      );
-    }
-
-    // mark session complete
+  if (delta > 0) {
     await client.query(
-      `
-      UPDATE production_sessions
-      SET status = 'completed', completed_at = NOW()
-      WHERE id = $1
-      `,
-      [session_id]
+      `INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (material_id)
+       DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2,
+                     updated_at = NOW()`,
+      [parsedMaterialId, delta]
     );
-
-    await client.query("COMMIT");
-
-    res.json({
-      total_output: totalOutput,
-      total_waste: totalWaste
-    });
-
-  } catch (err) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
+    return;
   }
-});
-//=====================================================
-// Active Sessions
-//=====================================================
-app.get("/production/active/:machine_id", async (req, res) => {
-  const { machine_id } = req.params;
 
-  const result = await pool.query(
-    `SELECT * FROM production_sessions 
-     WHERE machine_id = $1 AND status = 'active'`,
-    [machine_id]
+  const result = await client.query(
+    `SELECT total_quantity_kg
+     FROM raw_material_totals
+     WHERE material_id = $1
+     FOR UPDATE`,
+    [parsedMaterialId]
   );
 
-  res.json(result.rows[0] || null);
-});
-//=====================================================
-// Auth Middleware (FIXED TOKEN PARSING)
-//=====================================================
+  if (result.rows.length === 0) {
+    throw new Error("Material not found in raw stock");
+  }
+
+  const available = toNumber(result.rows[0].total_quantity_kg);
+  const required = Math.abs(delta);
+  if (available < required) {
+    throw new Error(`Insufficient raw stock. Available: ${available} kg`);
+  }
+
+  await client.query(
+    `UPDATE raw_material_totals
+     SET total_quantity_kg = total_quantity_kg - $1,
+         updated_at = NOW()
+     WHERE material_id = $2`,
+    [required, parsedMaterialId]
+  );
+}
+
+async function adjustFloorMaterialBalance(client, materialTypeId, deltaKg) {
+  const parsedMaterialTypeId = Number(materialTypeId);
+  const delta = toNumber(deltaKg);
+
+  if (!Number.isFinite(parsedMaterialTypeId) || parsedMaterialTypeId <= 0) {
+    throw new Error("Invalid floor material id");
+  }
+  if (!delta) return;
+
+  if (delta > 0) {
+    await client.query(
+      `INSERT INTO floor_material_balance (material_type_id, total_quantity_kg)
+       VALUES ($1, $2)
+       ON CONFLICT (material_type_id)
+       DO UPDATE SET total_quantity_kg = floor_material_balance.total_quantity_kg + $2`,
+      [parsedMaterialTypeId, delta]
+    );
+    return;
+  }
+
+  const result = await client.query(
+    `SELECT total_quantity_kg
+     FROM floor_material_balance
+     WHERE material_type_id = $1
+     FOR UPDATE`,
+    [parsedMaterialTypeId]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error("No issued floor stock found for this material");
+  }
+
+  const available = toNumber(result.rows[0].total_quantity_kg);
+  const required = Math.abs(delta);
+  if (available < required) {
+    throw new Error(`Insufficient floor stock. Available: ${available} kg`);
+  }
+
+  await client.query(
+    `UPDATE floor_material_balance
+     SET total_quantity_kg = total_quantity_kg - $1
+     WHERE material_type_id = $2`,
+    [required, parsedMaterialTypeId]
+  );
+}
+
+async function adjustMachineAssignments(client, materialTypeId, deltaKg) {
+  const parsedMaterialTypeId = Number(materialTypeId);
+  const delta = toNumber(deltaKg);
+
+  if (!Number.isFinite(parsedMaterialTypeId) || parsedMaterialTypeId <= 0 || !delta) {
+    return;
+  }
+
+  const assignmentsRes = await client.query(
+    `SELECT id, machine_id, quantity_kg
+     FROM machine_stock_assignments
+     WHERE material_type_id = $1
+     ORDER BY id`,
+    [parsedMaterialTypeId]
+  );
+
+  if (delta > 0) {
+    const machinesRes = await client.query(`SELECT id::text AS id FROM machines ORDER BY id`);
+    for (const machine of machinesRes.rows) {
+      await client.query(
+        `INSERT INTO machine_stock_assignments (machine_id, material_type_id, quantity_kg)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (machine_id, material_type_id)
+         DO UPDATE SET quantity_kg = machine_stock_assignments.quantity_kg + $3,
+                       updated_at = NOW()`,
+        [machine.id, parsedMaterialTypeId, delta]
+      );
+    }
+    return;
+  }
+
+  const required = Math.abs(delta);
+  if (assignmentsRes.rows.length === 0) {
+    throw new Error("No machine assignments found for this floor stock");
+  }
+
+  for (const row of assignmentsRes.rows) {
+    const available = toNumber(row.quantity_kg);
+    if (available < required) {
+      throw new Error(`Cannot reduce assigned stock for machine ${row.machine_id}`);
+    }
+  }
+
+  await client.query(
+    `UPDATE machine_stock_assignments
+     SET quantity_kg = quantity_kg - $1,
+         updated_at = NOW()
+     WHERE material_type_id = $2`,
+    [required, parsedMaterialTypeId]
+  );
+}
+
+function normalizeMovementTypeValue(movementType) {
+  const normalized = String(movementType || "").trim().toUpperCase();
+  if (normalized === "WASTAGE") return "ADJUSTMENT";
+  return normalized;
+}
+
+async function applyEditableMovementEffect(client, movement, multiplier = 1) {
+  const quantityKg = toNumber(movement.quantity_kg);
+  const direction = String(movement.direction || "").trim().toUpperCase();
+  const movementType = normalizeMovementTypeValue(movement.movement_type);
+  const materialId = Number(movement.material_id);
+  const materialName =
+    String(movement.material_name || "").trim() || await getMaterialNameById(client, materialId);
+
+  if (!Number.isFinite(materialId) || materialId <= 0) {
+    throw new Error("Invalid material selected");
+  }
+  if (quantityKg <= 0) {
+    throw new Error("Quantity must be greater than zero");
+  }
+  if (!["IN", "OUT"].includes(direction)) {
+    throw new Error("direction must be IN or OUT");
+  }
+  if (!movementType) {
+    throw new Error("movement_type is required");
+  }
+  if (movementType === "CONSUMPTION") {
+    throw new Error("Production consumption entries must be edited from production history");
+  }
+
+  const rawDelta = (direction === "IN" ? quantityKg : -quantityKg) * multiplier;
+  await adjustRawMaterialTotal(client, materialId, rawDelta);
+
+  if (movementType === "FLOOR_TRANSFER") {
+    const materialTypeId = await resolveMaterialTypeId(client, materialId, materialName);
+    if (!materialTypeId) {
+      throw new Error("Unable to resolve floor material");
+    }
+
+    const floorDelta = (direction === "OUT" ? quantityKg : -quantityKg) * multiplier;
+    await adjustFloorMaterialBalance(client, materialTypeId, floorDelta);
+    await adjustMachineAssignments(client, materialTypeId, floorDelta);
+  }
+}
+
+async function upsertProductionConsumptionMovement(client, productionLogId, payload) {
+  const quantityKg = toNumber(payload.net_weight);
+  const materialId = Number(payload.material_id);
+
+  if (!Number.isFinite(productionLogId) || productionLogId <= 0) return;
+
+  const existing = await client.query(
+    `SELECT id
+     FROM material_movements
+     WHERE movement_type = 'CONSUMPTION'
+       AND reference_id = $1
+     ORDER BY id DESC
+     LIMIT 1`,
+    [productionLogId]
+  );
+
+  if (quantityKg <= 0 || !Number.isFinite(materialId) || materialId <= 0) {
+    if (existing.rows.length > 0) {
+      await client.query(`DELETE FROM material_movements WHERE id = $1`, [existing.rows[0].id]);
+    }
+    return;
+  }
+
+  const note = `Production consumption from machine ${payload.machine_id}`;
+
+  if (existing.rows.length > 0) {
+    await client.query(
+      `UPDATE material_movements
+       SET material_id = $1,
+           quantity_kg = $2,
+           direction = 'OUT',
+           movement_type = 'CONSUMPTION',
+           note = $3
+       WHERE id = $4`,
+      [materialId, quantityKg, note, existing.rows[0].id]
+    );
+    return;
+  }
+
+  await client.query(
+    `INSERT INTO material_movements
+     (material_id, quantity_kg, direction, movement_type, reference_id, note)
+     VALUES ($1, $2, 'OUT', 'CONSUMPTION', $3, $4)`,
+    [materialId, quantityKg, productionLogId, note]
+  );
+}
+
+async function restoreProductionLogFloorStock(client, logRow) {
+  if (!logRow) return;
+
+  const netWeight = toNumber(logRow.gross_weight) - toNumber(logRow.tare_weight);
+  if (netWeight <= 0) return;
+
+  try {
+    const materialTypeId = await resolveMaterialTypeId(client, logRow.material_id, logRow.material_name);
+    if (!materialTypeId) return;
+    await adjustFloorMaterialBalance(client, materialTypeId, netWeight);
+  } catch (err) {
+    console.warn(`Skipping floor-stock restore for production log ${logRow.id}: ${err.message}`);
+  }
+}
+
+// =====================================================
+// Auth Middleware
+// =====================================================
 const authMiddleware = (req, res, next) => {
   const header = req.headers.authorization;
 
@@ -1255,7 +510,24 @@ const authMiddleware = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+    const normalized = { ...decoded };
+    const derivedId =
+      normalized.user_id ??
+      normalized.id ??
+      normalized.userId ??
+      normalized.userID ??
+      null;
+
+    if (derivedId !== null && derivedId !== undefined) {
+      if (normalized.id === undefined || normalized.id === null) {
+        normalized.id = derivedId;
+      }
+      if (normalized.user_id === undefined || normalized.user_id === null) {
+        normalized.user_id = derivedId;
+      }
+    }
+
+    req.user = normalized;
     next();
   } catch {
     res.status(401).json({ error: "Invalid token" });
@@ -1269,9 +541,1509 @@ const adminOnly = (req, res, next) => {
   next();
 };
 
-//======================================================
-//Pending Approval
-//======================================================
+// ================= HEALTH =================
+app.get("/", (req, res) => {
+  res.send("API running");
+});
+
+// ====================================================
+// MATERIALS MASTER — dropdown list
+// ====================================================
+app.get("/materials", authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name FROM materials_master ORDER BY name`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ====================================================
+// RAW MATERIAL TOTALS (SOURCE OF TRUTH)
+// ====================================================
+app.get("/raw-material/totals", authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        mm.name  AS material_name,
+        rmt.total_quantity_kg,
+        rmt.updated_at
+      FROM raw_material_totals rmt
+      JOIN materials_master mm ON mm.id = rmt.material_id
+      ORDER BY mm.name
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    // fallback: try legacy name-based column so old data still works
+    try {
+      const fallback = await pool.query(`
+        SELECT material_name, total_quantity_kg, updated_at
+        FROM raw_material_totals ORDER BY material_name
+      `);
+      res.json(fallback.rows);
+    } catch {
+      res.status(500).json({ error: err.message });
+    }
+  }
+});
+
+// ====================================================
+// RAW MATERIAL BATCHES
+// ====================================================
+app.get("/raw-material/batches", authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        rb.*,
+        u.name AS created_by_name
+      FROM raw_material_batches rb
+      LEFT JOIN users u ON u.id = rb.created_by
+      ORDER BY rb.created_at DESC
+      LIMIT 500
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/raw-material/batches/:id", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const batchId = Number(req.params.id);
+    const nextQuantity = toNumber(req.body.quantity_kg);
+    const nextMaterialName = String(req.body.material_name || "").trim();
+    const nextNote = req.body.note ?? null;
+
+    if (!Number.isFinite(batchId) || batchId <= 0) {
+      return res.status(400).json({ error: "Invalid batch id" });
+    }
+    if (!nextMaterialName || nextQuantity <= 0) {
+      return res.status(400).json({ error: "material_name and quantity_kg are required" });
+    }
+
+    await client.query("BEGIN");
+
+    const currentRes = await client.query(
+      `SELECT id, material_id, material_name, quantity_kg, note
+       FROM raw_material_batches
+       WHERE id = $1
+       FOR UPDATE`,
+      [batchId]
+    );
+
+    if (currentRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Batch not found" });
+    }
+
+    const current = currentRes.rows[0];
+    const currentQuantity = toNumber(current.quantity_kg);
+    const nextMaterialId = await getOrCreateMaterial(client, nextMaterialName);
+
+    if (Number(current.material_id) === Number(nextMaterialId)) {
+      await adjustRawMaterialTotal(client, nextMaterialId, nextQuantity - currentQuantity);
+    } else {
+      await adjustRawMaterialTotal(client, current.material_id, -currentQuantity);
+      await adjustRawMaterialTotal(client, nextMaterialId, nextQuantity);
+    }
+
+    const updateRes = await client.query(
+      `UPDATE raw_material_batches
+       SET material_id = $1,
+           material_name = $2,
+           quantity_kg = $3,
+           note = $4
+       WHERE id = $5
+       RETURNING *`,
+      [nextMaterialId, nextMaterialName, nextQuantity, nextNote, batchId]
+    );
+
+    await client.query("COMMIT");
+    res.json({ success: true, data: updateRes.rows[0] });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete("/raw-material/batches/:id", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const batchId = Number(req.params.id);
+    if (!Number.isFinite(batchId) || batchId <= 0) {
+      return res.status(400).json({ error: "Invalid batch id" });
+    }
+
+    await client.query("BEGIN");
+
+    const currentRes = await client.query(
+      `SELECT id, material_id, quantity_kg
+       FROM raw_material_batches
+       WHERE id = $1
+       FOR UPDATE`,
+      [batchId]
+    );
+
+    if (currentRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Batch not found" });
+    }
+
+    const current = currentRes.rows[0];
+    await adjustRawMaterialTotal(client, current.material_id, -toNumber(current.quantity_kg));
+    await client.query(`DELETE FROM raw_material_batches WHERE id = $1`, [batchId]);
+
+    await client.query("COMMIT");
+    res.json({ success: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/raw-material/batches/bulk-delete", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const ids = Array.isArray(req.body.ids)
+      ? req.body.ids.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0)
+      : [];
+
+    if (ids.length === 0) {
+      return res.status(400).json({ error: "ids array is required" });
+    }
+
+    await client.query("BEGIN");
+
+    const currentRes = await client.query(
+      `SELECT id, material_id, quantity_kg
+       FROM raw_material_batches
+       WHERE id = ANY($1::int[])
+       ORDER BY id
+       FOR UPDATE`,
+      [ids]
+    );
+
+    if (currentRes.rows.length !== ids.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "One or more batches were not found" });
+    }
+
+    for (const row of currentRes.rows) {
+      await adjustRawMaterialTotal(client, row.material_id, -toNumber(row.quantity_kg));
+    }
+
+    await client.query(`DELETE FROM raw_material_batches WHERE id = ANY($1::int[])`, [ids]);
+
+    await client.query("COMMIT");
+    res.json({ success: true, deleted: ids.length });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/raw-material/options", authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, name AS material_name
+      FROM materials_master
+      WHERE name IS NOT NULL
+        AND TRIM(name) <> ''
+      ORDER BY name ASC
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// ====================================================
+// ADD NEW MATERIAL OPTION (creates entry in dropdown list)
+// ====================================================
+app.post("/raw-material/options", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { material_name } = req.body;
+    const normalized = String(material_name || '').trim();
+
+    if (!normalized) {
+      return res.status(400).json({ error: "material_name cannot be empty" });
+    }
+
+    await client.query("BEGIN");
+
+    // 1. Ensure it exists in materials_master (canonical source)
+    await client.query(
+      `INSERT INTO materials_master (name)
+       VALUES ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [normalized]
+    );
+
+    // 2. Ensure it exists in material_name_mapping (dropdown source)
+    await client.query(
+      `INSERT INTO material_name_mapping (material_name)
+       VALUES ($1)
+       ON CONFLICT DO NOTHING`,
+      [normalized]
+    );
+
+    await client.query("COMMIT");
+
+    res.json({ message: "Material added to options", material_name: normalized });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/raw-material/add", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { material_name, quantity_kg, note } = req.body;
+    const qty = Number(quantity_kg);
+
+    if (!String(material_name || '').trim() || !Number.isFinite(qty) || qty <= 0) {
+      return res.status(400).json({ error: "Invalid input" });
+    }
+
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({ error: "User not authenticated properly" });
+    }
+
+    await client.query("BEGIN");
+
+    const materialId = await getOrCreateMaterial(client, material_name);
+    const displayName = String(material_name).trim();
+
+    // Ensure totals constraint exists
+    const upsertRes = await client.query(
+      `
+      INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (material_id)
+      DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2,
+                    updated_at = NOW()
+      RETURNING total_quantity_kg, updated_at
+      `,
+      [materialId, qty]
+    );
+
+    await client.query(
+      `
+      INSERT INTO raw_material_batches (material_id, material_name, quantity_kg, created_by, note)
+      VALUES ($1, $2, $3, $4, $5)
+      `,
+      [materialId, displayName, qty, req.user.id, note || null]
+    );
+
+    await client.query("COMMIT");
+
+    res.json({
+      message: "Raw material added successfully",
+      data: {
+        material_name: displayName,
+        total_quantity_kg: upsertRes.rows[0]?.total_quantity_kg
+      }
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("RAW MATERIAL ADD ERROR:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ====================================================
+// FLOOR MATERIAL BALANCE (READ-ONLY — view-based)
+// ====================================================
+app.get("/floor/stock", authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        mt.id AS material_type_id,
+        mt.name AS material_name,
+        fmb.total_quantity_kg
+      FROM floor_material_balance fmb
+      JOIN material_types mt ON mt.id = fmb.material_type_id
+      ORDER BY mt.name
+      `
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ====================================================
+// ISSUE FROM RAW TO FLOOR (AUTO-ASSIGN TO MACHINES)
+// ====================================================
+app.post("/floor/issue-from-raw", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { material_name, quantity_kg } = req.body;
+    const qty = Number(quantity_kg);
+
+    if (!String(material_name || '').trim() || !Number.isFinite(qty) || qty <= 0) {
+      return res.status(400).json({ error: "Invalid material_name or quantity_kg" });
+    }
+
+    await client.query("BEGIN");
+
+    // 1. Get or create material from materials_master
+    const materialId = await getOrCreateMaterial(client, material_name);
+    const displayName = String(material_name).trim();
+
+    // 2. Check if enough stock in raw_material_totals
+    const rawStockRes = await client.query(
+      `SELECT total_quantity_kg FROM raw_material_totals
+       WHERE material_id = $1 FOR UPDATE`,
+      [materialId]
+    );
+
+    if (rawStockRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Material not found in raw stock" });
+    }
+
+    const available = Number(rawStockRes.rows[0].total_quantity_kg);
+    if (available < qty) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: `Insufficient raw stock. Available: ${available} kg`
+      });
+    }
+
+    // 3. Deduct from raw_material_totals
+    await client.query(
+      `UPDATE raw_material_totals
+       SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW()
+       WHERE material_id = $2`,
+      [qty, materialId]
+    );
+
+    // 4. Get or create material_type with same name
+    const matTypeRes = await client.query(
+      `SELECT id FROM material_types WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+      [displayName]
+    );
+
+    let materialTypeId;
+    if (matTypeRes.rows.length > 0) {
+      materialTypeId = matTypeRes.rows[0].id;
+    } else {
+      const insertTypeRes = await client.query(
+        `INSERT INTO material_types (name)
+         VALUES ($1)
+         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+         RETURNING id`,
+        [displayName]
+      );
+      materialTypeId = insertTypeRes.rows[0].id;
+    }
+
+    // 5. Add to floor_material_balance (pooled approach)
+    await client.query(
+      `INSERT INTO floor_material_balance (material_type_id, total_quantity_kg)
+       VALUES ($1, $2)
+       ON CONFLICT (material_type_id)
+       DO UPDATE SET total_quantity_kg = floor_material_balance.total_quantity_kg + $2`,
+      [materialTypeId, qty]
+    );
+
+    // 6. AUTO-ASSIGN TO ALL MACHINES ON THE FLOOR
+    const machinesRes = await client.query(
+      `SELECT id::text AS id FROM machines ORDER BY id`
+    );
+
+    for (const machine of machinesRes.rows) {
+      // Create machine_stock_assignments record
+      await client.query(
+        `INSERT INTO machine_stock_assignments (machine_id, material_type_id, quantity_kg)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (machine_id, material_type_id)
+         DO UPDATE SET quantity_kg = machine_stock_assignments.quantity_kg + $3,
+                       updated_at = NOW()`,
+        [machine.id, materialTypeId, qty]
+      );
+    }
+
+    // 7. Record the movement
+    await client.query(
+      `INSERT INTO material_movements
+       (material_id, quantity_kg, direction, movement_type, reference_id, note, created_by)
+       VALUES ($1, $2, 'OUT', 'FLOOR_TRANSFER', $3, $4, $5)`,
+      [materialId, qty, null, `Issued to floor and auto-assigned to all machines`, req.user.id]
+    );
+
+    await client.query("COMMIT");
+
+    res.json({
+      message: "Material issued to floor and auto-assigned to all machines",
+      data: {
+        material_name: displayName,
+        quantity_kg: qty,
+        material_type_id: materialTypeId,
+        machines_assigned: machinesRes.rows.length
+      }
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("FLOOR ISSUE ERROR:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ====================================================
+// GET MACHINE ASSIGNED STOCK
+// ====================================================
+app.get("/machines/:id/assigned-stock", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const machineIds = getMachineIdVariants(id);
+
+    const result = await pool.query(
+      `SELECT
+         MIN(msa.machine_id) AS machine_id,
+         msa.material_type_id,
+         mt.name AS material_name,
+         SUM(msa.quantity_kg)::float AS quantity_kg,
+         MIN(msa.assigned_at) AS assigned_at,
+         COALESCE(MAX(fmb.total_quantity_kg), 0)::float AS available_quantity_kg
+       FROM machine_stock_assignments msa
+       JOIN material_types mt ON mt.id = msa.material_type_id
+       LEFT JOIN floor_material_balance fmb ON fmb.material_type_id = msa.material_type_id
+       WHERE msa.machine_id = ANY($1::text[])
+       GROUP BY msa.material_type_id, mt.name
+       ORDER BY mt.name`,
+      [machineIds]
+    );
+
+    const totalQuantity = result.rows.reduce((sum, row) => sum + Number(row.quantity_kg), 0);
+    const totalAvailable = result.rows.reduce((sum, row) => sum + Number(row.available_quantity_kg), 0);
+
+    res.json({
+      machine_id: id,
+      assigned_materials: result.rows,
+      total_assigned_kg: totalQuantity,
+      total_available_kg: totalAvailable
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ====================================================
+// CREATE NEW MATERIAL
+// ====================================================
+// ====================================================
+// GET MATERIALS (for dropdown/list)
+// ====================================================
+app.get("/materials", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, name
+      FROM materials_master
+      ORDER BY name ASC
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch materials" });
+  }
+});
+
+// ====================================================
+// POST MATERIALS (create or get existing)
+// ====================================================
+app.post("/materials", async (req, res) => {
+  try {
+    let { name } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: "Material name is required" });
+    }
+
+    name = name.trim();
+
+    const existing = await pool.query(
+      `
+      SELECT id, name
+      FROM materials_master
+      WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))
+      LIMIT 1;
+      `,
+      [name]
+    );
+
+    let material;
+
+    if (existing.rows.length > 0) {
+      material = existing.rows[0];
+    } else {
+      const inserted = await pool.query(
+        `
+        INSERT INTO materials_master (name)
+        VALUES ($1)
+        RETURNING id, name;
+        `,
+        [name]
+      );
+      material = inserted.rows[0];
+    }
+
+    // 🔥 Return full updated list
+    const allMaterials = await pool.query(`
+      SELECT id, name
+      FROM materials_master
+      ORDER BY name ASC;
+    `);
+
+    res.json({
+      selected: material,
+      materials: allMaterials.rows
+    });
+
+  } catch (err) {
+    console.error("ADD MATERIAL ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ====================================================
+// MATERIAL MOVEMENTS (NEW SYSTEM)
+// ====================================================
+app.post("/materials/move", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const {
+      material_name,
+      quantity_kg,
+      direction,     // 'IN' or 'OUT'
+      movement_type, // 'INWARD' | 'FLOOR_TRANSFER' | 'CONSUMPTION' | 'ADJUSTMENT' | 'WASTAGE'
+      // or legacy snake_case: 'raw_add' | 'floor_issue' | 'production_use' | 'wastage'
+      reference_id,
+      note
+    } = req.body;
+
+    // Normalise frontend-friendly enum values to DB-accepted values
+    const MOVEMENT_TYPE_MAP = {
+      INWARD: 'INWARD',
+      FLOOR_TRANSFER: 'FLOOR_TRANSFER',
+      CONSUMPTION: 'CONSUMPTION',
+      ADJUSTMENT: 'ADJUSTMENT',
+      WASTAGE: 'ADJUSTMENT', // WASTAGE not in CHECK constraint, map to ADJUSTMENT
+    };
+    const resolvedMovementType =
+      MOVEMENT_TYPE_MAP[String(movement_type || '').toUpperCase()] || movement_type;
+
+    const qty = Number(quantity_kg);
+
+    if (!String(material_name || '').trim() || !Number.isFinite(qty) || qty <= 0) {
+      return res.status(400).json({ error: "Invalid material_name or quantity_kg" });
+    }
+    if (!["IN", "OUT"].includes(direction)) {
+      return res.status(400).json({ error: "direction must be IN or OUT" });
+    }
+    if (!resolvedMovementType) {
+      return res.status(400).json({ error: "movement_type is required" });
+    }
+
+    await client.query("BEGIN");
+
+    // Find or create the canonical material record
+    const materialId = await getOrCreateMaterial(client, material_name);
+    const displayName = String(material_name).trim();
+
+    if (direction === "OUT") {
+      // Lock the row and validate sufficient stock
+      const balRes = await client.query(
+        `SELECT total_quantity_kg FROM raw_material_totals
+         WHERE material_id = $1 FOR UPDATE`,
+        [materialId]
+      );
+
+      if (balRes.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "Material not found in stock" });
+      }
+
+      const available = Number(balRes.rows[0].total_quantity_kg);
+      if (available < qty) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `Insufficient stock. Available: ${available} kg`
+        });
+      }
+
+      await client.query(
+        `UPDATE raw_material_totals
+         SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW()
+         WHERE material_id = $2`,
+        [qty, materialId]
+      );
+
+      // If FLOOR_TRANSFER, also add to floor_material_balance
+      if (resolvedMovementType === "FLOOR_TRANSFER") {
+        // Find or create material_type with the same name
+        const matTypeRes = await client.query(
+          `SELECT id FROM material_types WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+          [displayName]
+        );
+        
+        let materialTypeId;
+        if (matTypeRes.rows.length > 0) {
+          materialTypeId = matTypeRes.rows[0].id;
+        } else {
+          // Create the material_type if it doesn't exist
+          const insertTypeRes = await client.query(
+            `INSERT INTO material_types (name)
+             VALUES ($1)
+             ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+             RETURNING id`,
+            [displayName]
+          );
+          materialTypeId = insertTypeRes.rows[0].id;
+        }
+
+        // Upsert into floor_material_balance
+        await client.query(
+          `INSERT INTO floor_material_balance (material_type_id, total_quantity_kg)
+           VALUES ($1, $2)
+           ON CONFLICT (material_type_id)
+           DO UPDATE SET total_quantity_kg = floor_material_balance.total_quantity_kg + $2`,
+          [materialTypeId, qty]
+        );
+      }
+    } else {
+      // IN — upsert by material_id
+      await client.query(
+        `INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (material_id)
+         DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2,
+                       updated_at = NOW()`,
+        [materialId, qty]
+      );
+    }
+
+    // Record the movement
+    const mvResult = await client.query(
+      `INSERT INTO material_movements
+       (material_id, quantity_kg, direction, movement_type, reference_id, note, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [materialId, qty, direction, resolvedMovementType,
+        reference_id || null, note || null, req.user.id]
+    );
+
+    await client.query("COMMIT");
+
+    res.json({ success: true, movement: mvResult.rows[0] });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("MATERIAL MOVE ERROR:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ====================================================
+// PRODUCTION LOGS (NEW CONTINUOUS LOGGING SYSTEM)
+// ====================================================
+app.post("/production/logs", authMiddleware, async (req, res) => {
+  const { machine_id, material_id, material_type_id, size, worker_name, gross_weight, tare_weight, entered_by, machines } = req.body;
+
+  const client = await pool.connect();
+  const isBackend = client;
+
+  try {
+    await client.query('BEGIN');
+
+    // Support two formats:
+    // 1. Single log (Production.jsx): { machine_id, material_id, size, worker_name, gross_weight, tare_weight }
+    // 2. Batch (ProductionLog.jsx): { entered_by, machines: [...] }
+
+    let insertedCount = 0;
+    let batchId = null;
+
+    if (machines && Array.isArray(machines)) {
+      // BATCH MODE: ProductionLog.jsx format
+      const logs = [];
+
+      for (const m of machines) {
+        if (!m.machine_id) continue;
+
+        // Validate weights
+        if (m.gross_weight < m.tare_weight) {
+          throw new Error(`Machine ${m.machine_id}: Gross weight must be >= tare weight`);
+        }
+
+        const net_weight = m.gross_weight - m.tare_weight;
+        if (net_weight <= 0) {
+          throw new Error(`Machine ${m.machine_id}: Net weight must be > 0`);
+        }
+
+        // Insert production log (no material_id required for batch mode)
+        const logResult = await client.query(
+          `INSERT INTO production_logs
+           (machine_id, material_id, size, worker_name, gross_weight, tare_weight)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id, machine_id, material_id, size, worker_name, gross_weight, tare_weight, created_at`,
+          [
+            m.machine_id,
+            m.material_id || null,
+            m.size || null,
+            entered_by ? `User ${entered_by}` : m.worker_name || null,
+            m.gross_weight,
+            m.tare_weight
+          ]
+        );
+
+        logs.push(logResult.rows[0]);
+        insertedCount++;
+      }
+
+      // Generate batch ID (timestamp-based)
+      batchId = `BATCH_${Date.now()}`;
+
+      await client.query('COMMIT');
+
+      return res.json({
+        message: `Batch logged: ${insertedCount} production entries`,
+        batch_id: batchId,
+        inserted: insertedCount,
+        data: logs
+      });
+    } else {
+      // SINGLE MODE: Production.jsx format (original behavior)
+      if (!machine_id) {
+        throw new Error('machine_id is required');
+      }
+
+      // Validate weights
+      if (gross_weight < tare_weight) {
+        throw new Error('Gross weight must be >= tare weight');
+      }
+
+      const net_weight = gross_weight - tare_weight;
+      const machineIdVariants = getMachineIdVariants(machine_id);
+
+      // Determine stock material ID
+      let stockMaterialId = material_type_id || material_id;
+
+      // If no material provided, AUTO-DETECT from machine assignments
+      if (!stockMaterialId) {
+        const assignedRes = await client.query(
+          `SELECT material_type_id 
+           FROM machine_stock_assignments 
+           WHERE machine_id = ANY($1::text[]) 
+           ORDER BY assigned_at DESC 
+           LIMIT 1`,
+          [machineIdVariants]
+        );
+
+        if (assignedRes.rows.length > 0) {
+          stockMaterialId = assignedRes.rows[0].material_type_id;
+        }
+      }
+
+      // If stockMaterialId provided, check floor stock and deduct
+      if (stockMaterialId) {
+        await adjustFloorMaterialBalance(client, stockMaterialId, -net_weight);
+      }
+
+      // INSERT PRODUCTION LOG
+      const logResult = await client.query(
+        `INSERT INTO production_logs
+         (machine_id, material_id, size, worker_name, gross_weight, tare_weight)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [machine_id, stockMaterialId || material_id, size, worker_name, gross_weight, tare_weight]
+      );
+
+      await upsertProductionConsumptionMovement(client, logResult.rows[0].id, {
+        machine_id,
+        material_id: stockMaterialId || material_id,
+        net_weight
+      });
+
+      // OPTIONAL: Persist worker state
+      if (worker_name) {
+        await client.query(
+          `INSERT INTO machine_state (machine_id, current_worker)
+           VALUES ($1, $2)
+           ON CONFLICT (machine_id)
+           DO UPDATE SET current_worker = EXCLUDED.current_worker,
+                         updated_at = NOW()`,
+          [machine_id, worker_name]
+        );
+      }
+
+      await client.query('COMMIT');
+
+      res.json({
+        message: 'Production logged and pooled floor stock deducted',
+        data: logResult.rows[0]
+      });
+    }
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// GET PRODUCTION LOGS (for history display)
+app.get("/production/logs", authMiddleware, async (req, res) => {
+  try {
+    const { machine_id, date_from, date_to, limit = "500" } = req.query;
+
+    const conditions = [];
+    const values = [];
+
+    if (machine_id) {
+      values.push(Number(machine_id));
+      conditions.push(`pl.machine_id = $${values.length}`);
+    }
+
+    if (date_from) {
+      values.push(date_from);
+      conditions.push(`pl.created_at >= $${values.length}::date`);
+    }
+
+    if (date_to) {
+      values.push(date_to);
+      conditions.push(`pl.created_at < ($${values.length}::date + INTERVAL '1 day')`);
+    }
+
+    const parsedLimit = Math.min(Math.max(Number(limit) || 500, 1), 1000);
+    values.push(parsedLimit);
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const result = await pool.query(
+      `
+      SELECT
+        pl.id,
+        pl.machine_id,
+        pl.material_id,
+        pl.size,
+        pl.worker_name,
+        pl.gross_weight,
+        pl.tare_weight,
+        pl.created_at,
+        m.name AS machine_name,
+        mat.name AS material_name
+      FROM production_logs pl
+      LEFT JOIN machines m ON m.id = pl.machine_id
+      LEFT JOIN materials_master mat ON mat.id = pl.material_id
+      ${whereClause}
+      ORDER BY pl.created_at DESC
+      LIMIT $${values.length}
+      `,
+      values
+    );
+
+    // Calculate net weight for each log
+    const logs = result.rows.map(row => ({
+      ...row,
+      net_weight: row.gross_weight - row.tare_weight
+    }));
+
+    res.json(logs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/production/logs/:id", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const logId = Number(req.params.id);
+    const machineId = Number(req.body.machine_id);
+    const grossWeight = toNumber(req.body.gross_weight);
+    const tareWeight = toNumber(req.body.tare_weight);
+    const size = req.body.size ?? null;
+    const workerName = req.body.worker_name ?? null;
+    const requestedMaterialId = req.body.material_type_id ?? req.body.material_id;
+
+    if (!Number.isFinite(logId) || logId <= 0) {
+      return res.status(400).json({ error: "Invalid production log id" });
+    }
+    if (!Number.isFinite(machineId) || machineId <= 0) {
+      return res.status(400).json({ error: "machine_id is required" });
+    }
+    if (grossWeight <= 0 || tareWeight < 0 || grossWeight < tareWeight) {
+      return res.status(400).json({ error: "Gross weight must be greater than or equal to tare weight" });
+    }
+
+    const nextNetWeight = grossWeight - tareWeight;
+    if (nextNetWeight <= 0) {
+      return res.status(400).json({ error: "Net weight must be greater than zero" });
+    }
+
+    await client.query("BEGIN");
+
+    const currentRes = await client.query(
+      `SELECT
+         pl.*,
+         mat.name AS material_name
+       FROM production_logs pl
+       LEFT JOIN materials_master mat ON mat.id = pl.material_id
+       WHERE pl.id = $1
+       FOR UPDATE OF pl`,
+      [logId]
+    );
+
+    if (currentRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Production log not found" });
+    }
+
+    const current = currentRes.rows[0];
+    const currentMaterialTypeId = await resolveMaterialTypeId(client, current.material_id, current.material_name);
+    const nextMaterialTypeId = await resolveMaterialTypeId(client, requestedMaterialId, current.material_name);
+
+    if (!nextMaterialTypeId) {
+      throw new Error("Unable to resolve material for this production log");
+    }
+
+    await restoreProductionLogFloorStock(client, current);
+    await adjustFloorMaterialBalance(client, nextMaterialTypeId, -nextNetWeight);
+
+    const updateRes = await client.query(
+      `UPDATE production_logs
+       SET machine_id = $1,
+           material_id = $2,
+           size = $3,
+           worker_name = $4,
+           gross_weight = $5,
+           tare_weight = $6
+       WHERE id = $7
+       RETURNING *`,
+      [machineId, nextMaterialTypeId, size, workerName, grossWeight, tareWeight, logId]
+    );
+
+    await upsertProductionConsumptionMovement(client, logId, {
+      machine_id: machineId,
+      material_id: nextMaterialTypeId,
+      net_weight: nextNetWeight
+    });
+
+    await client.query("COMMIT");
+    res.json({ success: true, data: updateRes.rows[0] });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete("/production/logs/:id", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const logId = Number(req.params.id);
+    if (!Number.isFinite(logId) || logId <= 0) {
+      return res.status(400).json({ error: "Invalid production log id" });
+    }
+
+    await client.query("BEGIN");
+
+    const currentRes = await client.query(
+      `SELECT
+         pl.*,
+         mat.name AS material_name
+       FROM production_logs pl
+       LEFT JOIN materials_master mat ON mat.id = pl.material_id
+       WHERE pl.id = $1
+       FOR UPDATE OF pl`,
+      [logId]
+    );
+
+    if (currentRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Production log not found" });
+    }
+
+    const current = currentRes.rows[0];
+    await restoreProductionLogFloorStock(client, current);
+
+    await client.query(
+      `DELETE FROM material_movements
+       WHERE movement_type = 'CONSUMPTION'
+         AND reference_id = $1`,
+      [logId]
+    );
+    await client.query(`DELETE FROM production_logs WHERE id = $1`, [logId]);
+
+    await client.query("COMMIT");
+    res.json({ success: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/production/logs/bulk-delete", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const ids = Array.isArray(req.body.ids)
+      ? req.body.ids.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0)
+      : [];
+
+    if (ids.length === 0) {
+      return res.status(400).json({ error: "ids array is required" });
+    }
+
+    await client.query("BEGIN");
+
+    const currentRes = await client.query(
+      `SELECT
+         pl.*,
+         mat.name AS material_name
+       FROM production_logs pl
+       LEFT JOIN materials_master mat ON mat.id = pl.material_id
+       WHERE pl.id = ANY($1::int[])
+       ORDER BY pl.id
+       FOR UPDATE OF pl`,
+      [ids]
+    );
+
+    if (currentRes.rows.length !== ids.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "One or more production logs were not found" });
+    }
+
+    for (const row of currentRes.rows) {
+      await restoreProductionLogFloorStock(client, row);
+    }
+
+    await client.query(
+      `DELETE FROM material_movements
+       WHERE movement_type = 'CONSUMPTION'
+         AND reference_id = ANY($1::int[])`,
+      [ids]
+    );
+    await client.query(`DELETE FROM production_logs WHERE id = ANY($1::int[])`, [ids]);
+
+    await client.query("COMMIT");
+    res.json({ success: true, deleted: ids.length });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+
+// ====================================================
+// REPORTS — MACHINE OUTPUT (NEW SYSTEM)
+// ====================================================
+app.get("/reports/machines", authMiddleware, async (req, res) => {
+  try {
+    const { date_from, date_to, machine_id } = req.query;
+
+    const conditions = [];
+    const values = [];
+
+    if (date_from) {
+      values.push(date_from);
+      conditions.push(`pl.created_at >= $${values.length}::date`);
+    }
+
+    if (date_to) {
+      values.push(date_to);
+      conditions.push(`pl.created_at < ($${values.length}::date + INTERVAL '1 day')`);
+    }
+
+    if (machine_id) {
+      values.push(Number(machine_id));
+      conditions.push(`pl.machine_id = $${values.length}`);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const result = await pool.query(
+      `
+      SELECT
+        m.id AS machine_id,
+        m.name AS machine_name,
+        COUNT(pl.id) AS total_entries,
+        COALESCE(SUM(pl.gross_weight - pl.tare_weight), 0)::float AS total_net_weight_kg,
+        COALESCE(SUM(pl.gross_weight), 0)::float AS total_gross_weight_kg,
+        COALESCE(SUM(pl.tare_weight), 0)::float AS total_tare_weight_kg
+      FROM machines m
+      LEFT JOIN production_logs pl ON pl.machine_id = m.id
+      ${whereClause}
+      GROUP BY m.id, m.name
+      ORDER BY m.id
+      `,
+      values
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get individual log entries (paginated)
+app.get("/reports/logs", authMiddleware, async (req, res) => {
+  try {
+    const { machine_id, date_from, date_to, limit = "200" } = req.query;
+
+    const conditions = [];
+    const values = [];
+
+    if (machine_id) {
+      values.push(Number(machine_id));
+      conditions.push(`mpl.machine_id = $${values.length}`);
+    }
+
+    if (date_from) {
+      values.push(date_from);
+      conditions.push(`mpl.created_at >= $${values.length}::date`);
+    }
+
+    if (date_to) {
+      values.push(date_to);
+      conditions.push(`mpl.created_at < ($${values.length}::date + INTERVAL '1 day')`);
+    }
+
+    const parsedLimit = Math.min(Math.max(Number(limit) || 200, 1), 1000);
+    values.push(parsedLimit);
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const result = await pool.query(
+      `
+      SELECT
+        mpl.*,
+        m.name AS machine_name,
+        u.name AS entered_by_name
+      FROM machine_production_logs mpl
+      LEFT JOIN machines m ON m.id = mpl.machine_id
+      LEFT JOIN users u ON u.id = mpl.entered_by
+      ${whereClause}
+      ORDER BY mpl.created_at DESC
+      LIMIT $${values.length}
+      `,
+      values
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ====================================================
+// ANALYTICS — PLANT EFFICIENCY (kept — uses view)
+// ====================================================
+app.get("/analytics/plant-efficiency", async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM plant_efficiency`);
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/analytics/plant-efficiency-v2", authMiddleware, async (req, res) => {
+  try {
+    // Compute efficiency directly from tables (avoids dependency on missing view)
+    const result = await pool.query(`
+      SELECT
+        COALESCE(SUM(rb.quantity_kg), 0)                          AS total_input_kg,
+        COALESCE(SUM(mpl.net_weight), 0)                          AS total_output_kg,
+        CASE
+          WHEN COALESCE(SUM(rb.quantity_kg), 0) = 0 THEN 0
+          ELSE ROUND(
+            (COALESCE(SUM(mpl.net_weight), 0) /
+             COALESCE(SUM(rb.quantity_kg), 0)) * 100, 2
+          )
+        END                                                        AS efficiency_percent
+      FROM
+        (SELECT COALESCE(SUM(quantity_kg), 0) AS quantity_kg FROM raw_material_batches) rb,
+        (SELECT COALESCE(SUM(net_weight),   0) AS net_weight  FROM machine_production_logs) mpl
+    `);
+    res.json(result.rows[0] ?? { total_input_kg: 0, total_output_kg: 0, efficiency_percent: 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ====================================================
+// DASHBOARD ALIAS ROUTES
+// (Dashboard.jsx expects these paths — they proxy to
+//  the canonical endpoints that already exist)
+// ====================================================
+
+// /floor/transactions  → material_movements log (direction-aware floor data)
+app.get("/floor/transactions", authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        mm.*,
+        m.name AS material_name,
+        u.name AS created_by_name
+      FROM material_movements mm
+      LEFT JOIN materials_master m ON m.id = mm.material_id
+      LEFT JOIN users u ON u.id = mm.created_by
+      ORDER BY mm.created_at DESC
+      LIMIT 500
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/floor/transactions/:id", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const movementId = Number(req.params.id);
+    const quantityKg = toNumber(req.body.quantity_kg);
+    const direction = String(req.body.direction || "").trim().toUpperCase();
+    const movementType = normalizeMovementTypeValue(req.body.movement_type);
+    const materialName = String(req.body.material_name || "").trim();
+    const note = req.body.note ?? null;
+
+    if (!Number.isFinite(movementId) || movementId <= 0) {
+      return res.status(400).json({ error: "Invalid transaction id" });
+    }
+    if (!materialName || quantityKg <= 0 || !["IN", "OUT"].includes(direction) || !movementType) {
+      return res.status(400).json({ error: "material_name, quantity_kg, direction and movement_type are required" });
+    }
+    if (movementType === "CONSUMPTION") {
+      return res.status(400).json({ error: "Production consumption entries must be edited from production history" });
+    }
+
+    await client.query("BEGIN");
+
+    const currentRes = await client.query(
+      `SELECT
+         mm.*,
+         m.name AS material_name
+       FROM material_movements mm
+       LEFT JOIN materials_master m ON m.id = mm.material_id
+       WHERE mm.id = $1
+       FOR UPDATE OF mm`,
+      [movementId]
+    );
+
+    if (currentRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Transaction not found" });
+    }
+
+    const current = currentRes.rows[0];
+    await applyEditableMovementEffect(client, current, -1);
+
+    const nextMaterialId = await getOrCreateMaterial(client, materialName);
+    const nextMovement = {
+      material_id: nextMaterialId,
+      material_name: materialName,
+      quantity_kg: quantityKg,
+      direction,
+      movement_type: movementType,
+    };
+
+    await applyEditableMovementEffect(client, nextMovement, 1);
+
+    const updateRes = await client.query(
+      `UPDATE material_movements
+       SET material_id = $1,
+           quantity_kg = $2,
+           direction = $3,
+           movement_type = $4,
+           note = $5
+       WHERE id = $6
+       RETURNING *`,
+      [nextMaterialId, quantityKg, direction, movementType, note, movementId]
+    );
+
+    await client.query("COMMIT");
+    res.json({ success: true, data: updateRes.rows[0] });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete("/floor/transactions/:id", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const movementId = Number(req.params.id);
+    if (!Number.isFinite(movementId) || movementId <= 0) {
+      return res.status(400).json({ error: "Invalid transaction id" });
+    }
+
+    await client.query("BEGIN");
+
+    const currentRes = await client.query(
+      `SELECT
+         mm.*,
+         m.name AS material_name
+       FROM material_movements mm
+       LEFT JOIN materials_master m ON m.id = mm.material_id
+       WHERE mm.id = $1
+       FOR UPDATE OF mm`,
+      [movementId]
+    );
+
+    if (currentRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Transaction not found" });
+    }
+
+    const current = currentRes.rows[0];
+    if (normalizeMovementTypeValue(current.movement_type) === "CONSUMPTION") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Production consumption entries must be deleted from production history" });
+    }
+
+    await applyEditableMovementEffect(client, current, -1);
+    await client.query(`DELETE FROM material_movements WHERE id = $1`, [movementId]);
+
+    await client.query("COMMIT");
+    res.json({ success: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/floor/transactions/bulk-delete", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const ids = Array.isArray(req.body.ids)
+      ? req.body.ids.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0)
+      : [];
+
+    if (ids.length === 0) {
+      return res.status(400).json({ error: "ids array is required" });
+    }
+
+    await client.query("BEGIN");
+
+    const currentRes = await client.query(
+      `SELECT
+         mm.*,
+         m.name AS material_name
+       FROM material_movements mm
+       LEFT JOIN materials_master m ON m.id = mm.material_id
+       WHERE mm.id = ANY($1::int[])
+       ORDER BY mm.id
+       FOR UPDATE OF mm`,
+      [ids]
+    );
+
+    if (currentRes.rows.length !== ids.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "One or more transactions were not found" });
+    }
+
+    if (currentRes.rows.some((row) => normalizeMovementTypeValue(row.movement_type) === "CONSUMPTION")) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Production consumption entries must be deleted from production history" });
+    }
+
+    for (const row of currentRes.rows) {
+      await applyEditableMovementEffect(client, row, -1);
+    }
+
+    await client.query(`DELETE FROM material_movements WHERE id = ANY($1::int[])`, [ids]);
+
+    await client.query("COMMIT");
+    res.json({ success: true, deleted: ids.length });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// /inventory/transactions  → raw material batch history
+app.get("/inventory/transactions", authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        rb.*,
+        u.name AS created_by_name
+      FROM raw_material_batches rb
+      LEFT JOIN users u ON u.id = rb.created_by
+      ORDER BY rb.created_at DESC
+      LIMIT 500
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// /inventory/balance  → current raw material stock totals
+app.get("/inventory/balance", authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT material_name, total_quantity_kg, updated_at
+      FROM raw_material_totals
+      ORDER BY material_name
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =====================================================
+// AUTH — REGISTER
+// =====================================================
 app.post("/auth/register", async (req, res) => {
   const { name, email, password } = req.body;
 
@@ -1300,54 +2072,10 @@ app.post("/auth/register", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// =====================================================
-// CORE: INSERT INVENTORY TRANSACTION (REUSABLE)
-// =====================================================
-const insertTransaction = async (
-  client,
-  {
-    stock_id,
-    transaction_type,
-    direction,
-    quantity_in_kg,
-    worker_id,
-    order_number,
-    note,
-    created_by,
-  }
-) => {
-  // Prevent negative stock
-  if (direction === "OUT") {
-    const balance = await getStockBalance(client, stock_id);
-    if (balance < quantity_in_kg) {
-      throw new Error(
-        `Insufficient stock for stock_id ${stock_id}. Available: ${balance}`
-      );
-    }
-  }
 
-  await client.query(
-    `
-    INSERT INTO inventory_transactions
-    (stock_id, transaction_type, direction, quantity_in_kg,
-     worker_id, order_number, note, created_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    `,
-    [
-      stock_id,
-      transaction_type,
-      direction,
-      quantity_in_kg,
-      worker_id,
-      order_number,
-      note,
-      created_by,
-    ]
-  );
-};
-//======================================================
-//login
-//======================================================
+// =====================================================
+// AUTH — LOGIN
+// =====================================================
 app.post("/auth/login", async (req, res) => {
   const { email, password } = req.body;
 
@@ -1388,9 +2116,10 @@ app.post("/auth/login", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-//=====================================================
-//Change Password
-//=====================================================
+
+// =====================================================
+// AUTH — CHANGE PASSWORD
+// =====================================================
 app.post("/auth/change-password", authMiddleware, async (req, res) => {
   const { old_password, new_password } = req.body;
   const user_id = req.user.user_id;
@@ -1421,9 +2150,10 @@ app.post("/auth/change-password", authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-//======================================================
-//Get Pending Users
-//======================================================
+
+// =====================================================
+// ADMIN — PENDING USERS
+// =====================================================
 app.get("/admin/pending-users", authMiddleware, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
@@ -1435,9 +2165,10 @@ app.get("/admin/pending-users", authMiddleware, adminOnly, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-//=======================================================
-// Approve User
-//=======================================================
+
+// =====================================================
+// ADMIN — APPROVE USER
+// =====================================================
 app.post("/admin/approve-user", authMiddleware, adminOnly, async (req, res) => {
   const { user_id } = req.body;
 
@@ -1452,9 +2183,10 @@ app.post("/admin/approve-user", authMiddleware, adminOnly, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-//=======================================================
-//Reject User
-//=======================================================
+
+// =====================================================
+// ADMIN — REJECT USER
+// =====================================================
 app.post("/admin/reject-user", authMiddleware, adminOnly, async (req, res) => {
   const { user_id } = req.body;
 
@@ -1482,355 +2214,25 @@ app.get("/machines", async (req, res) => {
   }
 });
 
-// =====================================================
-// CREATE PRODUCTION BATCH
-// =====================================================
-app.post("/production/create", async (req, res) => {
-  const client = await pool.connect();
-
+// Get machine state (e.g., current worker)
+app.get("/machines/:id/state", async (req, res) => {
   try {
-    const {
-      machine_id,
-      order_number,
-      inputs, // [{stock_id, quantity}]
-      outputs, // [{stock_id, quantity}]
-      worker_id,
-      created_by,
-      note,
-    } = req.body;
-
-    if (!machine_id || !inputs || inputs.length === 0 || !outputs || outputs.length === 0) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    await client.query("BEGIN");
-
-    // ================= CALCULATE TOTALS =================
-    const totalInput = inputs.reduce((sum, i) => sum + Number(i.quantity), 0);
-    const totalOutput = outputs.reduce((sum, o) => sum + Number(o.quantity), 0);
-    const waste = totalInput - totalOutput;
-
-    if (waste < 0) {
-      throw new Error("Output cannot exceed input");
-    }
-
-    // ================= CREATE BATCH =================
-    const batchResult = await client.query(
-      `
-      INSERT INTO production_batches
-      (machine_id, order_number, total_input_kg, total_output_kg, total_waste_kg)
-      VALUES ($1,$2,$3,$4,$5)
-      RETURNING *
-      `,
-      [machine_id, order_number, totalInput, totalOutput, waste]
-    );
-
-    const batchId = batchResult.rows[0].id;
-
-    // ================= HANDLE INPUTS =================
-    for (const input of inputs) {
-      await client.query(
-        `
-        INSERT INTO production_inputs (batch_id, stock_id, quantity_kg)
-        VALUES ($1,$2,$3)
-        `,
-        [batchId, input.stock_id, input.quantity]
-      );
-
-      await insertTransaction(client, {
-        stock_id: input.stock_id,
-        transaction_type: "production_input",
-        direction: "OUT",
-        quantity_in_kg: input.quantity,
-        worker_id,
-        order_number,
-        note,
-        created_by,
-      });
-    }
-
-    // ================= HANDLE OUTPUTS =================
-    for (const output of outputs) {
-      await client.query(
-        `
-        INSERT INTO production_outputs (batch_id, stock_id, quantity_kg)
-        VALUES ($1,$2,$3)
-        `,
-        [batchId, output.stock_id, output.quantity]
-      );
-
-      await insertTransaction(client, {
-        stock_id: output.stock_id,
-        transaction_type: "production_output",
-        direction: "IN",
-        quantity_in_kg: output.quantity,
-        worker_id,
-        order_number,
-        note,
-        created_by,
-      });
-    }
-
-    // ================= HANDLE WASTE =================
-    const WASTE_STOCK_ID = 9999; // change if needed
-
-    if (waste > 0) {
-      await insertTransaction(client, {
-        stock_id: WASTE_STOCK_ID,
-        transaction_type: "waste_generated",
-        direction: "IN",
-        quantity_in_kg: waste,
-        worker_id,
-        order_number,
-        note,
-        created_by,
-      });
-    }
-
-    await client.query("COMMIT");
-
-    res.json({
-      message: "Production batch created",
-      batch: batchResult.rows[0],
-    });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-});
-
-// =====================================================
-// NEW: LOG ROLLS (CORE FLOW)
-// =====================================================
-app.post("/production/log-rolls", async (req, res) => {
-  const client = await pool.connect();
-
-  try {
-    const {
-      issuance_id,
-      worker_id,
-      order_number,
-      rolls, // [{ machine_id, quantity_kg }]
-      note,
-      created_by,
-    } = req.body;
-
-    if (!issuance_id || !rolls || rolls.length === 0) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    await client.query("BEGIN");
-
-    // ================= GET ISSUANCE =================
-    const issuanceRes = await client.query(
-      `SELECT * FROM stock_issuances WHERE id = $1 FOR UPDATE`,
-      [issuance_id]
-    );
-
-    if (issuanceRes.rows.length === 0) {
-      throw new Error("Issuance not found");
-    }
-
-    const issuance = issuanceRes.rows[0];
-
-    const remaining =
-      issuance.issued_quantity_kg - issuance.consumed_quantity_kg;
-
-    // ================= CALCULATE OUTPUT =================
-    const totalOutput = rolls.reduce(
-      (sum, r) => sum + Number(r.quantity_kg),
-      0
-    );
-
-    if (totalOutput <= 0) {
-      throw new Error("Invalid output quantity");
-    }
-
-    // ================= VALIDATE =================
-    if (totalOutput > remaining) {
-      throw new Error(
-        `Not enough stock. Remaining: ${remaining}, Tried: ${totalOutput}`
-      );
-    }
-
-    // ================= CREATE BATCH =================
-    const batchRes = await client.query(
-      `
-      INSERT INTO production_batches
-      (machine_id, issuance_id, worker_id, order_number,
-       total_input_kg, total_output_kg, total_waste_kg)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
-      RETURNING *
-      `,
-      [
-        null, // not tied to one machine
-        issuance_id,
-        worker_id,
-        order_number,
-        totalOutput, // treating input = output for now (no explicit waste input)
-        totalOutput,
-        0, // waste computed globally later
-      ]
-    );
-
-    const batchId = batchRes.rows[0].id;
-
-    // ================= INSERT ROLLS =================
-    for (const roll of rolls) {
-      if (!roll.machine_id || !roll.quantity_kg) {
-        throw new Error("Invalid roll data");
-      }
-
-      // 1. Insert production output
-      await client.query(
-        `
-        INSERT INTO production_outputs
-        (batch_id, stock_id, quantity_kg, machine_id)
-        VALUES ($1,$2,$3,$4)
-        `,
-        [
-          batchId,
-          1, // ⚠️ replace with your finished goods stock_id
-          roll.quantity_kg,
-          roll.machine_id,
-        ]
-      );
-
-      // 2. Insert inventory transaction
-      await client.query(
-        `
-        INSERT INTO inventory_transactions
-        (stock_id, transaction_type, direction, quantity_in_kg,
-         worker_id, order_number, reference_id, note, created_by)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-        `,
-        [
-          1, // same finished goods stock_id
-          "production_output",
-          "IN",
-          roll.quantity_kg,
-          worker_id,
-          order_number,
-          batchId,
-          note,
-          created_by,
-        ]
-      );
-    }
-
-    // ================= UPDATE ISSUANCE =================
-    await client.query(
-      `
-      UPDATE stock_issuances
-      SET consumed_quantity_kg = consumed_quantity_kg + $1
-      WHERE id = $2
-      `,
-      [totalOutput, issuance_id]
-    );
-
-    await client.query("COMMIT");
-
-    res.json({
-      message: "Production logged successfully",
-      batch_id: batchId,
-      total_output: totalOutput,
-      remaining_after:
-        remaining - totalOutput,
-    });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-});
-
-// =====================================================
-// GET ALL PRODUCTION BATCHES
-// =====================================================
-app.get("/production/batches", async (req, res) => {
-  try {
+    const { id } = req.params;
     const result = await pool.query(
-      `
-      SELECT pb.*, m.name AS machine_name
-      FROM production_batches pb
-      LEFT JOIN machines m ON pb.machine_id = m.id
-      ORDER BY pb.created_at DESC
-      `
+      `SELECT current_worker, updated_at FROM machine_state WHERE machine_id = $1`,
+      [id]
     );
-
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// MACHINE ANALYTICS
-// =====================================================
-app.get("/analytics/machines", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `
-      SELECT
-        m.id,
-        m.name,
-        SUM(pb.total_input_kg) AS total_input,
-        SUM(pb.total_output_kg) AS total_output,
-        SUM(pb.total_waste_kg) AS total_waste,
-        CASE
-          WHEN SUM(pb.total_input_kg) > 0
-          THEN SUM(pb.total_output_kg) / SUM(pb.total_input_kg)
-          ELSE 0
-        END AS efficiency
-      FROM machines m
-      LEFT JOIN production_batches pb ON pb.machine_id = m.id
-      GROUP BY m.id
-      ORDER BY m.id
-      `
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ================= MACHINE OUTPUT ANALYTICS =================
-app.get("/analytics/machine-output", async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT
-        m.id,
-        m.name,
-        COALESCE(SUM(po.quantity_kg), 0) AS total_output
-      FROM machines m
-      LEFT JOIN production_outputs po
-        ON po.machine_id = m.id
-      GROUP BY m.id
-      ORDER BY m.id
-    `);
-
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ================= PLANT EFFICIENCY =================
-app.get("/analytics/plant-efficiency", async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT * FROM plant_efficiency
-    `);
-
+    
+    if (result.rows.length === 0) {
+      return res.json({ current_worker: null });
+    }
+    
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // =====================================================
 // USERS
@@ -1839,7 +2241,6 @@ app.post("/users", authMiddleware, adminOnly, async (req, res) => {
   const { email, password, name, role } = req.body;
 
   try {
-    // hash password
     const hash = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
@@ -1858,7 +2259,6 @@ app.post("/users", authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// GET USERS (ADMIN ONLY)
 app.get("/users", authMiddleware, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -1874,70 +2274,130 @@ app.get("/users", authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// ================= WORKER STOCK VIEW =================
-app.get("/worker/stock/:worker_id", async (req, res) => {
-  const { worker_id } = req.params;
-
-  try {
-    const result = await pool.query(
-      `
-      SELECT
-        id,
-        stock_id,
-        issued_quantity_kg,
-        consumed_quantity_kg,
-        (issued_quantity_kg - consumed_quantity_kg) AS remaining_kg
-      FROM stock_issuances
-      WHERE issued_to_worker_id = $1
-      AND (issued_quantity_kg - consumed_quantity_kg) > 0
-      `,
-      [worker_id]
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // =====================================================
 // ORDERS
 // =====================================================
-app.post("/orders", async (req, res) => {
-  let { order_number, client_name, status = "Active" } = req.body;
+app.post("/orders", authMiddleware, async (req, res) => {
+  const client = await pool.connect();
 
-  // Normalize status: capitalize 'active' if needed, keep others lowercase
-  if (status) {
-    const normalized = String(status).toLowerCase();
-    if (normalized === "active") {
-      status = "Active";
-    } else {
-      status = normalized;
+  try {
+    const {
+      order_number,
+      client_name,
+      status = "Active",
+      items = [],
+    } = req.body;
+
+    const normalizedOrderNumber = String(order_number || "").trim();
+    const normalizedClientName = String(client_name || "").trim();
+    const normalizedStatus = normalizeOrderStatus(status);
+    const normalizedItems = (Array.isArray(items) ? items : [])
+      .map((item) => ({
+        item_name: String(item?.item_name || "").trim(),
+        required_quantity: Number(item?.required_quantity),
+      }))
+      .filter((item) => item.item_name && Number.isFinite(item.required_quantity) && item.required_quantity > 0);
+
+    if (!normalizedOrderNumber) {
+      return res.status(400).json({ error: "order_number is required" });
     }
-  }
+    if (!normalizedClientName) {
+      return res.status(400).json({ error: "client_name is required" });
+    }
 
-  try {
-    const result = await pool.query(
-      `INSERT INTO orders (order_number, client_name, status)
-       VALUES ($1, $2, $3) RETURNING *`,
-      [order_number, client_name, status]
+    await client.query("BEGIN");
+
+    const orderInsert = await client.query(
+      `
+      INSERT INTO orders (order_number, client_name, status)
+      VALUES ($1, $2, $3)
+      RETURNING *
+      `,
+      [normalizedOrderNumber, normalizedClientName, normalizedStatus]
     );
-    res.json(result.rows[0]);
+
+    const order = orderInsert.rows[0];
+
+    for (const item of normalizedItems) {
+      await client.query(
+        `
+        INSERT INTO order_items (order_id, item_name, required_quantity)
+        VALUES ($1, $2, $3)
+        `,
+        [order.id, item.item_name, item.required_quantity]
+      );
+    }
+
+    const [hydratedOrder] = await hydrateOrders(client, [order]);
+
+    await client.query("COMMIT");
+    res.json(hydratedOrder);
   } catch (err) {
+    await client.query("ROLLBACK");
+    if (err.code === "23505") {
+      return res.status(400).json({ error: "Order number already exists" });
+    }
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
-app.get("/orders", async (req, res) => {
+app.get("/orders", authMiddleware, async (req, res) => {
   try {
-    const result = await pool.query(`SELECT * FROM orders`);
-    res.json(result.rows);
+    const includeItems = ["1", "true", "yes"].includes(String(req.query.include_items || "").toLowerCase());
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM orders
+      ORDER BY created_at DESC, id DESC
+      `
+    );
+
+    if (!includeItems) {
+      return res.json(result.rows);
+    }
+
+    const hydrated = await hydrateOrders(pool, result.rows);
+    res.json(hydrated);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.delete("/orders/:id", async (req, res) => {
+app.get("/orders/:orderNumber/items", authMiddleware, async (req, res) => {
+  try {
+    const { orderNumber } = req.params;
+    const orderRes = await pool.query(
+      `SELECT id FROM orders WHERE order_number = $1`,
+      [orderNumber]
+    );
+
+    if (orderRes.rows.length === 0) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    const items = await fetchOrderItems(pool, orderRes.rows[0].id);
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/orders/:id", authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM orders WHERE id = $1`, [req.params.id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+    const [hydratedOrder] = await hydrateOrders(pool, result.rows);
+    res.json(hydratedOrder);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/orders/:id", authMiddleware, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -1959,16 +2419,10 @@ app.delete("/orders/:id", async (req, res) => {
   }
 });
 
-app.put("/orders/:id/status", async (req, res) => {
+app.put("/orders/:id/status", authMiddleware, async (req, res) => {
   const { id } = req.params;
-  const { status } = req.body;
+  const normalizedStatus = normalizeOrderStatus(req.body?.status);
   const allowedStatuses = ["Active", "completed", "cancelled"];
-
-  // Normalize input: capitalize 'active' if needed, keep others lowercase
-  let normalizedStatus = String(status).toLowerCase();
-  if (normalizedStatus === "active") {
-    normalizedStatus = "Active";
-  }
 
   if (!allowedStatuses.includes(normalizedStatus)) {
     return res.status(400).json({ error: "Invalid order status" });
@@ -1976,10 +2430,12 @@ app.put("/orders/:id/status", async (req, res) => {
 
   try {
     const result = await pool.query(
-      `UPDATE orders
-       SET status = $1
-       WHERE id = $2
-       RETURNING *`,
+      `
+      UPDATE orders
+      SET status = $1, updated_at = NOW()
+      WHERE id = $2
+      RETURNING *
+      `,
       [normalizedStatus, id]
     );
 
@@ -1993,79 +2449,110 @@ app.put("/orders/:id/status", async (req, res) => {
   }
 });
 
-// =====================================================
-// INVENTORY TRANSACTIONS (UNIFIED SYSTEM)
-// =====================================================
-
-// =====================================================
-// CREATE TRANSACTION (CORE ENDPOINT)
-// =====================================================
-app.post("/inventory/transaction", async (req, res) => {
+app.post("/fulfillment", authMiddleware, async (req, res) => {
   const client = await pool.connect();
 
   try {
     const {
-      stock_id,
-      transaction_type,
-      direction,
-      quantity_in_kg,
-      quantity_display,
-      quantity_unit,
-      worker_id,
       order_number,
-      reference_id,
-      note,
-      created_by,
+      item_id,
+      item_index,
+      supplied_quantity,
+      note = null,
     } = req.body;
 
-    if (!stock_id || !transaction_type || !direction || !quantity_in_kg) {
-      return res.status(400).json({ error: "Missing required fields" });
+    const normalizedOrderNumber = String(order_number || "").trim();
+    const quantity = Number(supplied_quantity);
+
+    if (!normalizedOrderNumber) {
+      return res.status(400).json({ error: "order_number is required" });
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return res.status(400).json({ error: "supplied_quantity must be greater than 0" });
     }
 
     await client.query("BEGIN");
 
-    // 🔍 Get current balance
-    const currentBalance = await getStockBalance(client, stock_id);
+    const orderRes = await client.query(
+      `SELECT id, status FROM orders WHERE order_number = $1 FOR UPDATE`,
+      [normalizedOrderNumber]
+    );
 
-    // ❌ Prevent negative stock
-    if (direction === "OUT" && currentBalance < quantity_in_kg) {
+    if (orderRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    const order = orderRes.rows[0];
+    let targetItem = null;
+
+    if (item_id) {
+      const itemRes = await client.query(
+        `
+        SELECT id, item_name, required_quantity
+        FROM order_items
+        WHERE id = $1 AND order_id = $2
+        FOR UPDATE
+        `,
+        [Number(item_id), order.id]
+      );
+      targetItem = itemRes.rows[0] || null;
+    } else if (item_index !== undefined && item_index !== null && item_index !== "") {
+      const itemRes = await client.query(
+        `
+        SELECT id, item_name, required_quantity
+        FROM order_items
+        WHERE order_id = $1
+        ORDER BY created_at ASC, id ASC
+        OFFSET $2 LIMIT 1
+        FOR UPDATE
+        `,
+        [order.id, Number(item_index)]
+      );
+      targetItem = itemRes.rows[0] || null;
+    }
+
+    if (!targetItem) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Valid order item is required" });
+    }
+
+    const fulfilledRes = await client.query(
+      `
+      SELECT COALESCE(SUM(supplied_quantity), 0)::float AS fulfilled_quantity
+      FROM fulfillment_records
+      WHERE order_item_id = $1
+      `,
+      [targetItem.id]
+    );
+
+    const fulfilledQuantity = Number(fulfilledRes.rows[0]?.fulfilled_quantity) || 0;
+    const remainingQuantity = Number(targetItem.required_quantity) - fulfilledQuantity;
+
+    if (remainingQuantity < quantity) {
       await client.query("ROLLBACK");
       return res.status(400).json({
-        error: "Insufficient stock",
-        currentBalance,
+        error: `Cannot supply more than remaining quantity (${Math.max(remainingQuantity, 0).toFixed(2)} kg)`,
       });
     }
 
-    // ✅ Insert transaction
-    const result = await client.query(
+    const insertRes = await client.query(
       `
-      INSERT INTO inventory_transactions
-      (stock_id, transaction_type, direction, quantity_in_kg,
-       quantity_display, quantity_unit, worker_id, order_number,
-       reference_id, note, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      INSERT INTO fulfillment_records (order_id, order_item_id, supplied_quantity, note, created_by)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING *
       `,
-      [
-        stock_id,
-        transaction_type,
-        direction,
-        quantity_in_kg,
-        quantity_display,
-        quantity_unit,
-        worker_id,
-        order_number,
-        reference_id,
-        note,
-        created_by,
-      ]
+      [order.id, targetItem.id, quantity, note, req.user?.id || req.user?.user_id || null]
     );
+
+    await syncOrderStatus(client, order.id);
 
     await client.query("COMMIT");
 
     res.json({
-      message: "Transaction successful",
-      data: result.rows[0],
+      ...insertRes.rows[0],
+      order_number: normalizedOrderNumber,
+      item_name: targetItem.item_name,
     });
   } catch (err) {
     await client.query("ROLLBACK");
@@ -2075,57 +2562,35 @@ app.post("/inventory/transaction", async (req, res) => {
   }
 });
 
-// =====================================================
-// GET ALL TRANSACTIONS
-// =====================================================
-app.get("/inventory/transactions", async (req, res) => {
+app.get("/fulfillment", authMiddleware, async (req, res) => {
   try {
-    const { stock_id, type, worker_id } = req.query;
+    const { order_number, limit = "500" } = req.query;
+    const conditions = [];
+    const values = [];
 
-    let query = `SELECT * FROM inventory_transactions WHERE 1=1`;
-    let values = [];
-
-    if (stock_id) {
-      values.push(stock_id);
-      query += ` AND stock_id = $${values.length}`;
+    if (order_number) {
+      values.push(String(order_number).trim());
+      conditions.push(`o.order_number = $${values.length}`);
     }
 
-    if (type) {
-      values.push(type);
-      query += ` AND transaction_type = $${values.length}`;
-    }
+    const parsedLimit = Math.min(Math.max(Number(limit) || 500, 1), 1000);
+    values.push(parsedLimit);
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    if (worker_id) {
-      values.push(worker_id);
-      query += ` AND worker_id = $${values.length}`;
-    }
-
-    const result = await pool.query(query, values);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =====================================================
-// GET ALL STOCK BALANCES
-// =====================================================
-app.get("/inventory/balance", async (req, res) => {
-  try {
     const result = await pool.query(
       `
       SELECT
-        stock_id,
-        SUM(
-          CASE
-            WHEN direction = 'IN' THEN quantity_in_kg
-            ELSE -quantity_in_kg
-          END
-        ) AS balance
-      FROM inventory_transactions
-      GROUP BY stock_id
-      ORDER BY stock_id
-      `
+        fr.*,
+        o.order_number,
+        oi.item_name
+      FROM fulfillment_records fr
+      JOIN orders o ON o.id = fr.order_id
+      JOIN order_items oi ON oi.id = fr.order_item_id
+      ${whereClause}
+      ORDER BY fr.created_at DESC
+      LIMIT $${values.length}
+      `,
+      values
     );
 
     res.json(result.rows);
@@ -2135,63 +2600,204 @@ app.get("/inventory/balance", async (req, res) => {
 });
 
 // =====================================================
-// GET SINGLE STOCK BALANCE
+// WASTAGE
 // =====================================================
-app.get("/inventory/balance/:stock_id", async (req, res) => {
-  try {
-    const { stock_id } = req.params;
+app.post("/wastage", authMiddleware, async (req, res) => {
+  const {
+    sno,
+    date,
+    order_number,
+    gross_weight,
+    net_weight
+  } = req.body;
 
-    const result = await pool.query(
-      `
-      SELECT COALESCE(SUM(
-        CASE
-          WHEN direction = 'IN' THEN quantity_in_kg
-          ELSE -quantity_in_kg
-        END
-      ), 0) AS balance
-      FROM inventory_transactions
-      WHERE stock_id = $1
-      `,
-      [stock_id]
-    );
-
-    res.json({
-      stock_id,
-      balance: Number(result.rows[0].balance),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  // Validation
+  if (
+    sno == null ||
+    !date ||
+    !order_number ||
+    gross_weight == null ||
+    net_weight == null
+  ) {
+    return res.status(400).json({ error: "Missing required fields" });
   }
-});
 
-// =====================================================
-// DELETE TRANSACTION
-// =====================================================
-app.delete("/inventory/transaction/:id", async (req, res) => {
+  if (Number(gross_weight) < Number(net_weight)) {
+    return res.status(400).json({
+      error: "gross_weight cannot be less than net_weight"
+    });
+  }
+
+  const client = await pool.connect();
   try {
-    const { id } = req.params;
+    await client.query("BEGIN");
 
-    const result = await pool.query(
-      `DELETE FROM inventory_transactions WHERE id = $1 RETURNING *`,
-      [id]
+    // Ensure order exists
+    const orderCheck = await client.query(
+      "SELECT 1 FROM orders WHERE order_number = $1",
+      [order_number]
     );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Transaction not found" });
+    if (orderCheck.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Invalid order_number" });
     }
 
-    res.json({
-      message: "Transaction deleted",
-      deleted: result.rows[0],
+    // Insert into wastage_data only
+    const insertRes = await client.query(
+      `
+      INSERT INTO wastage_data
+        (sno, date, order_number, gross_weight, net_weight)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, sno, date, order_number, gross_weight, net_weight, actual_weight
+      `,
+      [sno, date, order_number, gross_weight, net_weight]
+    );
+
+    const row = insertRes.rows[0];
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      message: "Wastage recorded",
+      data: row
     });
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    await client.query("ROLLBACK");
+    console.error(err);
+
+    if (err.code === "23503") {
+      return res.status(400).json({ error: "Invalid foreign key reference" });
+    }
+
+    return res.status(500).json({ error: "Internal server error" });
+  } finally {
+    client.release();
   }
 });
 
 // =====================================================
 // START SERVER
 // =====================================================
-app.listen(process.env.PORT, () => {
-  console.log(`Server running on port ${process.env.PORT}`);
-}); 
+
+// Ensure required tables exist
+const initializeTables = async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS orders (
+        id SERIAL PRIMARY KEY,
+        order_number VARCHAR(255) UNIQUE NOT NULL,
+        client_name VARCHAR(255) NOT NULL,
+        status VARCHAR(50) NOT NULL DEFAULT 'Active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS order_number VARCHAR(255)
+    `);
+
+    await pool.query(`
+      ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS client_name VARCHAR(255)
+    `);
+
+    await pool.query(`
+      ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'Active'
+    `);
+
+    await pool.query(`
+      ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    `);
+
+    await pool.query(`
+      ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_number
+      ON orders(order_number)
+      WHERE order_number IS NOT NULL
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS order_items (
+        id SERIAL PRIMARY KEY,
+        order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        item_name VARCHAR(255) NOT NULL,
+        required_quantity NUMERIC(12, 3) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_order_items_order_id
+      ON order_items(order_id)
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fulfillment_records (
+        id SERIAL PRIMARY KEY,
+        order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        order_item_id INTEGER NOT NULL REFERENCES order_items(id) ON DELETE CASCADE,
+        supplied_quantity NUMERIC(12, 3) NOT NULL,
+        note TEXT,
+        created_by INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_fulfillment_records_order_id
+      ON fulfillment_records(order_id)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_fulfillment_records_order_item_id
+      ON fulfillment_records(order_item_id)
+    `);
+
+    // Create machine_stock_assignments table if it doesn't exist
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS machine_stock_assignments (
+        id SERIAL PRIMARY KEY,
+        machine_id VARCHAR(10) NOT NULL,
+        material_type_id INTEGER NOT NULL,
+        quantity_kg NUMERIC(12, 2) NOT NULL DEFAULT 0,
+        assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(machine_id, material_type_id)
+      )
+    `);
+    
+    // Create indexes if they don't exist
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_machine_assignments_machine_id 
+      ON machine_stock_assignments(machine_id)
+    `);
+    
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_machine_assignments_material_type_id 
+      ON machine_stock_assignments(material_type_id)
+    `);
+    
+    console.log('Database tables initialized successfully');
+  } catch (err) {
+    console.error('Failed to initialize tables:', err);
+  }
+};
+
+// Initialize tables before starting server
+initializeTables().then(() => {
+  app.listen(process.env.PORT, () => {
+    console.log(`Server running on port ${process.env.PORT}`);
+  });
+}).catch(err => {
+  console.error('Server startup failed:', err);
+  process.exit(1);
+});

@@ -141,68 +141,89 @@ function CreatePOPanel({ onCreated }) {
   )
 }
 
-function POCard({ order }) {
-  const items = Array.isArray(order?.items) ? order.items : []
-  const totalRequired = items.reduce((sum, item) => sum + toNumber(item.required_quantity), 0)
-  const totalFulfilled = items.reduce((sum, item) => sum + toNumber(item.fulfilled_quantity), 0)
-  const pct = totalRequired > 0 ? Math.min(100, (totalFulfilled / totalRequired) * 100) : 0
-
+function POTable({ orders }) {
   return (
-    <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
-      <div className="px-5 py-4 border-b border-border-subtle">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <p className="font-bold text-text-primary">{order.order_number}</p>
-            <p className="text-xs text-text-secondary mt-0.5">{order.client_name}</p>
-          </div>
-          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border ${
-            order?.status === 'completed'
-              ? 'text-green-400 bg-green-500/10 border-green-500/20'
-              : 'text-accent-gold bg-accent-gold/10 border-accent-gold/20'
-          }`}>
-            {order?.status || 'Active'}
-          </span>
-        </div>
-        <div className="mt-3">
-          <div className="flex justify-between text-[10px] text-text-secondary/60 mb-1.5">
-            <span>Fulfillment</span>
-            <span>{pct.toFixed(0)}%</span>
-          </div>
-          <div className="h-1.5 bg-bg-primary rounded-full overflow-hidden">
-            <div className="h-full bg-accent-gold rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
-          </div>
-          <div className="flex justify-between text-[10px] text-text-secondary/50 mt-1">
-            <span>{totalFulfilled.toFixed(2)} kg fulfilled</span>
-            <span>{totalRequired.toFixed(2)} kg total</span>
-          </div>
-        </div>
-      </div>
+    <div className="overflow-x-auto rounded-2xl border border-white/20 bg-bg-input/15">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b-2 border-white/20 bg-bg-primary/50">
+            <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">PO Number</th>
+            <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Client</th>
+            <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Item</th>
+            <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Required (kg)</th>
+            <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Fulfilled (kg)</th>
+            <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Remaining (kg)</th>
+            <th className="px-4 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Done</th>
+            <th className="px-4 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Status</th>
+            <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70">Created</th>
+          </tr>
+        </thead>
+        <tbody>
+          {orders.map((order) => {
+            const items = Array.isArray(order?.items) ? order.items : []
+            const totalRequired = items.reduce((sum, item) => sum + toNumber(item.required_quantity), 0)
+            const totalFulfilled = items.reduce((sum, item) => sum + toNumber(item.fulfilled_quantity), 0)
+            const pct = totalRequired > 0 ? Math.min(100, (totalFulfilled / totalRequired) * 100) : 0
+            const rowSpan = items.length || 1
 
-      <div className="divide-y divide-border-subtle">
-        {items.length === 0 ? (
-          <div className="px-5 py-4 text-sm text-text-secondary/70">No line items added yet.</div>
-        ) : (
-          items.map((item) => {
-            const remain = Math.max(0, toNumber(item.required_quantity) - toNumber(item.fulfilled_quantity))
-            return (
-              <div key={item.id} className="px-5 py-3 flex items-center justify-between gap-4">
-                <span className="text-sm text-text-primary/90 font-medium truncate">{item.item_name}</span>
-                <div className="flex items-center gap-3 shrink-0 text-xs">
-                  <span className="text-text-secondary">Req: <span className="font-mono font-semibold text-text-primary">{toNumber(item.required_quantity).toFixed(2)}</span></span>
-                  <span className="text-green-400">Done: <span className="font-mono font-semibold">{toNumber(item.fulfilled_quantity).toFixed(2)}</span></span>
-                  <span className={remain > 0 ? 'text-orange-400' : 'text-green-400'}>
-                    Rem: <span className="font-mono font-semibold">{remain.toFixed(2)}</span>
-                  </span>
-                </div>
-              </div>
-            )
-          })
-        )}
-      </div>
+            if (items.length === 0) {
+              return (
+                <tr key={order.id || order.order_number} className="border-b border-white/[0.08] hover:bg-white/[0.04] transition-colors">
+                  <td className="px-4 py-3 font-bold text-text-primary whitespace-nowrap">{order.order_number}</td>
+                  <td className="px-4 py-3 text-text-secondary/80">{order.client_name}</td>
+                  <td className="px-4 py-3 text-text-secondary/50 italic" colSpan={4}>No line items</td>
+                  <td className="px-4 py-3 text-center font-mono font-bold text-text-secondary/40">—</td>
+                  <td className="px-4 py-3 text-center">
+                    <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border ${
+                      order?.status === 'completed'
+                        ? 'text-green-400 bg-green-500/10 border-green-500/20'
+                        : 'text-accent-gold bg-accent-gold/10 border-accent-gold/20'
+                    }`}>{order?.status || 'Active'}</span>
+                  </td>
+                  <td className="px-4 py-3 text-text-secondary/40 text-xs whitespace-nowrap">{formatDate(order.created_at)}</td>
+                </tr>
+              )
+            }
 
-      <div className="px-5 py-2.5 text-[10px] text-text-secondary/40">
-        Created {formatDate(order.created_at)}
-      </div>
+            return items.map((item, idx) => {
+              const remain = Math.max(0, toNumber(item.required_quantity) - toNumber(item.fulfilled_quantity))
+              const itemPct = toNumber(item.required_quantity) > 0
+                ? Math.min(100, (toNumber(item.fulfilled_quantity) / toNumber(item.required_quantity)) * 100)
+                : 0
+              return (
+                <tr
+                  key={item.id ?? `${order.id}-${idx}`}
+                  className={`border-b border-white/[0.08] hover:bg-white/[0.04] transition-colors ${idx === 0 ? '' : 'bg-white/[0.015]'}`}
+                >
+                  {idx === 0 && (
+                    <>
+                      <td className="px-4 py-3 font-bold text-text-primary whitespace-nowrap" rowSpan={rowSpan}>{order.order_number}</td>
+                      <td className="px-4 py-3 text-text-secondary/80 whitespace-nowrap" rowSpan={rowSpan}>{order.client_name}</td>
+                    </>
+                  )}
+                  <td className="px-4 py-3 text-text-primary/90 font-medium">{item.item_name}</td>
+                  <td className="px-4 py-3 text-right font-mono text-text-secondary/80">{toNumber(item.required_quantity).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-mono text-green-400 font-semibold">{toNumber(item.fulfilled_quantity).toFixed(2)}</td>
+                  <td className={`px-4 py-3 text-right font-mono font-semibold ${remain > 0 ? 'text-orange-400' : 'text-green-400'}`}>{remain.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-center font-mono font-bold text-accent-gold">{itemPct.toFixed(0)}%</td>
+                  {idx === 0 && (
+                    <>
+                      <td className="px-4 py-3 text-center" rowSpan={rowSpan}>
+                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border ${
+                          order?.status === 'completed'
+                            ? 'text-green-400 bg-green-500/10 border-green-500/20'
+                            : 'text-accent-gold bg-accent-gold/10 border-accent-gold/20'
+                        }`}>{order?.status || 'Active'}</span>
+                      </td>
+                      <td className="px-4 py-3 text-text-secondary/40 text-xs whitespace-nowrap" rowSpan={rowSpan}>{formatDate(order.created_at)}</td>
+                    </>
+                  )}
+                </tr>
+              )
+            })
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -232,6 +253,9 @@ export default function ProductionOrders() {
     setRefreshKey((prev) => prev + 1)
   }
 
+  const activeOrders = orders.filter(o => o.status !== 'completed')
+  const completedOrders = orders.filter(o => o.status === 'completed')
+
   return (
     <div className="space-y-8">
       <div>
@@ -239,32 +263,49 @@ export default function ProductionOrders() {
         <p className="text-sm text-text-secondary mt-1">Create and track customer POs with item-level fulfillment</p>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
-        <div className="xl:col-span-1">
-          <CreatePOPanel onCreated={handleCreated} />
-        </div>
+      <CreatePOPanel onCreated={handleCreated} />
 
-        <div className="xl:col-span-2 space-y-5">
+      {/* Active Orders */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
           <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Active Orders</h2>
-          {loading ? (
-            <div className="space-y-4">
-              {[...Array(3)].map((_, index) => (
-                <div key={index} className="h-40 bg-bg-card rounded-2xl border border-border-default animate-pulse" />
-              ))}
-            </div>
-          ) : orders.length === 0 ? (
-            <div className="rounded-2xl border border-border-default bg-bg-card p-10 text-center">
-              <p className="text-text-secondary text-sm">No orders yet. Create your first PO above.</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {orders.map((order) => (
-                <POCard key={order.id || order.order_number} order={order} />
-              ))}
-            </div>
+          {!loading && activeOrders.length > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-accent-gold/10 text-accent-gold border border-accent-gold/20">
+              {activeOrders.length}
+            </span>
           )}
         </div>
+        {loading ? (
+          <div className="space-y-2">
+            {[...Array(3)].map((_, index) => (
+              <div key={index} className="h-12 bg-bg-card rounded-2xl border border-border-default animate-pulse" />
+            ))}
+          </div>
+        ) : orders.length === 0 ? (
+          <div className="rounded-2xl border border-border-default bg-bg-card p-10 text-center">
+            <p className="text-text-secondary text-sm">No orders yet. Create your first PO above.</p>
+          </div>
+        ) : activeOrders.length === 0 ? (
+          <div className="rounded-2xl border border-border-default bg-bg-card px-6 py-5 text-sm text-text-secondary/50 italic">
+            All orders are completed.
+          </div>
+        ) : (
+          <POTable orders={activeOrders} />
+        )}
       </div>
+
+      {/* Completed Orders — only shown when at least one exists */}
+      {!loading && completedOrders.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <h2 className="text-xs font-bold uppercase tracking-widest text-green-500/60">Completed Orders</h2>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-500/10 text-green-400 border border-green-500/20">
+              {completedOrders.length}
+            </span>
+          </div>
+          <POTable orders={completedOrders} />
+        </div>
+      )}
     </div>
   )
 }

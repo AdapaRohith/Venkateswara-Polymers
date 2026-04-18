@@ -35,11 +35,12 @@ export default function Dashboard() {
             setError('')
 
             try {
-                const [efficiencyRes, txRes, invTxRes, invBalRes] = await Promise.all([
+                const [efficiencyRes, txRes, invTxRes, invBalRes, wastageRes] = await Promise.all([
                     api.get('/analytics/plant-efficiency-v2'),
                     api.get('/floor/transactions'),
                     api.get('/inventory/transactions'),
                     api.get('/inventory/balance'),
+                    api.get('/wastage'),
                 ])
 
                 const row = efficiencyRes?.data?.data?.[0] ?? efficiencyRes?.data ?? {}
@@ -47,7 +48,8 @@ export default function Dashboard() {
                 
                 const invTx = Array.isArray(invTxRes?.data) ? invTxRes.data : invTxRes?.data?.data || []
                 const invBal = Array.isArray(invBalRes?.data) ? invBalRes.data : invBalRes?.data?.data || []
-                const nextState = inventoryTransactionsToState(invTx, invBal)
+                inventoryTransactionsToState(invTx, invBal)
+                const wastageData = Array.isArray(wastageRes?.data) ? wastageRes.data : []
 
                 const totalInputKg = toNumber(row.total_input_kg ?? row.total_input ?? row.totalInputKg ?? row.totalInput)
                 const totalOutputKg = toNumber(row.total_output_kg ?? row.total_output ?? row.totalOutputKg ?? row.totalOutput)
@@ -56,7 +58,7 @@ export default function Dashboard() {
                 if (!cancelled) {
                     setMetrics({ totalInputKg, totalOutputKg, efficiencyPercent })
                     setFloorTransactions(txRows)
-                    setWastageRows(nextState.wastageData || [])
+                    setWastageRows(wastageData)
                 }
             } catch (err) {
                 console.error('Failed to load plant analytics', err)
@@ -79,10 +81,10 @@ export default function Dashboard() {
     }, [])
 
     const efficiencyLabel = useMemo(() => `${metrics.efficiencyPercent.toFixed(2)}%`, [metrics.efficiencyPercent])
-    const wastageValue = useMemo(() => {
-        const diff = metrics.totalInputKg - metrics.totalOutputKg
-        return diff > 0 ? diff : 0
-    }, [metrics.totalInputKg, metrics.totalOutputKg])
+    const wastageValue = useMemo(
+        () => wastageRows.reduce((sum, r) => sum + toNumber(r.weight), 0),
+        [wastageRows]
+    )
 
     const recentWastage = useMemo(
         () =>
@@ -170,7 +172,7 @@ export default function Dashboard() {
                 <SummaryCard
                     title="Total Wastage"
                     value={loading ? 'Loading...' : wastageValue.toFixed(2)}
-                    subtitle={loading ? 'Loading...' : 'Total Input - Total Output (kg)'}
+                    subtitle={loading ? 'Loading...' : 'From wastage entries (kg)'}
                     icon={
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.108 0 00-7.5 0" />
@@ -206,43 +208,35 @@ export default function Dashboard() {
                         <thead>
                             <tr className="border-b border-border-default">
                                 <th className="px-6 py-4 text-left text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
-                                    Date
+                                    S.No
                                 </th>
                                 <th className="px-6 py-4 text-left text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
-                                    Order
+                                    Date
                                 </th>
                                 <th className="px-6 py-4 text-right text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
-                                    Gross (kg)
-                                </th>
-                                <th className="px-6 py-4 text-right text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
-                                    Net (kg)
-                                </th>
-                                <th className="px-6 py-4 text-right text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
-                                    Actual Wastage (kg)
+                                    Wastage (kg)
                                 </th>
                             </tr>
                         </thead>
                         <tbody>
                             {!loading && recentWastage.length === 0 ? (
                                 <tr>
-                                    <td colSpan={5} className="py-12 text-center text-sm text-text-secondary/50">
+                                    <td colSpan={3} className="py-12 text-center text-sm text-text-secondary/50">
                                         No wastage entries logged yet.
                                     </td>
                                 </tr>
                             ) : (
                                 recentWastage.map((row, index) => (
                                     <tr
-                                        key={row.id ?? row.transactionId ?? `${row.date}-${index}`}
+                                        key={row.id ?? `${row.date}-${index}`}
                                         className={`border-b border-border-subtle transition-colors duration-150 hover:bg-white/[0.02] ${
                                             index % 2 === 0 ? 'bg-transparent' : 'bg-white/[0.01]'
                                         }`}
                                     >
+                                        <td className="px-6 py-3.5 text-text-secondary/60">{row.sno || index + 1}</td>
                                         <td className="px-6 py-3.5 text-text-primary/90">{formatDate(row.date)}</td>
-                                        <td className="px-6 py-3.5 text-text-primary/90">{row.order_number || '-'}</td>
-                                        <td className="px-6 py-3.5 text-right text-text-primary/90">{toNumber(row.grossWeight).toFixed(2)}</td>
-                                        <td className="px-6 py-3.5 text-right text-text-primary/90">{toNumber(row.netWeight).toFixed(2)}</td>
                                         <td className="px-6 py-3.5 text-right font-semibold text-accent-gold">
-                                            {toNumber(row.actualWeight).toFixed(2)}
+                                            {toNumber(row.weight).toFixed(2)}
                                         </td>
                                     </tr>
                                 ))

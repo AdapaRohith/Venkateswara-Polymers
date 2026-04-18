@@ -650,30 +650,34 @@ export default function Production({ user }) {
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-6 border-t border-border-default">
-            {/* Show assigned stock info */}
+            {/* Assigned stock table */}
             {assignedStock.length > 0 && (
               <div className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-5">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-blue-300/70 mb-3">
                   Assigned Materials for {activeMachine.label}
                 </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {assignedStock.map(mat => (
-                    <div
-                      key={`${mat.machine_id}-${mat.material_type_id}`}
-                      className="flex items-center justify-between bg-blue-500/5 rounded-xl px-4 py-3 border border-blue-500/10"
-                    >
-                      <div>
-                        <p className="text-sm font-semibold text-blue-200">{mat.material_name}</p>
-                        <p className="text-xs text-blue-300/70 mt-1">{toNumber(mat.quantity_kg).toFixed(1)} kg linked</p>
-                        <p className="text-xs text-blue-200/80 mt-1">{getAssignedAvailableKg(mat).toFixed(1)} kg available in floor pool</p>
-                      </div>
-                      <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
-                        <svg className="w-4 h-4 text-blue-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                      </div>
-                    </div>
-                  ))}
+                <div className="overflow-x-auto rounded-xl border border-blue-500/40">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b-2 border-blue-500/40 bg-blue-500/15">
+                        <th className="px-4 py-2 text-left text-[10px] font-bold uppercase tracking-widest text-blue-300/80 border-r border-blue-500/30">Material</th>
+                        <th className="px-4 py-2 text-right text-[10px] font-bold uppercase tracking-widest text-blue-300/80 border-r border-blue-500/30">Linked (kg)</th>
+                        <th className="px-4 py-2 text-right text-[10px] font-bold uppercase tracking-widest text-blue-300/80">Available (kg)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {assignedStock.map(mat => (
+                        <tr
+                          key={`${mat.machine_id}-${mat.material_type_id}`}
+                          className="border-b border-blue-500/25 last:border-0 hover:bg-blue-500/10 transition-colors"
+                        >
+                          <td className="px-4 py-2.5 font-semibold text-blue-200">{mat.material_name}</td>
+                          <td className="px-4 py-2.5 text-right font-mono text-blue-300/80">{toNumber(mat.quantity_kg).toFixed(1)}</td>
+                          <td className="px-4 py-2.5 text-right font-mono font-bold text-blue-200">{getAssignedAvailableKg(mat).toFixed(1)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
@@ -876,18 +880,18 @@ export default function Production({ user }) {
           </div>
         </div>
 
-        <div className="overflow-x-auto rounded-2xl border border-border-default bg-bg-input/15">
+        <div className="overflow-x-auto rounded-2xl border border-white/20 bg-bg-input/15">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border-default bg-bg-primary/30">
-                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/50">Time</th>
-                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/50">Machine</th>
-                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/50">Material</th>
-                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/50">Size</th>
-                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/50">Worker</th>
-                <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/50">Gross</th>
-                <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/50">Tare</th>
-                <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/50">Net (kg)</th>
+              <tr className="border-b-2 border-white/20 bg-bg-primary/50">
+                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Time</th>
+                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Machine</th>
+                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Material</th>
+                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Size</th>
+                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Worker</th>
+                <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Gross</th>
+                <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Tare</th>
+                <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/70">Net (kg)</th>
               </tr>
             </thead>
             <tbody>
@@ -908,8 +912,8 @@ export default function Production({ user }) {
                   <tr
                     key={row.id}
                     className={`
-                      border-b border-border-subtle transition-colors hover:bg-white/[0.02]
-                      ${idx === 0 ? 'bg-accent-gold/[0.03]' : idx % 2 === 0 ? '' : 'bg-white/[0.01]'}
+                      border-b border-white/[0.08] transition-colors hover:bg-white/[0.04]
+                      ${idx === 0 ? 'bg-accent-gold/[0.03]' : idx % 2 === 0 ? '' : 'bg-white/[0.015]'}
                     `}
                   >
                     <td className="px-4 py-3 text-text-primary/80 whitespace-nowrap">{formatTime(row.time)}</td>
@@ -935,7 +939,7 @@ export default function Production({ user }) {
             </tbody>
             {history.length > 0 && (
               <tfoot>
-                <tr className="border-t-2 border-border-default bg-bg-primary/30">
+                <tr className="border-t-2 border-white/20 bg-bg-primary/50">
                   <td colSpan={5} className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-text-secondary/50">
                     Session Total
                   </td>
