@@ -25,6 +25,7 @@ export default function Dashboard() {
     const [error, setError] = useState('')
     const [metrics, setMetrics] = useState({ totalInputKg: 0, totalOutputKg: 0, efficiencyPercent: 0 })
     const [floorTransactions, setFloorTransactions] = useState([])
+    const [rawMaterialBatches, setRawMaterialBatches] = useState([])
     const [wastageRows, setWastageRows] = useState([])
 
     useEffect(() => {
@@ -35,9 +36,10 @@ export default function Dashboard() {
             setError('')
 
             try {
-                const [efficiencyRes, txRes, invTxRes, invBalRes, wastageRes] = await Promise.all([
+                const [efficiencyRes, txRes, rawBatchesRes, invTxRes, invBalRes, wastageRes] = await Promise.all([
                     api.get('/analytics/plant-efficiency-v2'),
                     api.get('/floor/transactions'),
+                    api.get('/raw-material/batches'),
                     api.get('/inventory/transactions'),
                     api.get('/inventory/balance'),
                     api.get('/wastage'),
@@ -45,6 +47,7 @@ export default function Dashboard() {
 
                 const row = efficiencyRes?.data?.data?.[0] ?? efficiencyRes?.data ?? {}
                 const txRows = Array.isArray(txRes?.data) ? txRes.data : txRes?.data?.data || []
+                const rawBatchRows = Array.isArray(rawBatchesRes?.data) ? rawBatchesRes.data : rawBatchesRes?.data?.data || []
                 
                 const invTx = Array.isArray(invTxRes?.data) ? invTxRes.data : invTxRes?.data?.data || []
                 const invBal = Array.isArray(invBalRes?.data) ? invBalRes.data : invBalRes?.data?.data || []
@@ -58,6 +61,7 @@ export default function Dashboard() {
                 if (!cancelled) {
                     setMetrics({ totalInputKg, totalOutputKg, efficiencyPercent })
                     setFloorTransactions(txRows)
+                    setRawMaterialBatches(rawBatchRows)
                     setWastageRows(wastageData)
                 }
             } catch (err) {
@@ -120,18 +124,16 @@ export default function Dashboard() {
 
     const dailyInputTrend = useMemo(() => {
         const daily = {}
-        ;(Array.isArray(floorTransactions) ? floorTransactions : []).forEach((row) => {
+        ;(Array.isArray(rawMaterialBatches) ? rawMaterialBatches : []).forEach((row) => {
             const date = String(row.created_at ?? row.createdAt ?? '').slice(0, 10)
             if (!date) return
-            const direction = String(row.direction ?? '').toUpperCase()
-            if (direction !== 'IN') return
             daily[date] = (daily[date] || 0) + toNumber(row.quantity_kg)
         })
 
         return Object.entries(daily)
             .sort(([a], [b]) => a.localeCompare(b))
             .map(([date, value]) => ({ label: date, value: Number(toNumber(value).toFixed(2)) }))
-    }, [floorTransactions])
+    }, [rawMaterialBatches])
 
     return (
         <div className="space-y-6">
