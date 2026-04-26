@@ -4,6 +4,13 @@ import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
+import { exportSingleSheet } from '../utils/exportToExcel'
+
+const ExcelIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+  </svg>
+)
 
 const getTodayDate = () => new Date().toISOString().split('T')[0]
 
@@ -35,21 +42,30 @@ export default function Trading({ data, setData, ordersList = [] }) {
     const [submitting, setSubmitting] = useState(false)
     const [exporting, setExporting] = useState(false)
 
-    const handleExport = async () => {
-        try {
-            setExporting(true)
-            await fetch('https://n8n.avlokai.com/webhook-test/77d8abd5-246a-4797-8370-1ebfdb10ffec', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ type: 'trading', logs: data }),
-            })
-            toast.success('Logs exported successfully!')
-        } catch (err) {
-            console.error('Export failed', err)
-            toast.error('Failed to export logs.')
-        } finally {
-            setExporting(false)
-        }
+    const handleExport = () => {
+        const rows = data.map((d) => ({
+            sno: d.sno,
+            date: d.date,
+            order_number: d.order_number,
+            netWeight: Number(d.netWeight).toFixed(2),
+            rate: Number(d.rate).toFixed(2),
+            totalValue: Number(d.totalValue).toFixed(2),
+            type: d.type,
+        }))
+        exportSingleSheet({
+            filename: `Trading_${new Date().toISOString().slice(0, 10)}`,
+            rows,
+            columns: [
+                { key: 'sno', label: 'S.No' },
+                { key: 'date', label: 'Date' },
+                { key: 'order_number', label: 'Order' },
+                { key: 'netWeight', label: 'Net Weight' },
+                { key: 'rate', label: 'Rate (₹/unit)' },
+                { key: 'totalValue', label: 'Total Value (₹)' },
+                { key: 'type', label: 'Type' },
+            ],
+        })
+        toast.success('Trading data exported to Excel')
     }
 
 
@@ -225,10 +241,10 @@ export default function Trading({ data, setData, ordersList = [] }) {
                    <button
                        type="button"
                        onClick={handleExport}
-                       disabled={exporting || data.length === 0}
-                       className="rounded-lg bg-accent-gold px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
+                       disabled={data.length === 0}
+                       className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-50"
                    >
-                       {exporting ? 'Exporting...' : 'Export Logs'}
+                       <ExcelIcon /> Export Excel
                    </button>
                }
             />

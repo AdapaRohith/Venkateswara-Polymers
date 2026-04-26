@@ -1,6 +1,13 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
+import { exportSingleSheet } from '../utils/exportToExcel'
+
+const ExcelIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+  </svg>
+)
 
 function toNumber(value, fallback = 0) {
   const n = Number(value)
@@ -67,20 +74,23 @@ export default function Wastage({ user }) {
     }
   }
 
-  const handleExport = async () => {
-    try {
-      setExporting(true)
-      await fetch('https://n8n.avlokai.com/webhook-test/77d8abd5-246a-4797-8370-1ebfdb10ffec', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'wastage', logs: wastageRows }),
-      })
-      toast.success('Logs exported successfully!')
-    } catch {
-      toast.error('Failed to export logs.')
-    } finally {
-      setExporting(false)
-    }
+  const handleExport = () => {
+    const rows = wastageRows.map((r, i) => ({
+      sno: r.sno || i + 1,
+      date: formatDate(r.date),
+      weight: toNumber(r.weight).toFixed(2),
+    }))
+    exportSingleSheet({
+      filename: `Wastage_${new Date().toISOString().slice(0, 10)}`,
+      rows,
+      columns: [
+        { key: 'sno', label: 'S.No' },
+        { key: 'date', label: 'Date' },
+        { key: 'weight', label: 'Wastage (kg)' },
+      ],
+      totalRow: { sno: '', date: 'TOTAL', weight: totalWastage.toFixed(2) },
+    })
+    toast.success('Wastage data exported to Excel')
   }
 
   const loadWastage = useCallback(async () => {
@@ -114,10 +124,10 @@ export default function Wastage({ user }) {
           <button
             type="button"
             onClick={handleExport}
-            disabled={exporting || wastageRows.length === 0}
-            className="rounded-xl bg-accent-gold/10 border border-accent-gold/30 px-4 py-2 text-sm font-semibold text-accent-gold hover:bg-accent-gold/20 transition-all disabled:opacity-40"
+            disabled={wastageRows.length === 0}
+            className="flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-40"
           >
-            {exporting ? 'Exporting...' : 'Export Logs'}
+            <ExcelIcon /> Export Excel
           </button>
         )}
       </div>

@@ -2,11 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import EditEntryModal from '../components/EditEntryModal'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
+import { exportSingleSheet } from '../utils/exportToExcel'
 import {
   bulkDeleteProductionLogs,
   deleteProductionLog,
   updateProductionLog,
 } from '../utils/logActions'
+
+const ExcelIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+  </svg>
+)
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 function toNumber(v, fb = 0) {
@@ -551,6 +558,34 @@ export default function Production({ user }) {
   const totalNet = useMemo(() => history.reduce((sum, row) => sum + toNumber(row.net), 0), [history])
   const allHistorySelected = history.length > 0 && history.every((row) => selectedHistoryIds.includes(row.id))
 
+  const handleExportHistory = useCallback(() => {
+    const rows = history.map((row) => ({
+      time: formatTime(row.time),
+      machine: row.machine,
+      material: row.material,
+      size: row.size,
+      worker: row.worker,
+      gross: toNumber(row.gross).toFixed(2),
+      tare: toNumber(row.tare).toFixed(2),
+      net: toNumber(row.net).toFixed(2),
+    }))
+    exportSingleSheet({
+      filename: `Production_History_${new Date().toISOString().slice(0, 10)}`,
+      rows,
+      columns: [
+        { key: 'time', label: 'Time' },
+        { key: 'machine', label: 'Machine' },
+        { key: 'material', label: 'Material' },
+        { key: 'size', label: 'Size' },
+        { key: 'worker', label: 'Worker' },
+        { key: 'gross', label: 'Gross (kg)' },
+        { key: 'tare', label: 'Tare (kg)' },
+        { key: 'net', label: 'Net (kg)' },
+      ],
+      totalRow: { time: '', machine: '', material: '', size: '', worker: 'TOTAL', gross: totalGross.toFixed(2), tare: totalTare.toFixed(2), net: totalNet.toFixed(2) },
+    })
+  }, [history, totalGross, totalTare, totalNet])
+
   const inputClass =
     'w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:border-accent-gold focus:ring-2 focus:ring-accent-gold/20 disabled:cursor-not-allowed disabled:opacity-60'
 
@@ -875,6 +910,15 @@ export default function Production({ user }) {
                 className="px-4 py-2 text-xs font-semibold text-text-secondary border border-border-default rounded-xl hover:border-red-500/30 hover:text-red-400 hover:bg-red-500/5 transition-all"
               >
                 Clear History
+              </button>
+            )}
+            {history.length > 0 && (
+              <button
+                type="button"
+                onClick={handleExportHistory}
+                className="flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all"
+              >
+                <ExcelIcon /> Export Excel
               </button>
             )}
           </div>

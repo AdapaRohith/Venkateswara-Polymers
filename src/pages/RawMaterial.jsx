@@ -5,11 +5,18 @@ import InputWithCamera from '../components/InputWithCamera'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
+import { exportSingleSheet } from '../utils/exportToExcel'
 import {
   bulkDeleteRawMaterialBatches,
   deleteRawMaterialBatch,
   updateRawMaterialBatch,
 } from '../utils/logActions'
+
+const ExcelIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+  </svg>
+)
 
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
@@ -55,21 +62,42 @@ export default function RawMaterial({ user }) {
   const [newMaterialName, setNewMaterialName] = useState('')
   const [submittingMaterial, setSubmittingMaterial] = useState(false)
 
-  const handleExport = async () => {
-    try {
-      setExporting(true)
-      await fetch('https://n8n.avlokai.com/webhook-test/77d8abd5-246a-4797-8370-1ebfdb10ffec', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'raw_material_batches', logs: batches }),
-      })
-      toast.success('Logs exported successfully!')
-    } catch (err) {
-      console.error('Export failed', err)
-      toast.error('Failed to export logs.')
-    } finally {
-      setExporting(false)
-    }
+  const handleExport = () => {
+    const rows = batches.map((b) => ({
+      date: new Date(b.created_at).toLocaleString(),
+      material_name: b.material_name,
+      quantity_kg: toNumber(b.quantity_kg).toFixed(2),
+      added_by: b.created_by_name || '',
+      note: b.note || '',
+    }))
+    exportSingleSheet({
+      filename: `Raw_Material_Batches_${new Date().toISOString().slice(0, 10)}`,
+      rows,
+      columns: [
+        { key: 'date', label: 'Date' },
+        { key: 'material_name', label: 'Material Name' },
+        { key: 'quantity_kg', label: 'Quantity (kg)' },
+        { key: 'added_by', label: 'Added By' },
+        { key: 'note', label: 'Note' },
+      ],
+    })
+    toast.success('Batch history exported to Excel')
+  }
+
+  const handleExportTotals = () => {
+    const rows = tableData.map((r) => ({
+      material_name: r.material_name,
+      total_quantity_kg: toNumber(r.total_quantity_kg).toFixed(2),
+    }))
+    exportSingleSheet({
+      filename: `Raw_Material_Totals_${new Date().toISOString().slice(0, 10)}`,
+      rows,
+      columns: [
+        { key: 'material_name', label: 'Material Name' },
+        { key: 'total_quantity_kg', label: 'Total Quantity (kg)' },
+      ],
+    })
+    toast.success('Raw material totals exported to Excel')
   }
 
   const handleAddNewMaterial = async () => {
@@ -417,9 +445,17 @@ export default function RawMaterial({ user }) {
       </div>
 
       <DataTable
+        title="Raw Material Totals"
         columns={columns}
         data={tableData}
         emptyMessage={loadingTotals ? 'Loading raw material totals...' : 'No raw materials yet.'}
+        rightAction={
+          tableData.length > 0 ? (
+            <button type="button" onClick={handleExportTotals} className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all">
+              <ExcelIcon /> Export Excel
+            </button>
+          ) : null
+        }
       />
 
       <div className="pt-6 border-t border-border-default space-y-4">
@@ -437,10 +473,10 @@ export default function RawMaterial({ user }) {
             <button
               type="button"
               onClick={handleExport}
-              disabled={exporting || batches.length === 0}
-              className="rounded-lg bg-accent-gold px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
+              disabled={batches.length === 0}
+              className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-50"
             >
-              {exporting ? 'Exporting...' : 'Export Logs'}
+              <ExcelIcon /> Export Excel
             </button>
           </div>
         </div>

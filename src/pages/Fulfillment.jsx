@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useToast } from '../components/Toast'
+import { exportMultiSheet, exportSingleSheet } from '../utils/exportToExcel'
 import { getOrders, recordFulfillment } from '../utils/orders'
 
 function toNumber(value, fallback = 0) {
@@ -7,12 +8,21 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(numericValue) ? numericValue : fallback
 }
 
+/* ── Export icon ─────────────────────────────────────────── */
+const ExcelIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+  </svg>
+)
+
 export default function Fulfillment() {
   const toast = useToast()
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [selectedOrderIds, setSelectedOrderIds] = useState([])
+  const [exportFilter, setExportFilter] = useState('all') // 'all' | 'pending' | 'fulfilled'
 
   const [form, setForm] = useState({
     order_number: '',
@@ -93,15 +103,137 @@ export default function Fulfillment() {
   const ordersWithItems = activeOrders.filter((order) => Array.isArray(order.items) && order.items.length > 0)
   const completedWithItems = completedOrders.filter((order) => Array.isArray(order.items) && order.items.length > 0)
 
-  const FulfillmentTableRows = ({ list }) => (
+  /* ── Selection helpers ─────────────────────────────────── */
+  const getFilteredOrders = () => {
+    if (exportFilter === 'pending') return ordersWithItems
+    if (exportFilter === 'fulfilled') return completedWithItems
+    return [...ordersWithItems, ...completedWithItems]
+  }
+
+  const filteredOrders = getFilteredOrders()
+  const allFilteredIds = filteredOrders.map((o) => o.id || o.order_number)
+  const allSelected = allFilteredIds.length > 0 && allFilteredIds.every((id) => selectedOrderIds.includes(id))
+
+  const toggleSelectAll = () => {
+    setSelectedOrderIds(allSelected ? [] : allFilteredIds)
+  }
+
+  const toggleSelectOrder = (orderId) => {
+    setSelectedOrderIds((prev) =>
+      prev.includes(orderId) ? prev.filter((id) => id !== orderId) : [...prev, orderId],
+    )
+  }
+
+  /* ── Export helpers ─────────────────────────────────────── */
+  const flattenOrdersForExport = (ordersList) => {
+    const rows = []
+    for (const order of ordersList) {
+      const items = Array.isArray(order.items) ? order.items : []
+      if (items.length === 0) {
+        rows.push({
+          po_number: order.order_number,
+          client: order.client_name,
+          item: '(No items)',
+          required_kg: '',
+          fulfilled_kg: '',
+          remaining_kg: '',
+          pct_done: '',
+          status: isOrderComplete(order) ? 'Fulfilled' : 'Pending',
+        })
+      } else {
+        for (const item of items) {
+          const req = toNumber(item.required_quantity)
+          const ful = toNumber(item.fulfilled_quantity)
+          const rem = Math.max(0, req - ful)
+          const pct = req > 0 ? Math.min(100, (ful / req) * 100) : 0
+          rows.push({
+            po_number: order.order_number,
+            client: order.client_name,
+            item: item.item_name,
+            required_kg: req.toFixed(2),
+            fulfilled_kg: ful.toFixed(2),
+            remaining_kg: rem > 0 ? rem.toFixed(2) : '✓ Done',
+            pct_done: `${pct.toFixed(0)}%`,
+            status: isOrderComplete(order) ? 'Fulfilled' : 'Pending',
+          })
+        }
+      }
+    }
+    return rows
+  }
+
+  const exportColumns = [
+    { key: 'po_number', label: 'PO Number' },
+    { key: 'client', label: 'Client' },
+    { key: 'item', label: 'Item' },
+    { key: 'required_kg', label: 'Required (kg)' },
+    { key: 'fulfilled_kg', label: 'Fulfilled (kg)' },
+    { key: 'remaining_kg', label: 'Remaining (kg)' },
+    { key: 'pct_done', label: '% Done' },
+    { key: 'status', label: 'Status' },
+  ]
+
+  const handleExportSelected = () => {
+    const selectedOrders = filteredOrders.filter((o) => selectedOrderIds.includes(o.id || o.order_number))
+    if (selectedOrders.length === 0) {
+      toast.error('No orders selected for export')
+      return
+    }
+    const rows = flattenOrdersForExport(selectedOrders)
+    exportSingleSheet({
+      filename: `Fulfillment_Selected_${new Date().toISOString().slice(0, 10)}`,
+      rows,
+      columns: exportColumns,
+      sheetName: 'Selected Orders',
+    })
+    toast.success(`Exported ${selectedOrders.length} order(s) to Excel`)
+  }
+
+  const handleExportAll = () => {
+    const pendingRows = flattenOrdersForExport(ordersWithItems)
+    const fulfilledRows = flattenOrdersForExport(completedWithItems)
+
+    if (pendingRows.length === 0 && fulfilledRows.length === 0) {
+      toast.error('No orders to export')
+      return
+    }
+
+    const sheets = []
+    if (pendingRows.length > 0) {
+      sheets.push({ sheetName: 'Pending Orders', rows: pendingRows, columns: exportColumns })
+    }
+    if (fulfilledRows.length > 0) {
+      sheets.push({ sheetName: 'Fulfilled Orders', rows: fulfilledRows, columns: exportColumns })
+    }
+
+    exportMultiSheet({
+      filename: `Fulfillment_Report_${new Date().toISOString().slice(0, 10)}`,
+      sheets,
+    })
+    toast.success('Exported fulfillment report to Excel')
+  }
+
+  const FulfillmentTableRows = ({ list, selectable = false }) => (
     <>
       {list.map((order) => {
         const items = Array.isArray(order.items) ? order.items : []
         const rowSpan = items.length || 1
+        const orderId = order.id || order.order_number
+        const isSelected = selectedOrderIds.includes(orderId)
 
         if (items.length === 0) {
           return (
-            <tr key={order.id || order.order_number} className="border-b border-white/[0.08] hover:bg-white/[0.04] transition-colors">
+            <tr key={orderId} className="border-b border-white/[0.08] hover:bg-white/[0.04] transition-colors">
+              {selectable && (
+                <td className="px-3 py-3" rowSpan={1}>
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleSelectOrder(orderId)}
+                    className="h-4 w-4 accent-accent-gold"
+                  />
+                </td>
+              )}
               <td className="px-4 py-3 font-bold text-text-primary whitespace-nowrap">{order.order_number}</td>
               <td className="px-4 py-3 text-text-secondary/80">{order.client_name}</td>
               <td className="px-4 py-3 text-text-secondary/50 italic" colSpan={5}>No line items</td>
@@ -117,11 +249,21 @@ export default function Fulfillment() {
 
           return (
             <tr
-              key={item.id ?? `${order.id}-${idx}`}
+              key={item.id ?? `${orderId}-${idx}`}
               className={`border-b border-white/[0.08] hover:bg-white/[0.04] transition-colors ${idx === 0 ? '' : 'bg-white/[0.015]'}`}
             >
               {idx === 0 && (
                 <>
+                  {selectable && (
+                    <td className="px-3 py-3" rowSpan={rowSpan}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelectOrder(orderId)}
+                        className="h-4 w-4 accent-accent-gold"
+                      />
+                    </td>
+                  )}
                   <td className="px-4 py-3 font-bold text-text-primary whitespace-nowrap" rowSpan={rowSpan}>{order.order_number}</td>
                   <td className="px-4 py-3 text-text-secondary/80 whitespace-nowrap" rowSpan={rowSpan}>{order.client_name}</td>
                 </>
@@ -140,11 +282,22 @@ export default function Fulfillment() {
     </>
   )
 
-  const FulfillmentTable = ({ list }) => (
+  const FulfillmentTable = ({ list, selectable = false }) => (
     <div className="overflow-x-auto rounded-2xl border border-white/20 bg-bg-input/15">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b-2 border-white/20 bg-bg-primary/50">
+            {selectable && (
+              <th className="px-3 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10 w-12">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleSelectAll}
+                  className="h-4 w-4 accent-accent-gold"
+                  aria-label="Select all orders"
+                />
+              </th>
+            )}
             <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">PO Number</th>
             <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Client</th>
             <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Item</th>
@@ -155,7 +308,7 @@ export default function Fulfillment() {
           </tr>
         </thead>
         <tbody>
-          <FulfillmentTableRows list={list} />
+          <FulfillmentTableRows list={list} selectable={selectable} />
         </tbody>
       </table>
     </div>
@@ -265,6 +418,48 @@ export default function Fulfillment() {
         </form>
       </div>
 
+      {/* Export Toolbar */}
+      {!loading && (ordersWithItems.length > 0 || completedWithItems.length > 0) && (
+        <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm p-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <label className="text-xs font-semibold uppercase tracking-widest text-text-secondary/70">Export Filter:</label>
+              <select
+                value={exportFilter}
+                onChange={(e) => { setExportFilter(e.target.value); setSelectedOrderIds([]) }}
+                className="bg-bg-input text-text-primary border border-border-default rounded-lg px-3 py-1.5 text-xs focus:border-accent-gold transition-all"
+              >
+                <option value="all">All Orders</option>
+                <option value="pending">Pending Only</option>
+                <option value="fulfilled">Fulfilled Only</option>
+              </select>
+              {selectedOrderIds.length > 0 && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-accent-gold/10 text-accent-gold border border-accent-gold/20">
+                  {selectedOrderIds.length} selected
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleExportSelected}
+                disabled={selectedOrderIds.length === 0}
+                className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-40"
+              >
+                <ExcelIcon /> Export Selected ({selectedOrderIds.length})
+              </button>
+              <button
+                type="button"
+                onClick={handleExportAll}
+                className="flex items-center gap-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 px-4 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/25 transition-all"
+              >
+                <ExcelIcon /> Export All
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Active Orders */}
       <div className="space-y-4">
         <div className="flex items-center gap-3">
@@ -290,7 +485,7 @@ export default function Fulfillment() {
             All orders are fully fulfilled.
           </div>
         ) : (
-          <FulfillmentTable list={ordersWithItems} />
+          <FulfillmentTable list={ordersWithItems} selectable={exportFilter === 'all' || exportFilter === 'pending'} />
         )}
       </div>
 
@@ -303,7 +498,7 @@ export default function Fulfillment() {
               {completedWithItems.length}
             </span>
           </div>
-          <FulfillmentTable list={completedWithItems} />
+          <FulfillmentTable list={completedWithItems} selectable={exportFilter === 'all' || exportFilter === 'fulfilled'} />
         </div>
       )}
     </div>

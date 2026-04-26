@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useToast } from '../components/Toast'
+import { exportSingleSheet } from '../utils/exportToExcel'
 import { createOrder, getOrders } from '../utils/orders'
+
+const ExcelIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+  </svg>
+)
 
 function formatDate(iso) {
   if (!iso) return '-'
@@ -278,6 +285,46 @@ export default function ProductionOrders() {
   const activeOrders = orders.filter(o => o.status !== 'completed')
   const completedOrders = orders.filter(o => o.status === 'completed')
 
+  const exportPOColumns = [
+    { key: 'po_number', label: 'PO Number' },
+    { key: 'client', label: 'Client' },
+    { key: 'item', label: 'Item' },
+    { key: 'required_kg', label: 'Required (kg)' },
+    { key: 'unit_price', label: 'Unit Price' },
+    { key: 'total', label: 'Total' },
+    { key: 'fulfilled_kg', label: 'Fulfilled (kg)' },
+    { key: 'remaining_kg', label: 'Remaining (kg)' },
+    { key: 'pct_done', label: '% Done' },
+    { key: 'status', label: 'Status' },
+    { key: 'created', label: 'Created' },
+  ]
+
+  const flattenPOs = (list) => {
+    const rows = []
+    for (const order of list) {
+      const items = Array.isArray(order?.items) ? order.items : []
+      if (items.length === 0) {
+        rows.push({ po_number: order.order_number, client: order.client_name, item: '(No items)', required_kg: '', unit_price: '', total: '', fulfilled_kg: '', remaining_kg: '', pct_done: '', status: order?.status || 'Active', created: formatDate(order.created_at) })
+      } else {
+        for (const item of items) {
+          const req = toNumber(item.required_quantity)
+          const ful = toNumber(item.fulfilled_quantity)
+          const rem = Math.max(0, req - ful)
+          const lineTotal = toNumber(item.total_amount, req * toNumber(item.unit_price))
+          const pct = req > 0 ? Math.min(100, (ful / req) * 100) : 0
+          rows.push({ po_number: order.order_number, client: order.client_name, item: item.item_name, required_kg: req.toFixed(2), unit_price: formatCurrency(item.unit_price), total: formatCurrency(lineTotal), fulfilled_kg: ful.toFixed(2), remaining_kg: rem.toFixed(2), pct_done: `${pct.toFixed(0)}%`, status: order?.status || 'Active', created: formatDate(order.created_at) })
+        }
+      }
+    }
+    return rows
+  }
+
+  const handleExportPOs = (list, label) => {
+    const rows = flattenPOs(list)
+    if (rows.length === 0) return
+    exportSingleSheet({ filename: `PO_${label}_${new Date().toISOString().slice(0, 10)}`, rows, columns: exportPOColumns, sheetName: label })
+  }
+
   return (
     <div className="space-y-8">
       <div>
@@ -295,6 +342,11 @@ export default function ProductionOrders() {
             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-accent-gold/10 text-accent-gold border border-accent-gold/20">
               {activeOrders.length}
             </span>
+          )}
+          {activeOrders.length > 0 && (
+            <button type="button" onClick={() => handleExportPOs(activeOrders, 'Active_Orders')} className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all">
+              <ExcelIcon /> Export
+            </button>
           )}
         </div>
         {loading ? (
@@ -324,6 +376,9 @@ export default function ProductionOrders() {
             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-500/10 text-green-400 border border-green-500/20">
               {completedOrders.length}
             </span>
+            <button type="button" onClick={() => handleExportPOs(completedOrders, 'Completed_Orders')} className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all">
+              <ExcelIcon /> Export
+            </button>
           </div>
           <POTable orders={completedOrders} />
         </div>

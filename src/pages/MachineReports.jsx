@@ -2,11 +2,18 @@ import { useEffect, useMemo, useState } from 'react'
 import EditEntryModal from '../components/EditEntryModal'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
+import { exportMultiSheet, exportSingleSheet } from '../utils/exportToExcel'
 import {
   bulkDeleteProductionLogs,
   deleteProductionLog,
   updateProductionLog,
 } from '../utils/logActions'
+
+const ExcelIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+  </svg>
+)
 
 function formatDate(iso) {
   if (!iso) return '-'
@@ -42,6 +49,9 @@ export default function MachineReports() {
   const [materialOptions, setMaterialOptions] = useState([])
   const [machineOptions, setMachineOptions] = useState([])
   const [selectedLogIds, setSelectedLogIds] = useState([])
+  const [selectedSizeIds, setSelectedSizeIds] = useState([])
+  const [sizeFilter, setSizeFilter] = useState('')
+  const [machineFilter, setMachineFilter] = useState('')
   const [editingLog, setEditingLog] = useState(null)
   const [editForm, setEditForm] = useState({
     machine_id: '',
@@ -104,15 +114,164 @@ export default function MachineReports() {
   const totalNet = report.reduce((sum, row) => sum + toNumber(row.total_net_weight_kg), 0)
   const totalGross = report.reduce((sum, row) => sum + toNumber(row.total_gross_weight_kg), 0)
   const maxNet = Math.max(...report.map((row) => toNumber(row.total_net_weight_kg)), 0)
-  const allSelected = detailLogs.length > 0 && detailLogs.every((row) => selectedLogIds.includes(row.id))
+  // ── Filter options extracted from data ──
+  const availableSizes = useMemo(() => [...new Set(detailLogs.map((e) => e.size || '(No Size)'))].sort(), [detailLogs])
+  const availableMachines = useMemo(() => {
+    const map = new Map()
+    for (const e of detailLogs) {
+      const id = e.machine_id
+      if (!map.has(id)) map.set(id, e.machine_name || `Machine ${id}`)
+    }
+    return [...map.entries()].map(([id, name]) => ({ id: String(id), name })).sort((a, b) => a.name.localeCompare(b.name))
+  }, [detailLogs])
+
+  // ── Filtered detail logs ──
+  const filteredLogs = useMemo(() => {
+    let result = detailLogs
+    if (sizeFilter) result = result.filter((e) => (e.size || '(No Size)') === sizeFilter)
+    if (machineFilter) result = result.filter((e) => String(e.machine_id) === machineFilter)
+    return result
+  }, [detailLogs, sizeFilter, machineFilter])
+
+  const allSelected = filteredLogs.length > 0 && filteredLogs.every((row) => selectedLogIds.includes(row.id))
+
+  // ── Size-based totals ──
+  const sizeTotals = useMemo(() => {
+    const sizeMap = {}
+    for (const entry of filteredLogs) {
+      const sizeKey = entry.size || '(No Size)'
+      if (!sizeMap[sizeKey]) sizeMap[sizeKey] = { size: sizeKey, entries: 0, gross: 0, tare: 0, net: 0, machineSet: new Set() }
+      sizeMap[sizeKey].entries += 1
+      sizeMap[sizeKey].gross += toNumber(entry.gross_weight)
+      sizeMap[sizeKey].tare += toNumber(entry.tare_weight)
+      sizeMap[sizeKey].net += toNumber(entry.net_weight, Math.max(toNumber(entry.gross_weight) - toNumber(entry.tare_weight), 0))
+      const machineName = entry.machine_name || `Machine ${entry.machine_id}`
+      if (machineName) sizeMap[sizeKey].machineSet.add(machineName)
+    }
+    return Object.values(sizeMap)
+      .map((s) => ({ ...s, machines: [...s.machineSet].sort().join(', ') }))
+      .sort((a, b) => b.net - a.net)
+  }, [filteredLogs])
+
+  const allSizesSelected = sizeTotals.length > 0 && sizeTotals.every((s) => selectedSizeIds.includes(s.size))
+
+  // ── Export handlers ──
+  const handleExportMachineBreakdown = () => {
+    const rows = report.map((row) => ({
+      machine: row.machine_name || `Machine ${row.machine_id}`,
+      entries: toNumber(row.total_entries),
+      net_kg: toNumber(row.total_net_weight_kg).toFixed(3),
+      gross_kg: toNumber(row.total_gross_weight_kg).toFixed(3),
+      tare_kg: toNumber(row.total_tare_weight_kg).toFixed(3),
+    }))
+    exportSingleSheet({
+      filename: `Machine_Breakdown_${new Date().toISOString().slice(0, 10)}`,
+      rows,
+      columns: [
+        { key: 'machine', label: 'Machine' },
+        { key: 'entries', label: 'Entries' },
+        { key: 'net_kg', label: 'Net Output (kg)' },
+        { key: 'gross_kg', label: 'Gross (kg)' },
+        { key: 'tare_kg', label: 'Tare (kg)' },
+      ],
+      totalRow: { machine: 'TOTAL', entries: totalEntries, net_kg: totalNet.toFixed(3), gross_kg: totalGross.toFixed(3), tare_kg: '' },
+    })
+  }
+
+  const handleExportSizeTotals = (onlySelected = false) => {
+    const source = onlySelected ? sizeTotals.filter((s) => selectedSizeIds.includes(s.size)) : sizeTotals
+    if (source.length === 0) return
+    const rows = source.map((s) => ({ size: s.size, machines: s.machines, entries: s.entries, net_kg: s.net.toFixed(3), gross_kg: s.gross.toFixed(3), tare_kg: s.tare.toFixed(3) }))
+    exportSingleSheet({
+      filename: `Size_Totals_${onlySelected ? 'Selected_' : ''}${new Date().toISOString().slice(0, 10)}`,
+      rows,
+      columns: [
+        { key: 'size', label: 'Size' },
+        { key: 'machines', label: 'Machine(s)' },
+        { key: 'entries', label: 'Total Entries' },
+        { key: 'net_kg', label: 'Total Net (kg)' },
+        { key: 'gross_kg', label: 'Total Gross (kg)' },
+        { key: 'tare_kg', label: 'Total Tare (kg)' },
+      ],
+    })
+  }
+
+  const handleExportProductionHistory = (onlySelected = false) => {
+    const source = onlySelected ? filteredLogs.filter((e) => selectedLogIds.includes(e.id)) : filteredLogs
+    if (source.length === 0) return
+    const rows = source.map((entry) => ({
+      time: formatDateTime(entry.created_at),
+      machine: entry.machine_name || `Machine ${entry.machine_id}`,
+      material: entry.material_name || `Material ${entry.material_id || '-'}`,
+      size: entry.size || '-',
+      worker: entry.worker_name || '-',
+      gross: toNumber(entry.gross_weight).toFixed(2),
+      tare: toNumber(entry.tare_weight).toFixed(2),
+      net: toNumber(entry.net_weight, Math.max(toNumber(entry.gross_weight) - toNumber(entry.tare_weight), 0)).toFixed(2),
+    }))
+    exportSingleSheet({
+      filename: `Production_History_${onlySelected ? 'Selected_' : ''}${new Date().toISOString().slice(0, 10)}`,
+      rows,
+      columns: [
+        { key: 'time', label: 'Time' },
+        { key: 'machine', label: 'Machine' },
+        { key: 'material', label: 'Material' },
+        { key: 'size', label: 'Size' },
+        { key: 'worker', label: 'Worker' },
+        { key: 'gross', label: 'Gross (kg)' },
+        { key: 'tare', label: 'Tare (kg)' },
+        { key: 'net', label: 'Net (kg)' },
+      ],
+    })
+  }
+
+  const handleExportFullReport = () => {
+    const machineRows = report.map((row) => ({
+      machine: row.machine_name || `Machine ${row.machine_id}`,
+      entries: toNumber(row.total_entries),
+      net_kg: toNumber(row.total_net_weight_kg).toFixed(3),
+      gross_kg: toNumber(row.total_gross_weight_kg).toFixed(3),
+      tare_kg: toNumber(row.total_tare_weight_kg).toFixed(3),
+    }))
+    const sizeRows = sizeTotals.map((s) => ({ size: s.size, machines: s.machines, entries: s.entries, net_kg: s.net.toFixed(3), gross_kg: s.gross.toFixed(3), tare_kg: s.tare.toFixed(3) }))
+    const historyRows = detailLogs.map((entry) => ({
+      time: formatDateTime(entry.created_at),
+      machine: entry.machine_name || `Machine ${entry.machine_id}`,
+      material: entry.material_name || `Material ${entry.material_id || '-'}`,
+      size: entry.size || '-',
+      worker: entry.worker_name || '-',
+      gross: toNumber(entry.gross_weight).toFixed(2),
+      tare: toNumber(entry.tare_weight).toFixed(2),
+      net: toNumber(entry.net_weight, Math.max(toNumber(entry.gross_weight) - toNumber(entry.tare_weight), 0)).toFixed(2),
+    }))
+    exportMultiSheet({
+      filename: `Machine_Full_Report_${new Date().toISOString().slice(0, 10)}`,
+      sheets: [
+        { sheetName: 'Machine Breakdown', rows: machineRows, columns: [{ key: 'machine', label: 'Machine' }, { key: 'entries', label: 'Entries' }, { key: 'net_kg', label: 'Net Output (kg)' }, { key: 'gross_kg', label: 'Gross (kg)' }, { key: 'tare_kg', label: 'Tare (kg)' }], totalRow: { machine: 'TOTAL', entries: totalEntries, net_kg: totalNet.toFixed(3), gross_kg: totalGross.toFixed(3), tare_kg: '' } },
+        { sheetName: 'Size Totals', rows: sizeRows, columns: [{ key: 'size', label: 'Size' }, { key: 'machines', label: 'Machine(s)' }, { key: 'entries', label: 'Total Entries' }, { key: 'net_kg', label: 'Total Net (kg)' }, { key: 'gross_kg', label: 'Total Gross (kg)' }, { key: 'tare_kg', label: 'Total Tare (kg)' }] },
+        { sheetName: 'Production History', rows: historyRows, columns: [{ key: 'time', label: 'Time' }, { key: 'machine', label: 'Machine' }, { key: 'material', label: 'Material' }, { key: 'size', label: 'Size' }, { key: 'worker', label: 'Worker' }, { key: 'gross', label: 'Gross (kg)' }, { key: 'tare', label: 'Tare (kg)' }, { key: 'net', label: 'Net (kg)' }] },
+      ],
+    })
+    toast.success('Full report exported to Excel')
+  }
 
   const toggleAll = () => {
-    setSelectedLogIds(allSelected ? [] : detailLogs.map((row) => row.id))
+    setSelectedLogIds(allSelected ? [] : filteredLogs.map((row) => row.id))
   }
 
   const toggleOne = (rowId) => {
     setSelectedLogIds((previous) =>
       previous.includes(rowId) ? previous.filter((id) => id !== rowId) : [...previous, rowId],
+    )
+  }
+
+  const toggleAllSizes = () => {
+    setSelectedSizeIds(allSizesSelected ? [] : sizeTotals.map((s) => s.size))
+  }
+
+  const toggleOneSize = (sizeKey) => {
+    setSelectedSizeIds((prev) =>
+      prev.includes(sizeKey) ? prev.filter((k) => k !== sizeKey) : [...prev, sizeKey],
     )
   }
 
@@ -259,8 +418,20 @@ export default function MachineReports() {
       )}
 
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-border-subtle">
+        <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between gap-4">
           <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Machine Output Breakdown</h2>
+          <div className="flex items-center gap-2">
+            {report.length > 0 && (
+              <button type="button" onClick={handleExportMachineBreakdown} className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all">
+                <ExcelIcon /> Export
+              </button>
+            )}
+            {report.length > 0 && detailLogs.length > 0 && (
+              <button type="button" onClick={handleExportFullReport} className="flex items-center gap-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 px-3 py-1.5 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-500/25 transition-all">
+                <ExcelIcon /> Full Report
+              </button>
+            )}
+          </div>
         </div>
 
         {loading ? (
@@ -336,6 +507,75 @@ export default function MachineReports() {
         )}
       </div>
 
+      {/* ── Size Totals Table ── */}
+      {!loading && sizeTotals.length > 0 && (
+        <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-cyan-500/15 flex items-center justify-center">
+                <svg className="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+                </svg>
+              </div>
+              <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Size Totals</h2>
+            </div>
+           <div className="flex items-center gap-3">
+              <button type="button" onClick={() => handleExportSizeTotals(false)} className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all">
+                <ExcelIcon /> Export All
+              </button>
+              {selectedSizeIds.length > 0 && (
+                <button type="button" onClick={() => handleExportSizeTotals(true)} className="flex items-center gap-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-[11px] font-semibold text-cyan-400 hover:bg-cyan-500/20 transition-all">
+                  <ExcelIcon /> Export Selected ({selectedSizeIds.length})
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border-subtle bg-bg-primary/50">
+                  <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">
+                    <input type="checkbox" checked={allSizesSelected} onChange={toggleAllSizes} className="h-4 w-4 accent-cyan-400" aria-label="Select all sizes" />
+                  </th>
+                  <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Size</th>
+                  <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Machine(s)</th>
+                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Entries</th>
+                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Net (kg)</th>
+                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Gross (kg)</th>
+                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Tare (kg)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border-subtle">
+                {sizeTotals.map((s) => (
+                  <tr key={s.size} className="hover:bg-white/[0.02] transition-colors">
+                    <td className="px-4 py-4">
+                      <input type="checkbox" checked={selectedSizeIds.includes(s.size)} onChange={() => toggleOneSize(s.size)} className="h-4 w-4 accent-cyan-400" aria-label={`Select size ${s.size}`} />
+                    </td>
+                    <td className="px-6 py-4 font-semibold text-text-primary">{s.size}</td>
+                    <td className="px-6 py-4 text-text-secondary/80 text-xs">{s.machines}</td>
+                    <td className="px-6 py-4 text-right font-mono text-text-secondary">{s.entries}</td>
+                    <td className="px-6 py-4 text-right font-mono font-bold text-cyan-400">{s.net.toFixed(3)}</td>
+                    <td className="px-6 py-4 text-right font-mono text-text-secondary/80">{s.gross.toFixed(3)}</td>
+                    <td className="px-6 py-4 text-right font-mono text-text-secondary/60">{s.tare.toFixed(3)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 border-border-default bg-bg-primary/30">
+                  <td className="px-4 py-3" />
+                  <td className="px-6 py-3 text-xs font-bold uppercase tracking-wide text-text-secondary/60">Total</td>
+                  <td className="px-6 py-3" />
+                  <td className="px-6 py-3 text-right font-mono font-bold text-text-primary">{sizeTotals.reduce((s, r) => s + r.entries, 0)}</td>
+                  <td className="px-6 py-3 text-right font-mono font-bold text-cyan-400">{sizeTotals.reduce((s, r) => s + r.net, 0).toFixed(3)}</td>
+                  <td className="px-6 py-3 text-right font-mono font-bold text-text-secondary/80">{sizeTotals.reduce((s, r) => s + r.gross, 0).toFixed(3)}</td>
+                  <td className="px-6 py-3 text-right font-mono font-bold text-text-secondary/60">{sizeTotals.reduce((s, r) => s + r.tare, 0).toFixed(3)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -356,6 +596,11 @@ export default function MachineReports() {
             >
               Delete Selected ({selectedLogIds.length})
             </button>
+            {detailLogs.length > 0 && (
+              <button type="button" onClick={handleExportProductionHistory} className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all">
+                <ExcelIcon /> Export
+              </button>
+            )}
           </div>
         </div>
 

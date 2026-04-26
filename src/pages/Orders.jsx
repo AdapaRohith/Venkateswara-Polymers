@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import DataTable from '../components/DataTable'
 import { useToast } from '../components/Toast'
+import { exportSingleSheet } from '../utils/exportToExcel'
 import { createOrder, deleteOrder, updateOrderStatus } from '../utils/orders'
+
+const ExcelIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+  </svg>
+)
 
 const ORDER_STATUS_FILTERS = [
   { value: 'all', label: 'All' },
@@ -207,6 +214,18 @@ export default function Orders({ user, orders = [], loading = false, refreshOrde
                 {filter.label} ({orderCounts[filter.value] ?? 0})
               </button>
             ))}
+            {filteredOrders.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  const rows = filteredOrders.map((o) => ({ order_number: o.order_number, client_name: o.client_name, status: o.status || 'Active' }))
+                  exportSingleSheet({ filename: `Orders_${statusFilter}_${new Date().toISOString().slice(0, 10)}`, rows, columns: [{ key: 'order_number', label: 'Order Number' }, { key: 'client_name', label: 'Client Name' }, { key: 'status', label: 'Status' }] })
+                }}
+                className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all"
+              >
+                <ExcelIcon /> Export Excel
+              </button>
+            )}
           </div>
         </div>
       </div>
