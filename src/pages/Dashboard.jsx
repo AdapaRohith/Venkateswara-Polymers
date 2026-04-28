@@ -2,11 +2,31 @@ import { useEffect, useMemo, useState } from 'react'
 import SummaryCard from '../components/SummaryCard'
 import { SectionBarChart, TrendLineChart } from '../components/Charts'
 import api from '../utils/api'
-import { inventoryTransactionsToState } from '../utils/inventory'
 
 function toNumber(value, fallback = 0) {
     const numericValue = Number(value)
     return Number.isFinite(numericValue) ? numericValue : fallback
+}
+
+function firstNumber(...values) {
+    for (const value of values) {
+        const numericValue = Number(value)
+        if (Number.isFinite(numericValue)) return numericValue
+    }
+    return 0
+}
+
+function extractRows(payload) {
+    if (Array.isArray(payload)) return payload
+    if (Array.isArray(payload?.data)) return payload.data
+    if (Array.isArray(payload?.rows)) return payload.rows
+    if (Array.isArray(payload?.logs)) return payload.logs
+    if (Array.isArray(payload?.items)) return payload.items
+    if (Array.isArray(payload?.results)) return payload.results
+    if (Array.isArray(payload?.wastage)) return payload.wastage
+    if (Array.isArray(payload?.wastage_logs)) return payload.wastage_logs
+    if (Array.isArray(payload?.wastageLogs)) return payload.wastageLogs
+    return []
 }
 
 function formatDate(value) {
@@ -20,12 +40,34 @@ function formatDate(value) {
     })
 }
 
+function getRowDate(row = {}) {
+    const rawDate = row.date ?? row.created_at ?? row.createdAt ?? row.transaction_date ?? row.transactionDate
+    if (!rawDate) return ''
+    return String(rawDate).slice(0, 10)
+}
+
+function getRowQuantityKg(row = {}) {
+    return firstNumber(row.quantity_kg, row.quantityKg, row.quantity_in_kg, row.quantityInKg, row.quantity, row.total_quantity_kg, row.totalQuantityKg)
+}
+
+function normalizeWastageRow(row = {}, index = 0) {
+    return {
+        ...row,
+        id: row.id ?? row.transactionId ?? `wastage-${index}`,
+        sno: row.sno ?? index + 1,
+        date: row.date ?? String(row.created_at ?? row.createdAt ?? '').slice(0, 10),
+        order_number: row.order_number ?? row.orderNumber ?? '',
+        grossWeight: firstNumber(row.grossWeight, row.gross_weight),
+        netWeight: firstNumber(row.netWeight, row.net_weight),
+        actualWeight: firstNumber(row.actualWeight, row.actual_weight, row.weight, row.wastage_generated, row.quantity_kg, row.quantity, row.net_weight, row.netWeight),
+    }
+}
+
 export default function Dashboard() {
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState('')
-    const [metrics, setMetrics] = useState({ totalInputKg: 0, totalOutputKg: 0, efficiencyPercent: 0 })
+    const [metrics, setMetrics] = useState({ totalInputKg: 0, totalOutputKg: 0 })
     const [floorTransactions, setFloorTransactions] = useState([])
-    const [rawMaterialBatches, setRawMaterialBatches] = useState([])
     const [wastageRows, setWastageRows] = useState([])
 
     useEffect(() => {
@@ -36,33 +78,29 @@ export default function Dashboard() {
             setError('')
 
             try {
-                const [efficiencyRes, txRes, rawBatchesRes, invTxRes, invBalRes, wastageRes] = await Promise.all([
+                const [efficiencyRes, txRes, wastageRes] = await Promise.allSettled([
                     api.get('/analytics/plant-efficiency-v2'),
                     api.get('/floor/transactions'),
-                    api.get('/raw-material/batches'),
-                    api.get('/inventory/transactions'),
-                    api.get('/inventory/balance'),
                     api.get('/wastage'),
                 ])
 
-                const row = efficiencyRes?.data?.data?.[0] ?? efficiencyRes?.data ?? {}
-                const txRows = Array.isArray(txRes?.data) ? txRes.data : txRes?.data?.data || []
-                const rawBatchRows = Array.isArray(rawBatchesRes?.data) ? rawBatchesRes.data : rawBatchesRes?.data?.data || []
-                
-                const invTx = Array.isArray(invTxRes?.data) ? invTxRes.data : invTxRes?.data?.data || []
-                const invBal = Array.isArray(invBalRes?.data) ? invBalRes.data : invBalRes?.data?.data || []
-                inventoryTransactionsToState(invTx, invBal)
-                const wastageData = Array.isArray(wastageRes?.data) ? wastageRes.data : []
+                const efficiencyData = efficiencyRes.status === 'fulfilled' ? efficiencyRes.value?.data : null
+                const txData = txRes.status === 'fulfilled' ? txRes.value?.data : null
+                const wastageDataRaw = wastageRes.status === 'fulfilled' ? wastageRes.value?.data : null
+
+                const row = efficiencyData?.data?.[0] ?? efficiencyData ?? {}
+                const txRows = Array.isArray(txData) ? txData : txData?.data || []
+                const wastageData = extractRows(wastageDataRaw)
 
                 const totalInputKg = toNumber(row.total_input_kg ?? row.total_input ?? row.totalInputKg ?? row.totalInput)
                 const totalOutputKg = toNumber(row.total_output_kg ?? row.total_output ?? row.totalOutputKg ?? row.totalOutput)
-                const efficiencyPercent = toNumber(row.efficiency_percent ?? row.efficiency ?? row.efficiencyPercent)
 
                 if (!cancelled) {
-                    setMetrics({ totalInputKg, totalOutputKg, efficiencyPercent })
+                    setMetrics({ totalInputKg, totalOutputKg })
                     setFloorTransactions(txRows)
-                    setRawMaterialBatches(rawBatchRows)
-                    setWastageRows(wastageData)
+                    setWastageRows(wastageData.map(normalizeWastageRow))
+                    const failed = [efficiencyRes, txRes, wastageRes].some((result) => result.status === 'rejected')
+                    setError(failed ? 'Some dashboard data could not be loaded. Check your internet connection and refresh.' : '')
                 }
             } catch (err) {
                 console.error('Failed to load plant analytics', err)
@@ -75,8 +113,8 @@ export default function Dashboard() {
         // Call immediately
         fetchMetrics()
 
-        // Poll every 50 seconds
-        const pollInterval = setInterval(fetchMetrics, 50000)
+        // Poll every 10 seconds
+        const pollInterval = setInterval(fetchMetrics, 10000)
 
         return () => {
             cancelled = true
@@ -84,10 +122,9 @@ export default function Dashboard() {
         }
     }, [])
 
-    const efficiencyLabel = useMemo(() => `${metrics.efficiencyPercent.toFixed(2)}%`, [metrics.efficiencyPercent])
     const wastageValue = useMemo(
-        () => wastageRows.reduce((sum, r) => sum + toNumber(r.weight), 0),
-        [wastageRows]
+        () => (Array.isArray(wastageRows) ? wastageRows : []).reduce((sum, row) => sum + toNumber(row.actualWeight), 0),
+        [wastageRows],
     )
 
     const recentWastage = useMemo(
@@ -110,11 +147,11 @@ export default function Dashboard() {
     const dailyOutputTrend = useMemo(() => {
         const daily = {}
         ;(Array.isArray(floorTransactions) ? floorTransactions : []).forEach((row) => {
-            const date = String(row.created_at ?? row.createdAt ?? '').slice(0, 10)
+            const date = getRowDate(row)
             if (!date) return
             const direction = String(row.direction ?? '').toUpperCase()
             if (direction !== 'OUT') return
-            daily[date] = (daily[date] || 0) + toNumber(row.quantity_kg)
+            daily[date] = (daily[date] || 0) + getRowQuantityKg(row)
         })
 
         return Object.entries(daily)
@@ -124,16 +161,20 @@ export default function Dashboard() {
 
     const dailyInputTrend = useMemo(() => {
         const daily = {}
-        ;(Array.isArray(rawMaterialBatches) ? rawMaterialBatches : []).forEach((row) => {
-            const date = String(row.created_at ?? row.createdAt ?? '').slice(0, 10)
+        ;(Array.isArray(floorTransactions) ? floorTransactions : []).forEach((row) => {
+            const date = getRowDate(row)
             if (!date) return
-            daily[date] = (daily[date] || 0) + toNumber(row.quantity_kg)
+            const direction = String(row.direction ?? '').toUpperCase()
+            const movementType = String(row.movement_type ?? row.movementType ?? '').toUpperCase()
+            const isFloorInput = direction === 'OUT' || movementType === 'FLOOR_TRANSFER'
+            if (!isFloorInput) return
+            daily[date] = (daily[date] || 0) + getRowQuantityKg(row)
         })
 
         return Object.entries(daily)
             .sort(([a], [b]) => a.localeCompare(b))
             .map(([date, value]) => ({ label: date, value: Number(toNumber(value).toFixed(2)) }))
-    }, [rawMaterialBatches])
+    }, [floorTransactions])
 
     return (
         <div className="space-y-6">
@@ -149,7 +190,7 @@ export default function Dashboard() {
             )}
 
             {/* Summary Cards */}
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <SummaryCard
                     title="Total Input"
                     value={metrics.totalInputKg}
@@ -174,20 +215,10 @@ export default function Dashboard() {
                 <SummaryCard
                     title="Total Wastage"
                     value={loading ? 'Loading...' : wastageValue.toFixed(2)}
-                    subtitle={loading ? 'Loading...' : 'From wastage entries (kg)'}
+                    subtitle={loading ? 'Loading...' : 'Logged wastage from backend (kg)'}
                     icon={
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.108 0 00-7.5 0" />
-                        </svg>
-                    }
-                />
-                <SummaryCard
-                    title="Efficiency"
-                    value={efficiencyLabel}
-                    subtitle={loading ? 'Loading...' : 'Plant efficiency %'}
-                    icon={
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m-3-2.818l.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
                     }
                 />
@@ -210,13 +241,13 @@ export default function Dashboard() {
                         <thead>
                             <tr className="border-b border-border-default">
                                 <th className="px-6 py-4 text-left text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
-                                    S.No
-                                </th>
-                                <th className="px-6 py-4 text-left text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
                                     Date
                                 </th>
+                                <th className="px-6 py-4 text-left text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
+                                    Order
+                                </th>
                                 <th className="px-6 py-4 text-right text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
-                                    Wastage (kg)
+                                    Actual Wastage (kg)
                                 </th>
                             </tr>
                         </thead>
@@ -230,15 +261,15 @@ export default function Dashboard() {
                             ) : (
                                 recentWastage.map((row, index) => (
                                     <tr
-                                        key={row.id ?? `${row.date}-${index}`}
+                                        key={row.id ?? row.transactionId ?? `${row.date}-${index}`}
                                         className={`border-b border-border-subtle transition-colors duration-150 hover:bg-white/[0.02] ${
                                             index % 2 === 0 ? 'bg-transparent' : 'bg-white/[0.01]'
                                         }`}
                                     >
-                                        <td className="px-6 py-3.5 text-text-secondary/60">{row.sno || index + 1}</td>
                                         <td className="px-6 py-3.5 text-text-primary/90">{formatDate(row.date)}</td>
+                                        <td className="px-6 py-3.5 text-text-primary/90">{row.order_number || '-'}</td>
                                         <td className="px-6 py-3.5 text-right font-semibold text-accent-gold">
-                                            {toNumber(row.weight).toFixed(2)}
+                                            {toNumber(row.actualWeight).toFixed(2)}
                                         </td>
                                     </tr>
                                 ))

@@ -77,6 +77,14 @@ function toKg(value, unit) {
   return value // kg
 }
 
+function firstNumber(...values) {
+  for (const value of values) {
+    const numericValue = Number(value)
+    if (Number.isFinite(numericValue)) return numericValue
+  }
+  return 0
+}
+
 // Data transformers to convert snake_case API responses to camelCase frontend format
 const transformers = {
   '/raw-materials': (items) => items.map(item => ({
@@ -107,9 +115,9 @@ const transformers = {
   '/wastage': (items) => items.map(item => ({
     ...item,
     order_number: item.order_number || item.orderNumber || '',
-    grossWeight: item.gross_weight !== undefined ? parseFloat(item.gross_weight) : 0,
-    netWeight: item.net_weight !== undefined ? parseFloat(item.net_weight) : 0,
-    actualWeight: item.actual_weight !== undefined ? parseFloat(item.actual_weight) : 0,
+    grossWeight: firstNumber(item.grossWeight, item.gross_weight),
+    netWeight: firstNumber(item.netWeight, item.net_weight),
+    actualWeight: firstNumber(item.actualWeight, item.actual_weight, item.weight, item.wastage_generated, item.quantity_kg, item.quantity, item.net_weight, item.netWeight),
   })),
   '/stock-usage': (items) => items.map(item => ({
     ...item,

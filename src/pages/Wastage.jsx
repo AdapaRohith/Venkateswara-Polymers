@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { exportSingleSheet } from '../utils/exportToExcel'
@@ -10,15 +10,50 @@ const ExcelIcon = () => (
 )
 
 function toNumber(value, fallback = 0) {
-  const n = Number(value)
-  return Number.isFinite(n) ? n : fallback
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : fallback
+}
+
+function firstNumber(...values) {
+  for (const value of values) {
+    const numericValue = Number(value)
+    if (Number.isFinite(numericValue)) return numericValue
+  }
+  return 0
+}
+
+function extractRows(payload) {
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.data)) return payload.data
+  if (Array.isArray(payload?.rows)) return payload.rows
+  if (Array.isArray(payload?.logs)) return payload.logs
+  if (Array.isArray(payload?.items)) return payload.items
+  if (Array.isArray(payload?.results)) return payload.results
+  if (Array.isArray(payload?.wastage)) return payload.wastage
+  if (Array.isArray(payload?.wastage_logs)) return payload.wastage_logs
+  if (Array.isArray(payload?.wastageLogs)) return payload.wastageLogs
+  return []
 }
 
 function formatDate(value) {
-  if (!value) return '—'
+  if (!value) return '-'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+function normalizeWastageRow(row = {}, index = 0) {
+  return {
+    ...row,
+    id: row.id ?? row.transactionId ?? `wastage-${index}`,
+    source: 'wastage',
+    sno: row.sno ?? index + 1,
+    date: row.date ?? String(row.created_at ?? row.createdAt ?? '').slice(0, 10),
+    order_number: row.order_number ?? row.orderNumber ?? '',
+    actualWeight: firstNumber(row.actualWeight, row.actual_weight, row.weight, row.wastage_generated, row.quantity_kg, row.quantity, row.net_weight, row.netWeight),
+    grossWeight: firstNumber(row.grossWeight, row.gross_weight),
+    netWeight: firstNumber(row.netWeight, row.net_weight),
+  }
 }
 
 export default function Wastage({ user }) {
@@ -26,79 +61,26 @@ export default function Wastage({ user }) {
   const toast = useToast()
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [exporting, setExporting] = useState(false)
   const [wastageRows, setWastageRows] = useState([])
+  const [deletingId, setDeletingId] = useState(null)
 
   const [form, setForm] = useState({
     date: new Date().toISOString().split('T')[0],
     weight: '',
   })
-  const [deletingId, setDeletingId] = useState(null)
-
-  const handleChange = e => setForm(prev => ({ ...prev, [e.target.name]: e.target.value }))
-
-  const handleDelete = async (id) => {
-    if (!window.confirm('Delete this wastage entry?')) return
-    setDeletingId(id)
-    try {
-      await api.delete(`/wastage/${id}`)
-      toast.success('Entry deleted')
-      loadWastage()
-    } catch (err) {
-      toast.error(err?.response?.data?.error || 'Failed to delete entry')
-    } finally {
-      setDeletingId(null)
-    }
-  }
-
-  const handleSubmit = async e => {
-    e.preventDefault()
-    if (!form.weight || Number(form.weight) <= 0) {
-      toast.error('Please enter a valid wastage amount')
-      return
-    }
-
-    setSubmitting(true)
-    try {
-      await api.post('/wastage', {
-        date: form.date,
-        weight: Number(form.weight),
-      })
-      toast.success('Wastage logged successfully')
-      setForm(prev => ({ ...prev, weight: '' }))
-      loadWastage()
-    } catch (err) {
-      toast.error(err?.response?.data?.error || 'Failed to log wastage')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const handleExport = () => {
-    const rows = wastageRows.map((r, i) => ({
-      sno: r.sno || i + 1,
-      date: formatDate(r.date),
-      weight: toNumber(r.weight).toFixed(2),
-    }))
-    exportSingleSheet({
-      filename: `Wastage_${new Date().toISOString().slice(0, 10)}`,
-      rows,
-      columns: [
-        { key: 'sno', label: 'S.No' },
-        { key: 'date', label: 'Date' },
-        { key: 'weight', label: 'Wastage (kg)' },
-      ],
-      totalRow: { sno: '', date: 'TOTAL', weight: totalWastage.toFixed(2) },
-    })
-    toast.success('Wastage data exported to Excel')
-  }
 
   const loadWastage = useCallback(async () => {
     setLoading(true)
     try {
       const { data } = await api.get('/wastage')
-      setWastageRows(Array.isArray(data) ? data : [])
-    } catch {
+      const rows = extractRows(data)
+      setWastageRows(
+        rows
+          .map(normalizeWastageRow)
+          .sort((left, right) => String(right.date || '').localeCompare(String(left.date || ''))),
+      )
+    } catch (err) {
+      console.error('Failed to load wastage logs', err)
       setWastageRows([])
     } finally {
       setLoading(false)
@@ -111,7 +93,86 @@ export default function Wastage({ user }) {
     return () => clearInterval(pollInterval)
   }, [loadWastage])
 
-  const totalWastage = wastageRows.reduce((s, r) => s + toNumber(r.weight), 0)
+  const handleChange = (event) => {
+    const { name, value } = event.target
+    setForm((previous) => ({ ...previous, [name]: value }))
+  }
+
+  const handleDelete = async (row) => {
+    if (!window.confirm('Delete this wastage entry?')) return
+
+    setDeletingId(row.id)
+    try {
+      await api.delete(`/wastage/${row.transactionId || row.id}`)
+      toast.success('Entry deleted')
+      loadWastage()
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to delete entry')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+
+    const weight = toNumber(form.weight)
+    if (weight <= 0) {
+      toast.error('Please enter a valid wastage amount')
+      return
+    }
+
+    setSubmitting(true)
+    try {
+      await api.post('/wastage', {
+        date: form.date,
+        weight,
+        wastage_generated: weight,
+      })
+      toast.success('Wastage logged successfully')
+      setForm((previous) => ({ ...previous, weight: '' }))
+      loadWastage()
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to log wastage')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const totalWastage = wastageRows.reduce((sum, row) => sum + toNumber(row.actualWeight), 0)
+
+  const handleExport = () => {
+    const rows = wastageRows.map((row, index) => ({
+      sno: row.sno || index + 1,
+      date: formatDate(row.date),
+      order_number: row.order_number || '',
+      gross_weight: toNumber(row.grossWeight).toFixed(2),
+      net_weight: toNumber(row.netWeight).toFixed(2),
+      actual_weight: toNumber(row.actualWeight).toFixed(2),
+    }))
+
+    exportSingleSheet({
+      filename: `Wastage_${new Date().toISOString().slice(0, 10)}`,
+      rows,
+      columns: [
+        { key: 'sno', label: 'S.No' },
+        { key: 'date', label: 'Date' },
+        { key: 'order_number', label: 'Order' },
+        { key: 'gross_weight', label: 'Gross (kg)' },
+        { key: 'net_weight', label: 'Net (kg)' },
+        { key: 'actual_weight', label: 'Actual Wastage (kg)' },
+      ],
+      totalRow: {
+        sno: '',
+        date: 'TOTAL',
+        order_number: '',
+        gross_weight: '',
+        net_weight: '',
+        actual_weight: totalWastage.toFixed(2),
+      },
+    })
+    toast.success('Wastage data exported to Excel')
+  }
 
   return (
     <div className="space-y-6">
@@ -132,7 +193,6 @@ export default function Wastage({ user }) {
         )}
       </div>
 
-      {/* Entry Form */}
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm p-6">
         <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60 mb-6">Log Wastage</h2>
         <form onSubmit={handleSubmit} className="flex flex-wrap gap-4 items-end">
@@ -175,7 +235,6 @@ export default function Wastage({ user }) {
         </form>
       </div>
 
-      {/* Table */}
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between">
           <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Wastage Logs</h2>
@@ -192,32 +251,39 @@ export default function Wastage({ user }) {
               <tr className="border-b border-border-subtle bg-bg-primary/30">
                 <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">S.No</th>
                 <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Date</th>
-                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Wastage (kg)</th>
+                <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Order</th>
+                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Gross (kg)</th>
+                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Net (kg)</th>
+                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Actual Wastage (kg)</th>
                 <th className="px-6 py-3 text-center text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border-subtle">
               {loading ? (
-                <tr><td colSpan={3} className="py-10 text-center text-text-secondary/50">Loading...</td></tr>
+                <tr><td colSpan={7} className="py-10 text-center text-text-secondary/50">Loading...</td></tr>
               ) : wastageRows.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="py-12 text-center text-sm text-text-secondary/40">
+                  <td colSpan={7} className="py-12 text-center text-sm text-text-secondary/40">
                     No wastage entries logged yet. Submit above to see records.
                   </td>
                 </tr>
               ) : (
-                wastageRows.map((row, i) => (
-                  <tr key={row.id || i} className="hover:bg-white/[0.02] transition-colors">
-                    <td className="px-6 py-3.5 text-text-secondary/60">{row.sno || i + 1}</td>
+                wastageRows.map((row, index) => (
+                  <tr key={`${row.source}-${row.id || index}`} className="hover:bg-white/[0.02] transition-colors">
+                    <td className="px-6 py-3.5 text-text-secondary/60">{row.sno || index + 1}</td>
                     <td className="px-6 py-3.5 text-text-primary/90">{formatDate(row.date)}</td>
-                    <td className="px-6 py-3.5 text-right font-mono font-bold text-accent-gold">{toNumber(row.weight).toFixed(2)}</td>
+                    <td className="px-6 py-3.5 text-text-primary/90">{row.order_number || '-'}</td>
+                    <td className="px-6 py-3.5 text-right font-mono text-text-secondary/80">{toNumber(row.grossWeight).toFixed(2)}</td>
+                    <td className="px-6 py-3.5 text-right font-mono text-text-secondary/80">{toNumber(row.netWeight).toFixed(2)}</td>
+                    <td className="px-6 py-3.5 text-right font-mono font-bold text-accent-gold">{toNumber(row.actualWeight).toFixed(2)}</td>
                     <td className="px-6 py-3.5 text-center">
                       <button
-                        onClick={() => handleDelete(row.id)}
+                        type="button"
+                        onClick={() => handleDelete(row)}
                         disabled={deletingId === row.id}
                         className="text-red-400 hover:text-red-300 disabled:opacity-40 transition-colors text-xs font-semibold px-3 py-1 rounded-lg border border-red-500/20 hover:border-red-400/40 hover:bg-red-500/10"
                       >
-                        {deletingId === row.id ? 'Deleting…' : 'Delete'}
+                        {deletingId === row.id ? 'Deleting...' : 'Delete'}
                       </button>
                     </td>
                   </tr>

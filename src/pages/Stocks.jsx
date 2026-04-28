@@ -4,13 +4,6 @@ import InputWithCamera from '../components/InputWithCamera'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
-import { exportSingleSheet } from '../utils/exportToExcel'
-
-const ExcelIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-  </svg>
-)
 
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
@@ -68,8 +61,8 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
     // Load immediately
     loadStockData()
     
-    // Poll every 50 seconds
-    const pollInterval = setInterval(loadStockData, 50000)
+    // Poll every 10 seconds
+    const pollInterval = setInterval(loadStockData, 10000)
     
     return () => clearInterval(pollInterval)
   }, [refreshFloorStock, refreshRawTotals])
@@ -240,20 +233,8 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
       </div>
 
       <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">
-        <div className="px-6 pt-6 pb-4 flex items-center justify-between">
+        <div className="px-6 pt-6 pb-4">
           <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">Current Floor Stock</h3>
-          {(floorStock || []).length > 0 && (
-            <button
-              type="button"
-              onClick={() => {
-                const rows = (floorStock || []).map(row => ({ material_name: row.material_name || `Material ${row.material_type_id}`, available_kg: toNumber(row.total_quantity_kg).toFixed(2) }))
-                exportSingleSheet({ filename: `Floor_Stock_${new Date().toISOString().slice(0, 10)}`, rows, columns: [{ key: 'material_name', label: 'Material Name' }, { key: 'available_kg', label: 'Available Quantity (kg)' }], totalRow: { material_name: 'TOTAL', available_kg: (floorStock || []).reduce((s, r) => s + toNumber(r.total_quantity_kg), 0).toFixed(2) } })
-              }}
-              className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all"
-            >
-              <ExcelIcon /> Export Excel
-            </button>
-          )}
         </div>
 
         <div className="overflow-x-auto">

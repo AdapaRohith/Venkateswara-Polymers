@@ -21,11 +21,11 @@ export default function Users() {
         fetchUsers()
         loadPendingUsers()
         
-        // Poll every 50 seconds
+        // Poll every 10 seconds
         const pollInterval = setInterval(() => {
             fetchUsers()
             loadPendingUsers()
-        }, 50000)
+        }, 10000)
         
         return () => clearInterval(pollInterval)
     }, [])

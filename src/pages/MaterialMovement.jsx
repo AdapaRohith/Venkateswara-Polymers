@@ -1,20 +1,11 @@
 import { useEffect, useState } from 'react'
-import EditEntryModal from '../components/EditEntryModal'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
-import {
-  bulkDeleteFloorTransactions,
-  deleteFloorTransaction,
-  updateFloorTransaction,
-} from '../utils/logActions'
 
-function toNumber(value, fallback = 0) {
-  const numericValue = Number(value)
-  return Number.isFinite(numericValue) ? numericValue : fallback
-}
+const MOVEMENT_TYPES = ['FLOOR_TRANSFER']
 
 function formatDate(iso) {
-  if (!iso) return '-'
+  if (!iso) return '—'
   return new Date(iso).toLocaleString('en-IN', {
     day: '2-digit', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
@@ -39,16 +30,6 @@ export default function MaterialMovement() {
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
-  const [selectedMovementIds, setSelectedMovementIds] = useState([])
-  const [editingMovement, setEditingMovement] = useState(null)
-  const [editMovementForm, setEditMovementForm] = useState({
-    material_name: '',
-    quantity_kg: '',
-    direction: 'OUT',
-    movement_type: 'FLOOR_TRANSFER',
-    note: '',
-  })
-  const [savingMovementEdit, setSavingMovementEdit] = useState(false)
 
   const [form, setForm] = useState({
     material_name: '',
@@ -71,27 +52,28 @@ export default function MaterialMovement() {
       if (movRes.status === 'fulfilled') {
         setMovements(Array.isArray(movRes.value.data) ? movRes.value.data : [])
       }
-    } catch {
-      // ignore
-    } finally {
+    } catch {/* ignore */} finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
+    // Load immediately
     loadData()
-
-    const pollInterval = setInterval(loadData, 50000)
+    
+    // Poll every 10 seconds
+    const pollInterval = setInterval(loadData, 10000)
+    
     return () => clearInterval(pollInterval)
   }, [])
 
-  const handleChange = (event) => {
-    const { name, value } = event.target
-    setForm((previous) => ({ ...previous, [name]: value }))
+  const handleChange = e => {
+    const { name, value } = e.target
+    setForm(prev => ({ ...prev, [name]: value }))
   }
 
-  const handleSubmit = async (event) => {
-    event.preventDefault()
+  const handleSubmit = async e => {
+    e.preventDefault()
     const qty = parseFloat(form.quantity_kg)
     if (!form.material_name) return toast.error('Select a material')
     if (!qty || qty <= 0) return toast.error('Quantity must be greater than 0')
@@ -105,8 +87,8 @@ export default function MaterialMovement() {
         movement_type: form.movement_type,
         note: form.note || undefined,
       })
-      toast.success(`Movement recorded - ${qty} kg ${form.direction}`)
-      setForm((previous) => ({ ...previous, quantity_kg: '', note: '' }))
+      toast.success(`Movement recorded — ${qty} kg ${form.direction}`)
+      setForm(prev => ({ ...prev, quantity_kg: '', note: '' }))
       loadData()
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to record movement')
@@ -115,78 +97,21 @@ export default function MaterialMovement() {
     }
   }
 
-  const handleDeleteMovement = async (movementId) => {
-    if (!window.confirm('Delete this movement entry?')) return
-
-    try {
-      await deleteFloorTransaction(movementId)
-      setSelectedMovementIds((previous) => previous.filter((id) => id !== movementId))
-      await loadData()
-      toast.success('Movement entry deleted')
-    } catch (err) {
-      toast.error(err?.response?.data?.error || 'Failed to delete movement entry')
-    }
-  }
-
-  const handleBulkDeleteMovements = async () => {
-    if (selectedMovementIds.length === 0) return
-    if (!window.confirm(`Delete ${selectedMovementIds.length} selected movement entries?`)) return
-
-    try {
-      await bulkDeleteFloorTransactions(selectedMovementIds)
-      setSelectedMovementIds([])
-      await loadData()
-      toast.success('Selected movement entries deleted')
-    } catch (err) {
-      toast.error(err?.response?.data?.error || 'Failed to delete selected movement entries')
-    }
-  }
-
-  const openEditMovement = (movement) => {
-    setEditingMovement(movement)
-    setEditMovementForm({
-      material_name: movement.material_name || '',
-      quantity_kg: toNumber(movement.quantity_kg).toFixed(2),
-      direction: movement.direction || 'OUT',
-      movement_type: movement.movement_type || 'FLOOR_TRANSFER',
-      note: movement.note || '',
-    })
-  }
-
-  const handleSaveMovementEdit = async () => {
-    if (!editingMovement) return
-
-    try {
-      setSavingMovementEdit(true)
-      await updateFloorTransaction(editingMovement.id, {
-        material_name: editMovementForm.material_name,
-        quantity_kg: toNumber(editMovementForm.quantity_kg),
-        direction: editMovementForm.direction,
-        movement_type: editMovementForm.movement_type,
-        note: editMovementForm.note,
-      })
-      setEditingMovement(null)
-      await loadData()
-      toast.success('Movement updated')
-    } catch (err) {
-      toast.error(err?.response?.data?.error || 'Failed to update movement')
-    } finally {
-      setSavingMovementEdit(false)
-    }
-  }
-
   return (
     <div className="space-y-8">
+      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-text-primary tracking-tight">Material Movement</h1>
         <p className="text-sm text-text-secondary mt-1">Record material in/out movements and floor transfers</p>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+        {/* Form */}
         <div className="xl:col-span-1">
           <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm p-6">
             <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60 mb-6">New Movement</h2>
             <form onSubmit={handleSubmit} className="space-y-5">
+              {/* Material */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">
                   Material
@@ -199,14 +124,13 @@ export default function MaterialMovement() {
                   className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all"
                 >
                   <option value="">Select material...</option>
-                  {materials.map((material) => (
-                    <option key={material.material_name} value={material.material_name}>
-                      {material.material_name}
-                    </option>
+                  {materials.map(m => (
+                    <option key={m.material_name} value={m.material_name}>{m.material_name}</option>
                   ))}
                 </select>
               </div>
 
+              {/* Quantity */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">
                   Quantity (kg)
@@ -224,6 +148,7 @@ export default function MaterialMovement() {
                 />
               </div>
 
+              {/* Movement Type — Fixed to Floor Transfer */}
               <div className="rounded-xl border border-purple-500/20 bg-purple-500/10 px-4 py-3 flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
                   <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -236,6 +161,7 @@ export default function MaterialMovement() {
                 </div>
               </div>
 
+              {/* Note */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">
                   Note (optional)
@@ -261,70 +187,12 @@ export default function MaterialMovement() {
           </div>
         </div>
 
+        {/* Stock Summary & Movements History */}
         <div className="xl:col-span-2 space-y-6">
           <StockSummary />
-          <MovementHistory
-            movements={movements}
-            loading={loading}
-            selectedIds={selectedMovementIds}
-            onSelectedIdsChange={setSelectedMovementIds}
-            onDelete={handleDeleteMovement}
-            onEdit={openEditMovement}
-            onDeleteSelected={handleBulkDeleteMovements}
-          />
+          <MovementHistory movements={movements} loading={loading} />
         </div>
       </div>
-
-      <EditEntryModal
-        open={Boolean(editingMovement)}
-        title="Edit Movement Entry"
-        values={editMovementForm}
-        onChange={(name, value) => setEditMovementForm((previous) => ({ ...previous, [name]: value }))}
-        onClose={() => {
-          if (savingMovementEdit) return
-          setEditingMovement(null)
-        }}
-        onSubmit={handleSaveMovementEdit}
-        submitting={savingMovementEdit}
-        fields={[
-          {
-            name: 'material_name',
-            label: 'Material Name',
-            type: 'select',
-            required: true,
-            options: [
-              { value: '', label: 'Select material' },
-              ...materials.map((material) => ({
-                value: material.material_name,
-                label: material.material_name,
-              })),
-            ],
-          },
-          { name: 'quantity_kg', label: 'Quantity (kg)', type: 'number', step: '0.01', min: '0.01', required: true },
-          {
-            name: 'direction',
-            label: 'Direction',
-            type: 'select',
-            required: true,
-            options: [
-              { value: 'IN', label: 'IN' },
-              { value: 'OUT', label: 'OUT' },
-            ],
-          },
-          {
-            name: 'movement_type',
-            label: 'Movement Type',
-            type: 'select',
-            required: true,
-            options: [
-              { value: 'INWARD', label: 'INWARD' },
-              { value: 'FLOOR_TRANSFER', label: 'FLOOR_TRANSFER' },
-              { value: 'ADJUSTMENT', label: 'ADJUSTMENT' },
-            ],
-          },
-          { name: 'note', label: 'Note', type: 'textarea', placeholder: 'Optional note' },
-        ]}
-      />
     </div>
   )
 }
@@ -360,14 +228,14 @@ function StockSummary() {
             ) : totals.length === 0 ? (
               <tr><td colSpan={3} className="py-8 text-center text-text-secondary/50">No materials found</td></tr>
             ) : (
-              totals.map((row, index) => (
-                <tr key={index} className="border-b border-border-subtle hover:bg-white/[0.02] transition-colors">
+              totals.map((row, i) => (
+                <tr key={i} className="border-b border-border-subtle hover:bg-white/[0.02] transition-colors">
                   <td className="px-6 py-3.5 font-medium text-text-primary">{row.material_name}</td>
                   <td className="px-6 py-3.5 text-right font-mono font-semibold text-accent-gold">
                     {parseFloat(row.total_quantity_kg || 0).toFixed(2)}
                   </td>
                   <td className="px-6 py-3.5 text-right text-text-secondary/60 text-xs">
-                    {row.updated_at ? new Date(row.updated_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : '-'}
+                    {row.updated_at ? new Date(row.updated_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : '—'}
                   </td>
                 </tr>
               ))
@@ -379,48 +247,16 @@ function StockSummary() {
   )
 }
 
-function MovementHistory({ movements, loading, selectedIds, onSelectedIdsChange, onDelete, onEdit, onDeleteSelected }) {
-  const selectableRows = movements.filter((row) => String(row.movement_type || '').toUpperCase() !== 'CONSUMPTION')
-  const allSelected = selectableRows.length > 0 && selectableRows.every((row) => selectedIds.includes(row.id))
-
-  const toggleAll = () => {
-    onSelectedIdsChange(allSelected ? [] : selectableRows.map((row) => row.id))
-  }
-
-  const toggleOne = (rowId) => {
-    onSelectedIdsChange(
-      selectedIds.includes(rowId)
-        ? selectedIds.filter((id) => id !== rowId)
-        : [...selectedIds, rowId]
-    )
-  }
-
+function MovementHistory({ movements, loading }) {
   return (
     <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
-      <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between gap-3">
+      <div className="px-6 py-4 border-b border-border-subtle">
         <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Movement History</h2>
-        <button
-          type="button"
-          onClick={onDeleteSelected}
-          disabled={selectedIds.length === 0}
-          className="rounded-lg border border-red-500/30 px-4 py-2 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/10 disabled:opacity-50"
-        >
-          Delete Selected ({selectedIds.length})
-        </button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-subtle">
-              <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  onChange={toggleAll}
-                  className="h-4 w-4 accent-accent-gold"
-                  aria-label="Select all movement rows"
-                />
-              </th>
               <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Date/Time</th>
               <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Material</th>
               <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Quantity (kg)</th>
@@ -428,30 +264,16 @@ function MovementHistory({ movements, loading, selectedIds, onSelectedIdsChange,
               <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Type</th>
               <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">By</th>
               <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Note</th>
-              <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9} className="py-8 text-center text-text-secondary/50">Loading...</td></tr>
+              <tr><td colSpan={7} className="py-8 text-center text-text-secondary/50">Loading...</td></tr>
             ) : movements.length === 0 ? (
-              <tr><td colSpan={9} className="py-8 text-center text-text-secondary/50">No movements recorded yet</td></tr>
+              <tr><td colSpan={7} className="py-8 text-center text-text-secondary/50">No movements recorded yet</td></tr>
             ) : (
-              movements.map((row, index) => (
-                <tr key={row.id || index} className="border-b border-border-subtle hover:bg-white/[0.02] transition-colors">
-                  <td className="px-4 py-3.5">
-                    {String(row.movement_type || '').toUpperCase() !== 'CONSUMPTION' ? (
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.includes(row.id)}
-                        onChange={() => toggleOne(row.id)}
-                        className="h-4 w-4 accent-accent-gold"
-                        aria-label={`Select movement ${row.id}`}
-                      />
-                    ) : (
-                      <span className="text-[10px] text-text-secondary/40">Locked</span>
-                    )}
-                  </td>
+              movements.map((row, i) => (
+                <tr key={i} className="border-b border-border-subtle hover:bg-white/[0.02] transition-colors">
                   <td className="px-6 py-3.5 text-xs text-text-secondary/70 whitespace-nowrap">
                     {formatDate(row.created_at)}
                   </td>
@@ -463,41 +285,19 @@ function MovementHistory({ movements, loading, selectedIds, onSelectedIdsChange,
                   </td>
                   <td className="px-6 py-3.5 text-center">
                     <span className={`inline-block px-3 py-1 rounded-lg text-xs font-bold border ${directionColors[row.direction] || 'text-gray-400 bg-gray-500/10'}`}>
-                      {row.direction || '-'}
+                      {row.direction || '—'}
                     </span>
                   </td>
                   <td className="px-6 py-3.5">
                     <span className={`inline-block px-3 py-1 rounded-lg text-xs font-bold ${typeColors[row.movement_type] || 'text-gray-400'}`}>
-                      {row.movement_type || '-'}
+                      {row.movement_type || '—'}
                     </span>
                   </td>
                   <td className="px-6 py-3.5 text-xs text-text-secondary/70">
-                    {row.created_by_name || '-'}
+                    {row.created_by_name || '—'}
                   </td>
                   <td className="px-6 py-3.5 text-xs text-text-secondary/60 max-w-xs truncate">
-                    {row.note || '-'}
-                  </td>
-                  <td className="px-6 py-3.5">
-                    {String(row.movement_type || '').toUpperCase() === 'CONSUMPTION' ? (
-                      <span className="text-[10px] text-text-secondary/40">Edit in Production</span>
-                    ) : (
-                      <div className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => onEdit(row)}
-                          className="text-xs font-semibold text-blue-300 transition-colors hover:text-blue-200"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onDelete(row.id)}
-                          className="text-xs font-semibold text-red-300 transition-colors hover:text-red-200"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    )}
+                    {row.note || '—'}
                   </td>
                 </tr>
               ))
