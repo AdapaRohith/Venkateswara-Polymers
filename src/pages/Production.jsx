@@ -153,6 +153,18 @@ function MachinePill({ machine, isActive, onClick }) {
 /* ══════════════════════════════════════════════════════════════════════════ */
 /*  MAIN COMPONENT                                                          */
 /* ══════════════════════════════════════════════════════════════════════════ */
+function getTodayDate() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function formatDisplayDate(dateStr) {
+  if (!dateStr) return ''
+  const d = new Date(dateStr + 'T00:00:00')
+  if (Number.isNaN(d.getTime())) return dateStr
+  return d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })
+}
+
 export default function Production({ user }) {
   const toast = useToast()
 
@@ -165,6 +177,8 @@ export default function Production({ user }) {
   const [size, setSize] = useState(loadSize)
   const [grossWeight, setGrossWeight] = useState('')
   const [tareWeight, setTareWeight] = useState('')
+  const [directNetWeight, setDirectNetWeight] = useState('')
+  const [productionDate, setProductionDate] = useState(getTodayDate)
   const [history, setHistory] = useState([])
   const [historyMachineFilter, setHistoryMachineFilter] = useState('')
   const [selectedHistoryIds, setSelectedHistoryIds] = useState([])
@@ -183,6 +197,7 @@ export default function Production({ user }) {
   const [loadingMaterials, setLoadingMaterials] = useState(false)
   const [hasLoadedMaterialsOnce, setHasLoadedMaterialsOnce] = useState(false)
   const grossRef = useRef(null)
+  const isBackdated = productionDate !== getTodayDate()
 
   /* ── Compute available materials for production with floor stock quantities ─ */
   const materialsForProduction = useMemo(() => {
@@ -200,15 +215,21 @@ export default function Production({ user }) {
   )
 
   /* ── Net weight auto-calc ───────────────────────────────────────────────── */
+  const isCuttingMachine = activeMachine?.type === 'cutting'
+
   const netWeight = useMemo(() => {
+    if (isCuttingMachine) {
+      if (!directNetWeight) return null
+      return toNumber(directNetWeight)
+    }
     const g = toNumber(grossWeight)
     const t = toNumber(tareWeight)
     if (!grossWeight && !tareWeight) return null
     return Math.max(g - t, 0)
-  }, [grossWeight, tareWeight])
+  }, [grossWeight, tareWeight, directNetWeight, isCuttingMachine])
 
   const isValid = netWeight !== null && netWeight > 0 && materialId !== '' && selectedMaterialAvailable && activeMachine !== null
-  const isInvalid = grossWeight !== '' && tareWeight !== '' && netWeight !== null && netWeight <= 0
+  const isInvalid = !isCuttingMachine && grossWeight !== '' && tareWeight !== '' && netWeight !== null && netWeight <= 0
 
   /* ── Load floor stock (issued materials) for production ───────────────────── */
   useEffect(() => {
@@ -307,6 +328,7 @@ export default function Production({ user }) {
     setAssignedStock([])
     setGrossWeight('')
     setTareWeight('')
+    setDirectNetWeight('')
     
     // Fetch worker name for this machine from backend state
     const machineIdNum = parseInt(machine.id.replace(/\D/g, ''), 10) || 1
@@ -347,6 +369,7 @@ export default function Production({ user }) {
     setAssignedStock([])
     setGrossWeight('')
     setTareWeight('')
+    setDirectNetWeight('')
   }, [])
 
   const refreshHistoryContext = useCallback(async (machineIdOverride) => {
@@ -391,15 +414,16 @@ export default function Production({ user }) {
       return
     }
 
-    const gross = toNumber(grossWeight)
-    const tare = toNumber(tareWeight)
-    const net = Math.max(gross - tare, 0)
+    const isCutting = activeMachine.type === 'cutting'
+    const gross = isCutting ? 0 : toNumber(grossWeight)
+    const tare = isCutting ? 0 : toNumber(tareWeight)
+    const net = isCutting ? toNumber(directNetWeight) : Math.max(gross - tare, 0)
 
     if (net <= 0) {
       toast.error('Net weight must be greater than 0')
       return
     }
-    if (gross < tare) {
+    if (!isCutting && gross < tare) {
       toast.error('Gross weight must be >= tare weight')
       return
     }
@@ -418,6 +442,7 @@ export default function Production({ user }) {
         worker_name: workerName,
         gross_weight: gross,
         tare_weight: tare,
+        production_date: productionDate || getTodayDate(),
       })
 
       // Find material name from assigned stock or floor stock for history display
@@ -469,6 +494,7 @@ export default function Production({ user }) {
       // Reset form (keep machine, worker, material selection)
       setGrossWeight('')
       setTareWeight('')
+      setDirectNetWeight('')
       setTimeout(() => grossRef.current?.focus(), 50)
     } catch (err) {
       const errorMsg = err?.response?.data?.error || err?.message || 'Failed to log entry'
@@ -477,7 +503,7 @@ export default function Production({ user }) {
     } finally {
       setSubmitting(false)
     }
-  }, [activeMachine, assignedStock, grossWeight, tareWeight, materialId, size, workerName, isValid, materialsForProduction, toast])
+  }, [activeMachine, assignedStock, grossWeight, tareWeight, directNetWeight, materialId, size, workerName, isValid, materialsForProduction, toast, productionDate])
 
   const openEditHistory = useCallback((row) => {
     setEditingHistoryRow(row)
@@ -623,6 +649,87 @@ export default function Production({ user }) {
               />
             ))}
           </div>
+
+          {/* ── Select Material & Production Date (outside machines) ────── */}
+          <div className="mt-5 pt-5 border-t border-border-default">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Select Material */}
+              <div className="space-y-2">
+                <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
+                  Select Material
+                  <span className="ml-2 text-accent-gold/60 normal-case tracking-normal">(applies to all machines)</span>
+                </label>
+                <select
+                  value={materialId}
+                  onChange={e => setMaterialId(e.target.value)}
+                  className={inputClass}
+                  disabled={loadingMaterials}
+                >
+                  <option value="">
+                    {loadingMaterials
+                      ? 'Loading materials...'
+                      : materialsForProduction.length > 0
+                        ? 'Select material...'
+                        : 'No floor stock available'}
+                  </option>
+                  {materialsForProduction.map((mat, i) => (
+                    <option key={mat.id ?? i} value={mat.id}>
+                      {mat.material_name} ({toNumber(mat.issued_quantity_kg).toFixed(1)} kg issued)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Production Date */}
+              <div className="space-y-2">
+                <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
+                  Production Date
+                  {isBackdated && (
+                    <span className="ml-2 text-orange-400 normal-case tracking-normal">(backdated)</span>
+                  )}
+                </label>
+                <div className="relative flex items-center">
+                  <input
+                    type="date"
+                    value={productionDate}
+                    onChange={e => setProductionDate(e.target.value)}
+                    max={getTodayDate()}
+                    className={`${inputClass} ${isBackdated ? 'pr-24' : ''}`}
+                  />
+                  {isBackdated && (
+                    <button
+                      type="button"
+                      onClick={() => setProductionDate(getTodayDate())}
+                      className="absolute right-10 text-[10px] font-bold uppercase tracking-wider text-orange-400 hover:text-orange-300 transition-colors"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Status indicators */}
+            <div className="flex flex-wrap items-center gap-4 mt-3">
+              {materialId && (() => {
+                const mat = materialsForProduction.find(m => String(m.id) === String(materialId))
+                return mat ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs">
+                    <span className="w-2 h-2 rounded-full bg-purple-400"></span>
+                    <span className="text-purple-400 font-medium">{mat.material_name}</span>
+                  </span>
+                ) : null
+              })()}
+              {isBackdated && (
+                <span className="inline-flex items-center gap-1.5 text-xs">
+                  <span className="w-2 h-2 rounded-full bg-orange-400"></span>
+                  <span className="text-orange-400 font-medium">
+                    Logging for: {new Date(productionDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                  </span>
+                </span>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Cutting Machines */}
@@ -717,32 +824,8 @@ export default function Production({ user }) {
               </div>
             )}
 
-            {/* Row 1: Material + Size + Worker */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-              <div className="space-y-2">
-                <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
-                  Material
-                </label>
-                <select
-                  value={materialId}
-                  onChange={e => setMaterialId(e.target.value)}
-                  className={inputClass}
-                  disabled={submitting || loadingMaterials}
-                >
-                  <option value="">
-                    {loadingMaterials
-                      ? 'Loading materials...'
-                      : materialsForProduction.length > 0
-                        ? 'Select material...'
-                        : 'No floor stock available'}
-                  </option>
-                  {materialsForProduction.map((mat, i) => (
-                    <option key={mat.id ?? i} value={mat.id}>
-                      {mat.material_name} ({toNumber(mat.issued_quantity_kg).toFixed(1)} kg issued)
-                    </option>
-                  ))}
-                </select>
-              </div>
+            {/* Row 1: Size + Worker */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
 
               <div className="space-y-2">
                 <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
@@ -772,64 +855,102 @@ export default function Production({ user }) {
               </div>
             </div>
 
-            {/* Row 2: Gross + Tare */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Row 2: Weight inputs — different for production vs cutting */}
+            {isCuttingMachine ? (
+              /* Cutting machines: single Net Weight input */
               <div className="space-y-2">
                 <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
-                  Gross Weight (kg)
+                  Net Weight (kg)
                 </label>
                 <input
                   ref={grossRef}
                   type="number"
                   min="0"
                   step="0.01"
-                  value={grossWeight}
-                  onChange={e => setGrossWeight(e.target.value)}
+                  value={directNetWeight}
+                  onChange={e => setDirectNetWeight(e.target.value)}
                   placeholder="0.00"
                   className={inputClass}
                   disabled={submitting}
                 />
+                {/* Net Weight Display for cutting */}
+                {directNetWeight && (
+                  <div className={`
+                    rounded-2xl p-4 text-center border transition-all duration-300 mt-3
+                    ${toNumber(directNetWeight) > 0
+                      ? 'bg-emerald-500/10 border-emerald-500/30'
+                      : 'bg-bg-primary border-border-subtle'}
+                  `}>
+                    <p className={`text-4xl font-bold font-mono ${
+                      toNumber(directNetWeight) > 0 ? 'text-emerald-400' : 'text-text-secondary/30'
+                    }`}>
+                      {toNumber(directNetWeight).toFixed(2)} kg
+                    </p>
+                  </div>
+                )}
               </div>
-              <div className="space-y-2">
-                <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
-                  Tare Weight (kg)
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={tareWeight}
-                  onChange={e => setTareWeight(e.target.value)}
-                  placeholder="0.00"
-                  className={inputClass}
-                  disabled={submitting}
-                />
-              </div>
-            </div>
+            ) : (
+              /* Production machines: Gross + Tare with auto-calc */
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div className="space-y-2">
+                    <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
+                      Gross Weight (kg)
+                    </label>
+                    <input
+                      ref={grossRef}
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={grossWeight}
+                      onChange={e => setGrossWeight(e.target.value)}
+                      placeholder="0.00"
+                      className={inputClass}
+                      disabled={submitting}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
+                      Tare Weight (kg)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={tareWeight}
+                      onChange={e => setTareWeight(e.target.value)}
+                      placeholder="0.00"
+                      className={inputClass}
+                      disabled={submitting}
+                    />
+                  </div>
+                </div>
 
-            {/* Net Weight Display */}
-            <div className={`
-              rounded-2xl p-5 text-center border transition-all duration-300
-              ${isValid
-                ? 'bg-accent-gold/10 border-accent-gold/30'
-                : isInvalid
-                ? 'bg-red-500/10 border-red-500/30'
-                : 'bg-bg-primary border-border-subtle'}
-            `}>
-              <p className={`text-[10px] font-bold uppercase tracking-[0.2em] mb-2 ${
-                isValid ? 'text-accent-gold/80' : isInvalid ? 'text-red-400/80' : 'text-text-secondary/50'
-              }`}>
-                Net Weight (Auto-calculated)
-              </p>
-              <p className={`text-4xl font-bold font-mono ${
-                isValid ? 'text-accent-gold' : isInvalid ? 'text-red-400' : 'text-text-secondary/30'
-              }`}>
-                {netWeight !== null ? `${netWeight.toFixed(2)} kg` : '— kg'}
-              </p>
-              {isInvalid && (
-                <p className="text-xs text-red-400 mt-2">Gross weight must be greater than tare weight</p>
-              )}
-            </div>
+                {/* Net Weight Display */}
+                <div className={`
+                  rounded-2xl p-5 text-center border transition-all duration-300
+                  ${isValid
+                    ? 'bg-accent-gold/10 border-accent-gold/30'
+                    : isInvalid
+                    ? 'bg-red-500/10 border-red-500/30'
+                    : 'bg-bg-primary border-border-subtle'}
+                `}>
+                  <p className={`text-[10px] font-bold uppercase tracking-[0.2em] mb-2 ${
+                    isValid ? 'text-accent-gold/80' : isInvalid ? 'text-red-400/80' : 'text-text-secondary/50'
+                  }`}>
+                    Net Weight (Auto-calculated)
+                  </p>
+                  <p className={`text-4xl font-bold font-mono ${
+                    isValid ? 'text-accent-gold' : isInvalid ? 'text-red-400' : 'text-text-secondary/30'
+                  }`}>
+                    {netWeight !== null ? `${netWeight.toFixed(2)} kg` : '— kg'}
+                  </p>
+                  {isInvalid && (
+                    <p className="text-xs text-red-400 mt-2">Gross weight must be greater than tare weight</p>
+                  )}
+                </div>
+              </>
+            )}
 
             {/* Submit */}
             <button
