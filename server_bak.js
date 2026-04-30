@@ -107,13 +107,15 @@ async function fetchOrderItems(client, orderId) {
       oi.order_id,
       oi.item_name,
       oi.required_quantity::float AS required_quantity,
+      COALESCE(oi.unit_price, 0)::float AS unit_price,
+      (oi.required_quantity * COALESCE(oi.unit_price, 0))::float AS total_amount,
       COALESCE(SUM(fr.supplied_quantity), 0)::float AS fulfilled_quantity,
       GREATEST(oi.required_quantity - COALESCE(SUM(fr.supplied_quantity), 0), 0)::float AS remaining_quantity,
       oi.created_at
     FROM order_items oi
     LEFT JOIN fulfillment_records fr ON fr.order_item_id = oi.id
     WHERE oi.order_id = $1
-    GROUP BY oi.id, oi.order_id, oi.item_name, oi.required_quantity, oi.created_at
+    GROUP BY oi.id, oi.order_id, oi.item_name, oi.required_quantity, oi.unit_price, oi.created_at
     ORDER BY oi.created_at ASC, oi.id ASC
     `,
     [orderId]
@@ -1792,17 +1794,17 @@ app.get("/analytics/plant-efficiency-v2", authMiddleware, async (req, res) => {
     const result = await pool.query(`
       SELECT
         COALESCE(SUM(rb.quantity_kg), 0)                          AS total_input_kg,
-        COALESCE(SUM(mpl.net_weight), 0)                          AS total_output_kg,
+        COALESCE(SUM(pl.net_weight), 0)                            AS total_output_kg,
         CASE
           WHEN COALESCE(SUM(rb.quantity_kg), 0) = 0 THEN 0
           ELSE ROUND(
-            (COALESCE(SUM(mpl.net_weight), 0) /
+            (COALESCE(SUM(pl.net_weight), 0) /
              COALESCE(SUM(rb.quantity_kg), 0)) * 100, 2
           )
         END                                                        AS efficiency_percent
       FROM
         (SELECT COALESCE(SUM(quantity_kg), 0) AS quantity_kg FROM raw_material_batches) rb,
-        (SELECT COALESCE(SUM(net_weight),   0) AS net_weight  FROM machine_production_logs) mpl
+        (SELECT COALESCE(SUM(gross_weight - tare_weight), 0) AS net_weight FROM production_logs) pl
     `);
     res.json(result.rows[0] ?? { total_input_kg: 0, total_output_kg: 0, efficiency_percent: 0 });
   } catch (err) {
@@ -2295,8 +2297,16 @@ app.post("/orders", authMiddleware, async (req, res) => {
       .map((item) => ({
         item_name: String(item?.item_name || "").trim(),
         required_quantity: Number(item?.required_quantity),
+        unit_price: Number(item?.unit_price ?? 0),
       }))
-      .filter((item) => item.item_name && Number.isFinite(item.required_quantity) && item.required_quantity > 0);
+      .filter(
+        (item) =>
+          item.item_name &&
+          Number.isFinite(item.required_quantity) &&
+          item.required_quantity > 0 &&
+          Number.isFinite(item.unit_price) &&
+          item.unit_price >= 0
+      );
 
     if (!normalizedOrderNumber) {
       return res.status(400).json({ error: "order_number is required" });
@@ -2321,10 +2331,10 @@ app.post("/orders", authMiddleware, async (req, res) => {
     for (const item of normalizedItems) {
       await client.query(
         `
-        INSERT INTO order_items (order_id, item_name, required_quantity)
-        VALUES ($1, $2, $3)
+        INSERT INTO order_items (order_id, item_name, required_quantity, unit_price)
+        VALUES ($1, $2, $3, $4)
         `,
-        [order.id, item.item_name, item.required_quantity]
+        [order.id, item.item_name, item.required_quantity, item.unit_price]
       );
     }
 
@@ -2603,76 +2613,70 @@ app.get("/fulfillment", authMiddleware, async (req, res) => {
 // WASTAGE
 // =====================================================
 app.post("/wastage", authMiddleware, async (req, res) => {
-  const {
-    sno,
-    date,
-    order_number,
-    gross_weight,
-    net_weight
-  } = req.body;
+  const { date, weight } = req.body;
 
   // Validation
-  if (
-    sno == null ||
-    !date ||
-    !order_number ||
-    gross_weight == null ||
-    net_weight == null
-  ) {
-    return res.status(400).json({ error: "Missing required fields" });
+  if (!date) {
+    return res.status(400).json({ error: "date is required" });
+  }
+  if (weight == null || Number(weight) <= 0) {
+    return res.status(400).json({ error: "weight must be greater than 0" });
   }
 
-  if (Number(gross_weight) < Number(net_weight)) {
-    return res.status(400).json({
-      error: "gross_weight cannot be less than net_weight"
-    });
-  }
-
-  const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-
-    // Ensure order exists
-    const orderCheck = await client.query(
-      "SELECT 1 FROM orders WHERE order_number = $1",
-      [order_number]
+    // Auto-compute next id and sno (table has no sequence defaults)
+    const seqRes = await pool.query(
+      "SELECT COALESCE(MAX(id), 0) + 1 AS next_id, COALESCE(MAX(sno), 0) + 1 AS next_sno FROM wastage_data"
     );
-    if (orderCheck.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Invalid order_number" });
-    }
+    const nextId  = seqRes.rows[0].next_id;
+    const nextSno = seqRes.rows[0].next_sno;
 
-    // Insert into wastage_data only
-    const insertRes = await client.query(
-      `
-      INSERT INTO wastage_data
-        (sno, date, order_number, gross_weight, net_weight)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id, sno, date, order_number, gross_weight, net_weight, actual_weight
-      `,
-      [sno, date, order_number, gross_weight, net_weight]
+    const insertRes = await pool.query(
+      `INSERT INTO wastage_data (id, sno, date, weight)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, sno, date, weight`,
+      [nextId, nextSno, date, Number(weight)]
     );
-
-    const row = insertRes.rows[0];
-
-    await client.query("COMMIT");
 
     return res.status(201).json({
       message: "Wastage recorded",
-      data: row
+      data: insertRes.rows[0]
     });
-
   } catch (err) {
-    await client.query("ROLLBACK");
-    console.error(err);
-
-    if (err.code === "23503") {
-      return res.status(400).json({ error: "Invalid foreign key reference" });
-    }
-
+    console.error("WASTAGE INSERT ERROR:", err);
     return res.status(500).json({ error: "Internal server error" });
-  } finally {
-    client.release();
+  }
+});
+
+app.get("/wastage", authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, sno, date, weight FROM wastage_data ORDER BY sno DESC LIMIT 500`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("WASTAGE GET ERROR:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.delete("/wastage/:id", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  if (!id || isNaN(Number(id))) {
+    return res.status(400).json({ error: "Invalid id" });
+  }
+  try {
+    const result = await pool.query(
+      `DELETE FROM wastage_data WHERE id = $1 RETURNING id, sno`,
+      [Number(id)]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Wastage entry not found" });
+    }
+    res.json({ message: "Wastage entry deleted", deleted: result.rows[0] });
+  } catch (err) {
+    console.error("WASTAGE DELETE ERROR:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2731,8 +2735,14 @@ const initializeTables = async () => {
         order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
         item_name VARCHAR(255) NOT NULL,
         required_quantity NUMERIC(12, 3) NOT NULL,
+        unit_price NUMERIC(12, 2) NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
+    `);
+
+    await pool.query(`
+      ALTER TABLE order_items
+      ADD COLUMN IF NOT EXISTS unit_price NUMERIC(12, 2) NOT NULL DEFAULT 0
     `);
 
     await pool.query(`

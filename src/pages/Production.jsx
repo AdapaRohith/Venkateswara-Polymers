@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import EditEntryModal from '../components/EditEntryModal'
+import TolerancePanel from '../components/TolerancePanel'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { exportSingleSheet } from '../utils/exportToExcel'
@@ -165,6 +166,8 @@ export default function Production({ user }) {
   const [size, setSize] = useState(loadSize)
   const [grossWeight, setGrossWeight] = useState('')
   const [tareWeight, setTareWeight] = useState('')
+  const [expectedNetWeight, setExpectedNetWeight] = useState('')
+  const [lastTolerance, setLastTolerance] = useState(null)
   const [history, setHistory] = useState([])
   const [historyMachineFilter, setHistoryMachineFilter] = useState('')
   const [selectedHistoryIds, setSelectedHistoryIds] = useState([])
@@ -418,7 +421,14 @@ export default function Production({ user }) {
         worker_name: workerName,
         gross_weight: gross,
         tare_weight: tare,
+        expected_net_weight_kg: toNumber(expectedNetWeight) > 0 ? toNumber(expectedNetWeight) : undefined,
       })
+
+      setLastTolerance(data?.tolerance ? {
+        ...data.tolerance,
+        expected: toNumber(expectedNetWeight) > 0 ? toNumber(expectedNetWeight) : net,
+        actual: net,
+      } : null)
 
       // Find material name from assigned stock or floor stock for history display
       const selectedAssignedMaterial = assignedStock.find(mat => String(mat.material_type_id) === String(materialIdNum))
@@ -467,17 +477,29 @@ export default function Production({ user }) {
       toast.success(`✓ Entry logged for ${activeMachine.label}`)
 
       // Reset form (keep machine, worker, material selection)
+      if (data?.tolerance?.tolerance_status === 'BREACH') {
+        toast.warning(`Entry logged for ${activeMachine.label} with tolerance breach`)
+      }
       setGrossWeight('')
       setTareWeight('')
+      setExpectedNetWeight('')
       setTimeout(() => grossRef.current?.focus(), 50)
     } catch (err) {
+      const strictDetails = err?.response?.data?.details
+      if (strictDetails) {
+        setLastTolerance({
+          ...strictDetails,
+          expected: toNumber(expectedNetWeight) > 0 ? toNumber(expectedNetWeight) : net,
+          actual: net,
+        })
+      }
       const errorMsg = err?.response?.data?.error || err?.message || 'Failed to log entry'
       toast.error(errorMsg)
       // Do NOT clear form on error per spec
     } finally {
       setSubmitting(false)
     }
-  }, [activeMachine, assignedStock, grossWeight, tareWeight, materialId, size, workerName, isValid, materialsForProduction, toast])
+  }, [activeMachine, assignedStock, expectedNetWeight, grossWeight, tareWeight, materialId, size, workerName, isValid, materialsForProduction, toast])
 
   const openEditHistory = useCallback((row) => {
     setEditingHistoryRow(row)
@@ -807,6 +829,22 @@ export default function Production({ user }) {
               </div>
             </div>
 
+            <div className="space-y-2">
+              <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
+                Expected Net Weight (kg)
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={expectedNetWeight}
+                onChange={e => setExpectedNetWeight(e.target.value)}
+                placeholder="Optional"
+                className={inputClass}
+                disabled={submitting}
+              />
+            </div>
+
             {/* Net Weight Display */}
             <div className={`
               rounded-2xl p-5 text-center border transition-all duration-300
@@ -830,6 +868,12 @@ export default function Production({ user }) {
                 <p className="text-xs text-red-400 mt-2">Gross weight must be greater than tare weight</p>
               )}
             </div>
+
+            <TolerancePanel
+              tolerance={lastTolerance}
+              title="Production Tolerance"
+              context={activeMachine.label}
+            />
 
             {/* Submit */}
             <button

@@ -8,6 +8,14 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(numericValue) ? numericValue : fallback
 }
 
+function formatPercent(value) {
+  return `${toNumber(value).toFixed(2)}%`
+}
+
+function formatKg(value) {
+  return `${toNumber(value).toFixed(2)} kg`
+}
+
 /* ── Export icon ─────────────────────────────────────────── */
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -23,6 +31,7 @@ export default function Fulfillment() {
   const [refreshKey, setRefreshKey] = useState(0)
   const [selectedOrderIds, setSelectedOrderIds] = useState([])
   const [exportFilter, setExportFilter] = useState('all') // 'all' | 'pending' | 'fulfilled'
+  const [lastTolerance, setLastTolerance] = useState(null)
 
   const [form, setForm] = useState({
     order_number: '',
@@ -83,17 +92,40 @@ export default function Fulfillment() {
 
     setSubmitting(true)
     try {
-      await recordFulfillment({
+      const result = await recordFulfillment({
         order_number: form.order_number,
         item_id: Number(form.item_id),
         supplied_quantity: quantity,
         note: form.note || null,
       })
 
-      toast.success(`Fulfilled ${quantity} kg for ${form.order_number}`)
+      const tolerance = result?.tolerance || null
+      setLastTolerance(tolerance ? {
+        order_number: form.order_number,
+        item_name: selectedItem?.item_name || result?.item_name || '',
+        expected: toNumber(selectedItem?.required_quantity),
+        actual: toNumber(selectedItem?.fulfilled_quantity) + quantity,
+        ...tolerance,
+      } : null)
+
+      if (tolerance?.tolerance_status === 'BREACH') {
+        toast.warning(`Fulfilled ${quantity} kg, tolerance breach flagged`)
+      } else {
+        toast.success(`Fulfilled ${quantity} kg for ${form.order_number}`)
+      }
       setForm((prev) => ({ ...prev, supplied_quantity: '', note: '' }))
       setRefreshKey((prev) => prev + 1)
     } catch (err) {
+      const strictDetails = err?.response?.data?.details
+      if (strictDetails) {
+        setLastTolerance({
+          order_number: form.order_number,
+          item_name: selectedItem?.item_name || '',
+          expected: toNumber(selectedItem?.required_quantity),
+          actual: toNumber(selectedItem?.fulfilled_quantity) + quantity,
+          ...strictDetails,
+        })
+      }
       toast.error(err?.response?.data?.error || err?.message || 'Failed to record fulfillment')
     } finally {
       setSubmitting(false)
@@ -416,6 +448,58 @@ export default function Fulfillment() {
             </button>
           </div>
         </form>
+        {lastTolerance && (
+          <div className={`mt-5 rounded-xl border p-4 ${
+            lastTolerance.tolerance_status === 'BREACH'
+              ? 'border-amber-500/30 bg-amber-500/10'
+              : 'border-emerald-500/25 bg-emerald-500/10'
+          }`}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-text-secondary/70">Tolerance Check</p>
+                <p className="mt-1 text-sm text-text-primary">
+                  {lastTolerance.order_number}
+                  {lastTolerance.item_name ? ` - ${lastTolerance.item_name}` : ''}
+                </p>
+              </div>
+              <span className={`rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                lastTolerance.tolerance_status === 'BREACH'
+                  ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                  : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+              }`}>
+                {lastTolerance.tolerance_status}
+              </span>
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Expected</p>
+                <p className="mt-1 font-mono text-sm text-text-primary">{formatKg(lastTolerance.expected)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Actual</p>
+                <p className="mt-1 font-mono text-sm text-text-primary">{formatKg(lastTolerance.actual)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Allowed</p>
+                <p className="mt-1 font-mono text-sm text-text-primary">
+                  {formatKg(lastTolerance.lower_bound)} - {formatKg(lastTolerance.upper_bound)}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Tolerance</p>
+                <p className="mt-1 font-mono text-sm text-text-primary">{formatPercent(lastTolerance.tolerance_percent)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Deviation</p>
+                <p className={`mt-1 font-mono text-sm font-semibold ${
+                  lastTolerance.tolerance_status === 'BREACH' ? 'text-amber-300' : 'text-emerald-300'
+                }`}>
+                  {formatPercent(lastTolerance.deviation_percent)}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Export Toolbar */}
