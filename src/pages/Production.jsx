@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import EditEntryModal from '../components/EditEntryModal'
+import TolerancePanel from '../components/TolerancePanel'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { exportSingleSheet } from '../utils/exportToExcel'
@@ -458,6 +459,12 @@ export default function Production({ user }) {
         production_date: productionDate || getTodayDate(),
       })
 
+      setLastTolerance(data?.tolerance ? {
+        ...data.tolerance,
+        expected: toNumber(expectedNetWeight) > 0 ? toNumber(expectedNetWeight) : net,
+        actual: net,
+      } : null)
+
       // Find material name from assigned stock or floor stock for history display
       const selectedAssignedMaterial = assignedStock.find(mat => String(mat.material_type_id) === String(materialIdNum))
       let selectedMaterial = selectedAssignedMaterial
@@ -505,11 +512,22 @@ export default function Production({ user }) {
       toast.success(`✓ Entry logged for ${activeMachine.label}`)
 
       // Reset form (keep machine, worker, material selection)
+      if (data?.tolerance?.tolerance_status === 'BREACH') {
+        toast.warning(`Entry logged for ${activeMachine.label} with tolerance breach`)
+      }
       setGrossWeight('')
       setTareWeight('')
       setDirectNetWeight('')
       setTimeout(() => grossRef.current?.focus(), 50)
     } catch (err) {
+      const strictDetails = err?.response?.data?.details
+      if (strictDetails) {
+        setLastTolerance({
+          ...strictDetails,
+          expected: toNumber(expectedNetWeight) > 0 ? toNumber(expectedNetWeight) : net,
+          actual: net,
+        })
+      }
       const errorMsg = err?.response?.data?.error || err?.message || 'Failed to log entry'
       toast.error(errorMsg)
       // Do NOT clear form on error per spec
@@ -964,6 +982,12 @@ export default function Production({ user }) {
                 </div>
               </>
             )}
+
+            <TolerancePanel
+              tolerance={lastTolerance}
+              title="Production Tolerance"
+              context={activeMachine.label}
+            />
 
             {/* Submit */}
             <button

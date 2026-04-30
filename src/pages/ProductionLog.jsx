@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import TolerancePanel from '../components/TolerancePanel'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 
-const emptyMachine = () => ({ gross_weight: '', tare_weight: '', size: '', note: '' })
+const emptyMachine = () => ({ gross_weight: '', tare_weight: '', expected_net_weight: '', size: '', note: '' })
 
 function calcNet(gross, tare) {
   const g = parseFloat(gross)
@@ -40,6 +41,20 @@ function MachineCard({ machine, values, onChange, index, firstRef, touchedSizeFi
       {/* Inputs */}
       <div className="p-4 space-y-3">
         <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-[10px] font-semibold uppercase tracking-widest text-text-secondary/60 mb-1.5">
+              Expected Net
+            </label>
+            <input
+              type="number"
+              step="0.001"
+              min="0"
+              value={values.expected_net_weight}
+              onChange={e => onChange('expected_net_weight', e.target.value)}
+              placeholder="Optional"
+              className="w-full bg-bg-input text-text-primary border border-border-default rounded-lg px-3 py-2.5 text-sm font-mono focus:border-accent-gold focus:ring-1 focus:ring-accent-gold/20 transition-all"
+            />
+          </div>
           <div>
             <label className="block text-[10px] font-semibold uppercase tracking-widest text-text-secondary/60 mb-1.5">
               Gross (kg)
@@ -129,6 +144,7 @@ export default function ProductionLog({ user }) {
   const [touchedSizeFields, setTouchedSizeFields] = usePersistentState('vp_production_log_touched_sizes', {})
   const [submitting, setSubmitting] = useState(false)
   const [lastBatch, setLastBatch] = useState(null)
+  const [lastTolerance, setLastTolerance] = useState(null)
   const [flash, setFlash] = useState(false)
   const firstRef = useRef(null)
 
@@ -189,6 +205,7 @@ export default function ProductionLog({ user }) {
           machine_id: m.id,
           gross_weight: parseFloat(v.gross_weight),
           tare_weight: parseFloat(v.tare_weight),
+          expected_net_weight_kg: parseFloat(v.expected_net_weight) > 0 ? parseFloat(v.expected_net_weight) : undefined,
           size: v.size || null,
           note: v.note || null,
         }
@@ -214,13 +231,19 @@ export default function ProductionLog({ user }) {
         machines: toSubmit,
       })
 
+      const tolerances = Array.isArray(data?.tolerance) ? data.tolerance : []
+      setLastTolerance(tolerances.find((item) => item?.tolerance_status === 'BREACH') || tolerances[0] || null)
       setLastBatch({ id: data.batch_id, count: toSubmit.length, inserted: data.inserted })
       setFlash(true)
       setTimeout(() => setFlash(false), 1500)
 
       toast.success(`✓ Batch #${data.batch_id} logged — ${toSubmit.length} machine${toSubmit.length !== 1 ? 's' : ''}`)
+      if (tolerances.some((item) => item?.tolerance_status === 'BREACH')) {
+        toast.warning(`Batch #${data.batch_id} logged with tolerance breach`)
+      }
       reset()
     } catch (err) {
+      if (err?.response?.data?.details) setLastTolerance(err.response.data.details)
       toast.error(err?.response?.data?.error || 'Submission failed. Please try again.')
     } finally {
       setSubmitting(false)
@@ -321,6 +344,12 @@ export default function ProductionLog({ user }) {
           </button>
         </div>
       )}
+
+      <TolerancePanel
+        tolerance={lastTolerance}
+        title="Production Batch Tolerance"
+        context={lastBatch ? `Batch #${lastBatch.id}` : 'Last submitted batch'}
+      />
 
       {/* Machine Grid */}
       {machinesLoading ? (

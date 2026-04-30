@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
+import TolerancePanel from '../components/TolerancePanel'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
@@ -43,6 +44,7 @@ export default function RawMaterial({ user }) {
   const [materialOptions, setMaterialOptions] = useState([])
   const [loadingMaterialOptions, setLoadingMaterialOptions] = useState(true)
   const [materialOptionsError, setMaterialOptionsError] = useState('')
+  const [lastTolerance, setLastTolerance] = useState(null)
 
   const [exporting, setExporting] = useState(false)
   const [showAddMaterial, setShowAddMaterial] = useState(false)
@@ -104,6 +106,7 @@ export default function RawMaterial({ user }) {
   const [addForm, setAddForm] = usePersistentState('vp_raw_material_add_form', {
     material_name: '',
     quantity: '',
+    expectedQuantity: '',
     quantityUnit: 'kg',
     note: '',
   })
@@ -193,21 +196,43 @@ export default function RawMaterial({ user }) {
     }
 
     const qtyInKg = addForm.quantityUnit === 'tons' ? qty * 1000 : qty
+    const expectedQty = toNumber(addForm.expectedQuantity)
+    const expectedQtyInKg = expectedQty > 0
+      ? (addForm.quantityUnit === 'tons' ? expectedQty * 1000 : expectedQty)
+      : undefined
 
     setSubmittingAdd(true)
     try {
       console.info('[RawMaterial] calling POST /raw-material/add')
-      await api.post('/raw-material/add', {
+      const { data } = await api.post('/raw-material/add', {
         material_name: addForm.material_name.trim(),
         quantity_kg: qtyInKg,
+        expected_quantity_kg: expectedQtyInKg,
         note: addForm.note?.trim() || '',
       })
 
+      setLastTolerance(data?.tolerance ? {
+        ...data.tolerance,
+        expected: expectedQtyInKg || qtyInKg,
+        actual: qtyInKg,
+      } : null)
       await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
-      toast.success('Raw material added')
-      setAddForm((previous) => ({ ...previous, quantity: '', note: '' }))
+      if (data?.tolerance?.tolerance_status === 'BREACH') {
+        toast.warning('Raw material added with tolerance breach')
+      } else {
+        toast.success('Raw material added')
+      }
+      setAddForm((previous) => ({ ...previous, quantity: '', expectedQuantity: '', note: '' }))
     } catch (error) {
       console.error('Failed to add raw material', error)
+      const strictDetails = error?.response?.data?.details
+      if (strictDetails) {
+        setLastTolerance({
+          ...strictDetails,
+          expected: expectedQtyInKg || qtyInKg,
+          actual: qtyInKg,
+        })
+      }
       toast.error(error?.response?.data?.error || 'Failed to add raw material')
     } finally {
       setSubmittingAdd(false)
@@ -334,6 +359,20 @@ export default function RawMaterial({ user }) {
             </div>
           </div>
 
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Expected Quantity</label>
+            <InputWithCamera
+              type="text"
+              inputMode="decimal"
+              name="expectedQuantity"
+              value={addForm.expectedQuantity}
+              onChange={handleAddChange}
+              placeholder="Optional"
+              className="w-full"
+              disabled={submittingAdd}
+            />
+          </div>
+
           <div className="flex items-end md:col-span-2">
             <button
               type="submit"
@@ -344,6 +383,13 @@ export default function RawMaterial({ user }) {
             </button>
           </div>
         </form>
+        <div className="mt-5">
+          <TolerancePanel
+            tolerance={lastTolerance}
+            title="Raw Material Tolerance"
+            context={addForm.material_name || 'Last raw material entry'}
+          />
+        </div>
       </div>
 
       <DataTable
