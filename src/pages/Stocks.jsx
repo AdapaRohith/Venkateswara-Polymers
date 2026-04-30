@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { SectionBarChart } from '../components/Charts'
 import InputWithCamera from '../components/InputWithCamera'
+import TolerancePanel from '../components/TolerancePanel'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
@@ -22,10 +23,12 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
   const [rawTotals, setRawTotals] = useState([])
   const [rawTotalsLoading, setRawTotalsLoading] = useState(true)
   const [rawTotalsError, setRawTotalsError] = useState('')
+  const [lastTolerance, setLastTolerance] = useState(null)
 
   const [issueForm, setIssueForm] = usePersistentState('vp_floor_issue_form', {
     material_name: '',
     quantity: '',
+    expectedQuantity: '',
     quantityUnit: 'kg',
   })
 
@@ -35,6 +38,7 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
     setIssueForm((previous) => ({
       material_name: typeof previous?.material_name === 'string' ? previous.material_name : '',
       quantity: typeof previous?.quantity === 'string' ? previous.quantity : '',
+      expectedQuantity: typeof previous?.expectedQuantity === 'string' ? previous.expectedQuantity : '',
       quantityUnit: typeof previous?.quantityUnit === 'string' ? previous.quantityUnit : 'kg',
     }))
   }, [issueForm, setIssueForm])
@@ -109,23 +113,46 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
     }
 
     const qtyInKg = issueForm.quantityUnit === 'tons' ? qty * 1000 : qty
+    const expectedQty = toNumber(issueForm.expectedQuantity)
+    const expectedQtyInKg = expectedQty > 0
+      ? (issueForm.quantityUnit === 'tons' ? expectedQty * 1000 : expectedQty)
+      : undefined
 
     setSubmitting(true)
     try {
-      await api.post('/floor/issue-from-raw', {
+      const { data } = await api.post('/floor/issue-from-raw', {
         material_name: issueForm.material_name.trim(),
         quantity_kg: qtyInKg,
+        expected_quantity_kg: expectedQtyInKg,
       })
 
+      setLastTolerance(data?.tolerance ? {
+        ...data.tolerance,
+        expected: expectedQtyInKg || qtyInKg,
+        actual: qtyInKg,
+      } : null)
       await Promise.allSettled([refreshFloorStock?.(), refreshRawTotals()])
-      toast.success('Issued to floor')
+      if (data?.tolerance?.tolerance_status === 'BREACH') {
+        toast.warning('Issued to floor with tolerance breach')
+      } else {
+        toast.success('Issued to floor')
+      }
 
       setIssueForm((previous) => ({
         ...previous,
         quantity: '',
+        expectedQuantity: '',
       }))
     } catch (error) {
       console.error('Failed to issue stock from raw to floor', error)
+      const strictDetails = error?.response?.data?.details
+      if (strictDetails) {
+        setLastTolerance({
+          ...strictDetails,
+          expected: expectedQtyInKg || qtyInKg,
+          actual: qtyInKg,
+        })
+      }
       toast.error(error?.response?.data?.error || 'Failed to issue stock to floor')
     } finally {
       setSubmitting(false)
@@ -220,6 +247,20 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
             </div>
           </div>
 
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Expected Quantity</label>
+            <InputWithCamera
+              type="text"
+              inputMode="decimal"
+              name="expectedQuantity"
+              value={issueForm.expectedQuantity}
+              onChange={handleChange}
+              placeholder="Optional"
+              className="w-full"
+              disabled={submitting}
+            />
+          </div>
+
           <div className="flex items-end md:col-span-2">
             <button
               type="submit"
@@ -230,6 +271,13 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
             </button>
           </div>
         </form>
+        <div className="mt-5">
+          <TolerancePanel
+            tolerance={lastTolerance}
+            title="Floor Issue Tolerance"
+            context={issueForm.material_name || 'Last floor issue'}
+          />
+        </div>
       </div>
 
       <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden">

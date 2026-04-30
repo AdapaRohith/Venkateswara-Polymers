@@ -1,8 +1,14 @@
 import { useEffect, useState } from 'react'
+import TolerancePanel from '../components/TolerancePanel'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 
 const MOVEMENT_TYPES = ['FLOOR_TRANSFER']
+
+function toNumber(value, fallback = 0) {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : fallback
+}
 
 function formatDate(iso) {
   if (!iso) return '—'
@@ -30,10 +36,12 @@ export default function MaterialMovement() {
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [lastTolerance, setLastTolerance] = useState(null)
 
   const [form, setForm] = useState({
     material_name: '',
     quantity_kg: '',
+    expected_quantity_kg: '',
     movement_type: 'FLOOR_TRANSFER',
     direction: 'OUT',
     note: '',
@@ -80,17 +88,36 @@ export default function MaterialMovement() {
 
     setSubmitting(true)
     try {
-      await api.post('/materials/move', {
+      const expectedQty = toNumber(form.expected_quantity_kg)
+      const { data } = await api.post('/materials/move', {
         material_name: form.material_name,
         quantity_kg: qty,
+        expected_quantity_kg: expectedQty > 0 ? expectedQty : undefined,
         direction: form.direction,
         movement_type: form.movement_type,
         note: form.note || undefined,
       })
       toast.success(`Movement recorded — ${qty} kg ${form.direction}`)
-      setForm(prev => ({ ...prev, quantity_kg: '', note: '' }))
+      setLastTolerance(data?.tolerance ? {
+        ...data.tolerance,
+        expected: expectedQty > 0 ? expectedQty : qty,
+        actual: qty,
+      } : null)
+      if (data?.tolerance?.tolerance_status === 'BREACH') {
+        toast.warning('Movement recorded with tolerance breach')
+      }
+      setForm(prev => ({ ...prev, quantity_kg: '', expected_quantity_kg: '', note: '' }))
       loadData()
     } catch (err) {
+      const strictDetails = err?.response?.data?.details
+      if (strictDetails) {
+        const expectedQty = toNumber(form.expected_quantity_kg)
+        setLastTolerance({
+          ...strictDetails,
+          expected: expectedQty > 0 ? expectedQty : qty,
+          actual: qty,
+        })
+      }
       toast.error(err?.response?.data?.error || 'Failed to record movement')
     } finally {
       setSubmitting(false)
@@ -149,6 +176,22 @@ export default function MaterialMovement() {
               </div>
 
               {/* Movement Type — Fixed to Floor Transfer */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">
+                  Expected Quantity (kg)
+                </label>
+                <input
+                  type="number"
+                  name="expected_quantity_kg"
+                  value={form.expected_quantity_kg}
+                  onChange={handleChange}
+                  step="0.001"
+                  min="0"
+                  placeholder="Optional"
+                  className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm font-mono focus:border-accent-gold transition-all"
+                />
+              </div>
+
               <div className="rounded-xl border border-purple-500/20 bg-purple-500/10 px-4 py-3 flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
                   <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -184,6 +227,13 @@ export default function MaterialMovement() {
                 {submitting ? 'Recording...' : 'Record Movement'}
               </button>
             </form>
+            <div className="mt-5">
+              <TolerancePanel
+                tolerance={lastTolerance}
+                title="Movement Tolerance"
+                context={form.material_name || 'Last material movement'}
+              />
+            </div>
           </div>
         </div>
 
