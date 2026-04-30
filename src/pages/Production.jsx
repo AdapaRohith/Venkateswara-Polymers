@@ -38,6 +38,7 @@ function formatTime(iso) {
 const WORKER_KEY = 'vp_production_worker_name'
 const SIZE_KEY = 'vp_production_size'
 const MATERIAL_KEY = 'vp_production_material_id'
+const HISTORY_DATE_KEY = 'vp_production_history_date'
 function loadWorkerName() {
   try { return localStorage.getItem(WORKER_KEY) || '' } catch { return '' }
 }
@@ -63,6 +64,12 @@ function saveMaterialId(id) {
   } catch {
     /* noop */
   }
+}
+function loadHistoryDate() {
+  try { return localStorage.getItem(HISTORY_DATE_KEY) || getTodayDate() } catch { return getTodayDate() }
+}
+function saveHistoryDate(d) {
+  try { localStorage.setItem(HISTORY_DATE_KEY, d) } catch { /* noop */ }
 }
 
 function normalizeHistoryEntry(log) {
@@ -181,6 +188,7 @@ export default function Production({ user }) {
   const [productionDate, setProductionDate] = useState(getTodayDate)
   const [history, setHistory] = useState([])
   const [historyMachineFilter, setHistoryMachineFilter] = useState('')
+  const [historyDateFilter, setHistoryDateFilter] = useState(loadHistoryDate)
   const [selectedHistoryIds, setSelectedHistoryIds] = useState([])
   const [editingHistoryRow, setEditingHistoryRow] = useState(null)
   const [editHistoryForm, setEditHistoryForm] = useState({
@@ -259,6 +267,7 @@ export default function Production({ user }) {
   useEffect(() => { saveWorkerName(workerName) }, [workerName])
   useEffect(() => { saveSize(size) }, [size])
   useEffect(() => { saveMaterialId(materialId) }, [materialId])
+  useEffect(() => { saveHistoryDate(historyDateFilter) }, [historyDateFilter])
 
   useEffect(() => {
     if (loadingMaterials || !hasLoadedMaterialsOnce) return
@@ -284,10 +293,14 @@ export default function Production({ user }) {
   }, [])
 
   /* ── Fetch production logs for selected machine ──────────────────────────── */
-  const fetchLogsForMachine = useCallback(async (machineId) => {
+  const fetchLogsForMachine = useCallback(async (machineId, dateFilter) => {
     try {
       const params = {}
       if (machineId) params.machine_id = machineId
+      if (dateFilter) {
+        params.date_from = dateFilter
+        params.date_to = dateFilter
+      }
 
       const { data } = await api.get('/production/logs', {
         params
@@ -316,8 +329,8 @@ export default function Production({ user }) {
 
   useEffect(() => {
     const machineId = historyMachineFilter ? Number(historyMachineFilter) : null
-    fetchLogsForMachine(machineId).catch(() => {})
-  }, [fetchLogsForMachine, historyMachineFilter])
+    fetchLogsForMachine(machineId, historyDateFilter).catch(() => {})
+  }, [fetchLogsForMachine, historyMachineFilter, historyDateFilter])
 
   /* ── Select / deselect machine ──────────────────────────────────────────── */
   const selectMachine = useCallback((machine, type) => {
@@ -381,7 +394,7 @@ export default function Production({ user }) {
     const requests = [api.get('/floor/stock')]
     if (resolvedMachineId) {
       requests.push(api.get(`/machines/${resolvedMachineId}/assigned-stock`))
-      requests.push(fetchLogsForMachine(resolvedMachineId))
+      requests.push(fetchLogsForMachine(resolvedMachineId, historyDateFilter))
     }
 
     const [floorRes, assignedRes] = await Promise.allSettled(requests)
@@ -397,7 +410,7 @@ export default function Production({ user }) {
         : []
       setAssignedStock(assignedMaterials)
     }
-  }, [activeMachine, fetchLogsForMachine, historyMachineFilter])
+  }, [activeMachine, fetchLogsForMachine, historyDateFilter, historyMachineFilter])
 
   /* ── Submit entry ───────────────────────────────────────────────────────── */
   const handleSubmit = useCallback(async (e) => {
@@ -994,13 +1007,39 @@ export default function Production({ user }) {
             <div>
               <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-text-primary">Production History</h2>
               <p className="text-[11px] text-text-secondary/60 mt-0.5">
-                {history.length} {history.length === 1 ? 'entry' : 'entries'} in current filter
+                {history.length} {history.length === 1 ? 'entry' : 'entries'}
+                {historyDateFilter && ` on ${new Date(historyDateFilter + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`}
+                {historyMachineFilter && ` · Machine ${historyMachineFilter}`}
                 {totalNet > 0 && ` · Total: ${formatKg(totalNet)}`}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            <div className="space-y-1">
+              <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
+                Filter Date
+              </label>
+              <div className="relative flex items-center">
+                <input
+                  type="date"
+                  value={historyDateFilter}
+                  onChange={(e) => setHistoryDateFilter(e.target.value)}
+                  max={getTodayDate()}
+                  className="rounded-xl border border-border-default bg-bg-input px-4 py-2.5 text-sm text-text-primary transition-all duration-200 focus:border-accent-gold focus:ring-2 focus:ring-accent-gold/20"
+                />
+                {historyDateFilter && historyDateFilter !== getTodayDate() && (
+                  <button
+                    type="button"
+                    onClick={() => setHistoryDateFilter(getTodayDate())}
+                    className="ml-2 text-[10px] font-bold uppercase tracking-wider text-orange-400 hover:text-orange-300 transition-colors whitespace-nowrap"
+                  >
+                    Today
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className="space-y-1">
               <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
                 Filter Machine
