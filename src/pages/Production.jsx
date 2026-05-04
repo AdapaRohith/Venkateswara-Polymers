@@ -194,6 +194,7 @@ export default function Production({ user }) {
   })
   const [savingHistoryEdit, setSavingHistoryEdit] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [lastTolerance, setLastTolerance] = useState(null)
   const [loadingWorker, setLoadingWorker] = useState(false)
   const [loadingMaterials, setLoadingMaterials] = useState(false)
   const [hasLoadedMaterialsOnce, setHasLoadedMaterialsOnce] = useState(false)
@@ -448,7 +449,7 @@ export default function Production({ user }) {
 
       setLastTolerance(data?.tolerance ? {
         ...data.tolerance,
-        expected: toNumber(expectedNetWeight) > 0 ? toNumber(expectedNetWeight) : net,
+        expected: net,
         actual: net,
       } : null)
 
@@ -511,7 +512,7 @@ export default function Production({ user }) {
       if (strictDetails) {
         setLastTolerance({
           ...strictDetails,
-          expected: toNumber(expectedNetWeight) > 0 ? toNumber(expectedNetWeight) : net,
+          expected: net,
           actual: net,
         })
       }
