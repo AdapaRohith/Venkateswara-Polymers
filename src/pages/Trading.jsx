@@ -1,10 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import { SectionBarChart } from '../components/Charts'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import { exportSingleSheet } from '../utils/exportToExcel'
+import api from '../utils/api'
+import { getOrders } from '../utils/orders'
 
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -16,8 +18,9 @@ const getTodayDate = () => new Date().toISOString().split('T')[0]
 
 const columns = [
     { key: 'sno', label: 'S.No' },
-    { key: 'date', label: 'Date' },
+    { key: 'date', label: 'Date', render: (v) => v ? new Date(v).toISOString().split('T')[0] : '' },
     { key: 'order_number', label: 'Order' },
+    { key: 'material_name', label: 'Material' },
     { key: 'netWeight', label: 'Net Weight', render: (v) => Number(v).toFixed(2) },
     { key: 'rate', label: 'Rate (₹/unit)', render: (v) => `₹${Number(v).toFixed(2)}` },
     { key: 'totalValue', label: 'Total Value (₹)', render: (v) => `₹${Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
@@ -30,26 +33,57 @@ const columns = [
     },
 ]
 
-export default function Trading({ data, setData, ordersList = [] }) {
+export default function Trading() {
     const toast = useToast()
-    const [form, setForm] = usePersistentState('vp_trading_form', {
+    const [data, setData] = useState([])
+    const [materials, setMaterials] = useState([])
+    const [ordersList, setOrdersList] = useState([])
+    const [loading, setLoading] = useState(true)
+
+    const initialFormState = {
+        id: null,
         date: getTodayDate(),
         order_number: '',
+        material_name: '',
         netWeight: '',
         rate: '',
         type: 'Buy',
-    })
+    }
+    
+    const [form, setForm] = usePersistentState('vp_trading_form_v2', initialFormState)
     const [submitting, setSubmitting] = useState(false)
-    const [exporting, setExporting] = useState(false)
+
+    const fetchData = async () => {
+        try {
+            setLoading(true)
+            const [tradingRes, matRes, ordRes] = await Promise.all([
+                api.get('/trading'),
+                api.get('/materials'),
+                getOrders()
+            ])
+            setData(tradingRes.data || [])
+            setMaterials(matRes.data || [])
+            setOrdersList(ordRes || [])
+        } catch (err) {
+            toast.error('Failed to load trading data')
+        } finally {
+            setLoading(false)
+        }
+    }
+
+    useEffect(() => {
+        fetchData()
+    }, [])
 
     const handleExport = () => {
-        const rows = data.map((d) => ({
-            sno: d.sno,
-            date: d.date,
+        const rows = data.map((d, idx) => ({
+            sno: idx + 1,
+            date: d.date ? new Date(d.date).toISOString().split('T')[0] : '',
             order_number: d.order_number,
-            netWeight: Number(d.netWeight).toFixed(2),
+            material_name: d.material_name,
+            netWeight: Number(d.netWeight || d.net_weight).toFixed(2),
             rate: Number(d.rate).toFixed(2),
-            totalValue: Number(d.totalValue).toFixed(2),
+            totalValue: Number(d.totalValue || d.total_value).toFixed(2),
             type: d.type,
         }))
         exportSingleSheet({
@@ -59,6 +93,7 @@ export default function Trading({ data, setData, ordersList = [] }) {
                 { key: 'sno', label: 'S.No' },
                 { key: 'date', label: 'Date' },
                 { key: 'order_number', label: 'Order' },
+                { key: 'material_name', label: 'Material' },
                 { key: 'netWeight', label: 'Net Weight' },
                 { key: 'rate', label: 'Rate (₹/unit)' },
                 { key: 'totalValue', label: 'Total Value (₹)' },
@@ -68,13 +103,10 @@ export default function Trading({ data, setData, ordersList = [] }) {
         toast.success('Trading data exported to Excel')
     }
 
-
-
     const totalValue = (parseFloat(form.netWeight) || 0) * (parseFloat(form.rate) || 0)
     const hasOrders = ordersList.length > 0
-    const orderSelectPlaceholder = hasOrders
-        ? 'Select order...'
-        : 'No orders available'
+    const orderSelectPlaceholder = hasOrders ? 'Select order...' : 'No orders available'
+
     const handleChange = (e) => {
         setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }))
     }
@@ -84,8 +116,7 @@ export default function Trading({ data, setData, ordersList = [] }) {
 
         let orderNum = form.order_number
 
-
-        if (!orderNum || !form.date || !form.netWeight || !form.rate) {
+        if (!orderNum || !form.date || !form.netWeight || !form.rate || !form.material_name) {
             toast.error('Please fill all required fields')
             return
         }
@@ -95,51 +126,95 @@ export default function Trading({ data, setData, ordersList = [] }) {
 
         setSubmitting(true)
 
-        const entry = {
-            id: Date.now(),
-            sno: data.length + 1,
+        const payload = {
             date: form.date,
             order_number: orderNum,
-            netWeight: net,
+            material_name: form.material_name,
+            net_weight: net,
             rate: rate,
-            totalValue: net * rate,
             type: form.type,
         }
 
-        setData((prev) => [...prev, entry])
-        toast.success('Trading entry added locally')
-        setForm((prev) => ({ ...prev, netWeight: '', rate: '' }))
-        setSubmitting(false)
+        try {
+            if (form.id) {
+                await api.put(`/trading/${form.id}`, payload)
+                toast.success('Trading entry updated')
+            } else {
+                await api.post('/trading', payload)
+                toast.success('Trading entry added')
+            }
+            await fetchData()
+            setForm(initialFormState)
+        } catch (err) {
+            toast.error('Failed to save trading entry')
+        } finally {
+            setSubmitting(false)
+        }
+    }
+
+    const handleEdit = (item) => {
+        setForm({
+            id: item.id,
+            date: item.date ? new Date(item.date).toISOString().split('T')[0] : getTodayDate(),
+            order_number: item.order_number,
+            material_name: item.material_name,
+            netWeight: item.netWeight || item.net_weight,
+            rate: item.rate,
+            type: item.type,
+        })
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+
+    const handleDelete = async (id) => {
+        if (!window.confirm('Are you sure you want to delete this entry?')) return
+        try {
+            await api.delete(`/trading/${id}`)
+            toast.success('Entry deleted')
+            await fetchData()
+        } catch (err) {
+            toast.error('Failed to delete entry')
+        }
+    }
+
+    const cancelEdit = () => {
+        setForm(initialFormState)
     }
 
     const inputClass =
         'w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold placeholder:text-text-secondary/30'
 
-    const handleDelete = (id) => {
-        setData((prev) => prev.filter((item) => item.id !== id).map((item, idx) => ({ ...item, sno: idx + 1 })))
-        toast.success('Entry deleted')
-    }
-
     // ── Summary calculations ──
     const today = new Date().toISOString().split('T')[0]
-    const todayEntries = data.filter((d) => d.date === today)
+    const mappedData = data.map((d, idx) => ({
+        ...d,
+        sno: idx + 1,
+        netWeight: d.netWeight || d.net_weight,
+        totalValue: d.totalValue || d.total_value,
+        dateStr: d.date ? new Date(d.date).toISOString().split('T')[0] : ''
+    }))
+    const todayEntries = mappedData.filter((d) => d.dateStr === today)
 
-    const totalBuyValue = data.filter(d => d.type === 'Buy').reduce((s, i) => s + i.totalValue, 0)
-    const totalSellValue = data.filter(d => d.type === 'Sell').reduce((s, i) => s + i.totalValue, 0)
+    const totalBuyValue = mappedData.filter(d => d.type === 'Buy').reduce((s, i) => s + parseFloat(i.totalValue), 0)
+    const totalSellValue = mappedData.filter(d => d.type === 'Sell').reduce((s, i) => s + parseFloat(i.totalValue), 0)
     const todayCount = todayEntries.length
-    const todayValue = todayEntries.reduce((s, i) => s + i.totalValue, 0)
+    const todayValue = todayEntries.reduce((s, i) => s + parseFloat(i.totalValue), 0)
 
     // Chart: daily net weight breakdown
     const chartData = useMemo(() => {
         const map = {}
-        data.forEach((d) => {
-            if (!map[d.date]) map[d.date] = 0
-            map[d.date] += d.netWeight
+        mappedData.forEach((d) => {
+            if (!d.dateStr) return;
+            if (!map[d.dateStr]) map[d.dateStr] = 0
+            map[d.dateStr] += parseFloat(d.netWeight)
         })
         return Object.entries(map)
             .sort(([a], [b]) => a.localeCompare(b))
             .map(([date, value]) => ({ name: date, value }))
-    }, [data])
+    }, [mappedData])
+
+    if (loading && data.length === 0) {
+        return <div className="flex h-[50vh] items-center justify-center text-text-secondary">Loading Trading data...</div>
+    }
 
     return (
         <div className="space-y-6">
@@ -152,7 +227,7 @@ export default function Trading({ data, setData, ordersList = [] }) {
                 <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
                     <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Entries</p>
-                    <p className="text-3xl font-semibold text-text-primary">{data.length}</p>
+                    <p className="text-3xl font-semibold text-text-primary">{mappedData.length}</p>
                 </div>
                 <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
                     <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
@@ -179,7 +254,14 @@ export default function Trading({ data, setData, ordersList = [] }) {
 
             {/* Form */}
             <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-5">
-                <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">Add Trading Entry</h3>
+                <div className="flex justify-between items-center mb-6">
+                    <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">{form.id ? 'Edit Trading Entry' : 'Add Trading Entry'}</h3>
+                    {form.id && (
+                        <button type="button" onClick={cancelEdit} className="text-xs text-text-secondary hover:text-white transition-colors">
+                            Cancel Edit
+                        </button>
+                    )}
+                </div>
                 <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                         <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Date</label>
@@ -192,6 +274,16 @@ export default function Trading({ data, setData, ordersList = [] }) {
                             <option value="">{orderSelectPlaceholder}</option>
                             {ordersList.map((o) => (
                                 <option key={o.order_number} value={o.order_number}>{o.order_number} {o.client_name ? `(${o.client_name})` : ''}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Material Name</label>
+                        <select name="material_name" value={form.material_name} onChange={handleChange} className={`${inputClass} appearance-none cursor-pointer`} required>
+                            <option value="">Select material...</option>
+                            {materials.map((m) => (
+                                <option key={m.id || m.name} value={m.name}>{m.name}</option>
                             ))}
                         </select>
                     </div>
@@ -225,7 +317,7 @@ export default function Trading({ data, setData, ordersList = [] }) {
 
                     <div className="flex items-end">
                         <button type="submit" disabled={submitting} className="w-full bg-accent-gold text-black font-semibold py-2.5 rounded-lg text-sm transition-all duration-200 hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50">
-                            {submitting ? 'Logging...' : 'Add Entry'}
+                            {submitting ? 'Saving...' : form.id ? 'Update Entry' : 'Add Entry'}
                         </button>
                     </div>
                 </form>
@@ -234,9 +326,10 @@ export default function Trading({ data, setData, ordersList = [] }) {
             <DataTable 
                title="Trading History"
                columns={columns} 
-               data={data} 
+               data={mappedData} 
                emptyMessage="No trading entries yet." 
                onDelete={handleDelete} 
+               onEdit={handleEdit}
                rightAction={
                    <button
                        type="button"

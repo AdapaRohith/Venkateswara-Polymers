@@ -63,6 +63,7 @@ const ownerNavGroups = [
     items: [
       { name: 'Dashboard', path: '/', icon: Icon.dashboard },
       { name: 'Raw Material', path: '/raw-material', icon: Icon.rawMaterial },
+      { name: 'Trading', path: '/trading', icon: Icon.materials },
       { name: 'Materials', path: '/materials', icon: Icon.materials },
       { name: 'Production', path: '/production-log', icon: Icon.production },
       { name: 'Production Orders', path: '/production-orders', icon: Icon.orders },

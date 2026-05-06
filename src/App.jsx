@@ -14,6 +14,7 @@ import MaterialMovement from './pages/MaterialMovement'
 import ProductionOrders from './pages/ProductionOrders'
 import Fulfillment from './pages/Fulfillment'
 import MachineReports from './pages/MachineReports'
+import Trading from './pages/Trading'
 import { getOrders } from './utils/orders'
 import avlokaiLogo from '../avlokai_logo.png'
 
@@ -77,6 +78,16 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
                 />
 
                 {/* ─── Core Operations ─── */}
+                <Route
+                  path="/trading"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner']}
+                      element={<Trading />}
+                    />
+                  }
+                />
                 <Route
                   path="/production-log"
                   element={
