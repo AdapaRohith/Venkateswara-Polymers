@@ -191,19 +191,6 @@ const api = {
   delete: (endpoint, config = {}) => withData(apiClient.delete(endpoint, config)),
 }
 
-export function getAuthHeaders() {
-  const token = localStorage.getItem(AUTH_TOKEN_KEY)
-  return token
-    ? {
-        Authorization: `Bearer ${token}`,
-      }
-    : {}
-}
-
 export const fetchPendingUsers = () => api.get('/admin/pending-users')
-
-export const clearAuthToken = () => {
-  localStorage.removeItem(AUTH_TOKEN_KEY)
-}
 
 export default api

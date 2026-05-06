@@ -63,12 +63,45 @@ function normalizeWastageRow(row = {}, index = 0) {
     }
 }
 
+function getCurrentMonth() {
+    return new Date().toISOString().slice(0, 7)
+}
+
+function getMonthRange(month) {
+    const normalizedMonth = /^\d{4}-\d{2}$/.test(month) ? month : getCurrentMonth()
+    const [year, monthIndex] = normalizedMonth.split('-').map(Number)
+    const start = `${normalizedMonth}-01`
+    const endDate = new Date(year, monthIndex, 0)
+    const end = `${normalizedMonth}-${String(endDate.getDate()).padStart(2, '0')}`
+
+    return { start, end }
+}
+
+function formatMonthLabel(month) {
+    const [year, monthIndex] = String(month || '').split('-').map(Number)
+    if (!year || !monthIndex) return 'Selected month'
+
+    return new Date(year, monthIndex - 1, 1).toLocaleDateString('en-IN', {
+        month: 'long',
+        year: 'numeric',
+    })
+}
+
+function isRowInMonth(row, month) {
+    const date = getRowDate(row)
+    return Boolean(date && date.startsWith(month))
+}
+
 export default function Dashboard() {
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState('')
     const [metrics, setMetrics] = useState({ totalInputKg: 0, totalOutputKg: 0 })
     const [floorTransactions, setFloorTransactions] = useState([])
     const [wastageRows, setWastageRows] = useState([])
+    const [selectedMonth, setSelectedMonth] = useState(getCurrentMonth)
+
+    const monthRange = useMemo(() => getMonthRange(selectedMonth), [selectedMonth])
+    const monthLabel = useMemo(() => formatMonthLabel(selectedMonth), [selectedMonth])
 
     useEffect(() => {
         let cancelled = false
@@ -78,28 +111,49 @@ export default function Dashboard() {
             setError('')
 
             try {
-                const [efficiencyRes, txRes, wastageRes] = await Promise.allSettled([
-                    api.get('/analytics/plant-efficiency-v2'),
-                    api.get('/floor/transactions'),
-                    api.get('/wastage'),
+                const params = {
+                    date_from: monthRange.start,
+                    date_to: monthRange.end,
+                }
+
+                const [efficiencyRes, txRes, wastageRes, productionRes, rawMaterialRes] = await Promise.allSettled([
+                    api.get('/analytics/plant-efficiency-v2', { params }),
+                    api.get('/floor/transactions', { params }),
+                    api.get('/wastage', { params }),
+                    api.get('/production/logs', { params }),
+                    api.get('/inventory/transactions', { params }),
                 ])
 
                 const efficiencyData = efficiencyRes.status === 'fulfilled' ? efficiencyRes.value?.data : null
                 const txData = txRes.status === 'fulfilled' ? txRes.value?.data : null
                 const wastageDataRaw = wastageRes.status === 'fulfilled' ? wastageRes.value?.data : null
+                const productionDataRaw = productionRes.status === 'fulfilled' ? productionRes.value?.data : null
+                const rawMaterialDataRaw = rawMaterialRes.status === 'fulfilled' ? rawMaterialRes.value?.data : null
 
                 const row = efficiencyData?.data?.[0] ?? efficiencyData ?? {}
-                const txRows = Array.isArray(txData) ? txData : txData?.data || []
-                const wastageData = extractRows(wastageDataRaw)
+                const txRows = extractRows(txData).filter((item) => isRowInMonth(item, selectedMonth))
+                const wastageData = extractRows(wastageDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
+                const productionRows = extractRows(productionDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
+                const rawMaterialRows = extractRows(rawMaterialDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
 
-                const totalInputKg = toNumber(row.total_input_kg ?? row.total_input ?? row.totalInputKg ?? row.totalInput)
-                const totalOutputKg = toNumber(row.total_output_kg ?? row.total_output ?? row.totalOutputKg ?? row.totalOutput)
+                const computedInputKg = rawMaterialRows.reduce((sum, item) => sum + getRowQuantityKg(item), 0)
+                const computedOutputKg = productionRows.reduce(
+                    (sum, item) => sum + firstNumber(item.net_weight, item.netWeight, toNumber(item.gross_weight) - toNumber(item.tare_weight)),
+                    0,
+                )
+
+                const totalInputKg = rawMaterialRes.status === 'fulfilled'
+                    ? computedInputKg
+                    : toNumber(row.total_input_kg ?? row.total_input ?? row.totalInputKg ?? row.totalInput)
+                const totalOutputKg = productionRes.status === 'fulfilled'
+                    ? computedOutputKg
+                    : toNumber(row.total_output_kg ?? row.total_output ?? row.totalOutputKg ?? row.totalOutput)
 
                 if (!cancelled) {
                     setMetrics({ totalInputKg, totalOutputKg })
                     setFloorTransactions(txRows)
                     setWastageRows(wastageData.map(normalizeWastageRow))
-                    const failed = [efficiencyRes, txRes, wastageRes].some((result) => result.status === 'rejected')
+                    const failed = [efficiencyRes, txRes, wastageRes, productionRes, rawMaterialRes].some((result) => result.status === 'rejected')
                     setError(failed ? 'Some dashboard data could not be loaded. Check your internet connection and refresh.' : '')
                 }
             } catch (err) {
@@ -120,7 +174,7 @@ export default function Dashboard() {
             cancelled = true
             clearInterval(pollInterval)
         }
-    }, [])
+    }, [monthRange.end, monthRange.start, selectedMonth])
 
     const wastageValue = useMemo(
         () => (Array.isArray(wastageRows) ? wastageRows : []).reduce((sum, row) => sum + toNumber(row.actualWeight), 0),
@@ -179,8 +233,20 @@ export default function Dashboard() {
     return (
         <div className="space-y-6">
             {/* Header */}
-            <div>
-                <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Dashboard</h2>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                    <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Dashboard</h2>
+                    <p className="mt-1 text-sm text-text-secondary">Showing month-wise plant details for {monthLabel}</p>
+                </div>
+                <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-widest text-text-secondary/70">Month</label>
+                    <input
+                        type="month"
+                        value={selectedMonth}
+                        onChange={(event) => setSelectedMonth(event.target.value || getCurrentMonth())}
+                        className="bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all"
+                    />
+                </div>
             </div>
 
             {error && (
@@ -194,7 +260,7 @@ export default function Dashboard() {
                 <SummaryCard
                     title="Total Input"
                     value={metrics.totalInputKg}
-                    subtitle={loading ? 'Loading...' : 'Floor material issued (kg)'}
+                    subtitle={loading ? 'Loading...' : `${monthLabel} raw material received (kg)`}
                     icon={
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
@@ -204,7 +270,7 @@ export default function Dashboard() {
                 <SummaryCard
                     title="Total Output"
                     value={metrics.totalOutputKg}
-                    subtitle={loading ? 'Loading...' : 'Production logged (kg)'}
+                    subtitle={loading ? 'Loading...' : `${monthLabel} production logged (kg)`}
                     icon={
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17l-5.1-3.06a1.5 1.5 0 01-.54-2.05l4.5-7.09a1.5 1.5 0 012.36-.11l4.59 5.28a1.5 1.5 0 01-.3 2.2l-5.51 4.83z" />
@@ -215,7 +281,7 @@ export default function Dashboard() {
                 <SummaryCard
                     title="Total Wastage"
                     value={loading ? 'Loading...' : wastageValue.toFixed(2)}
-                    subtitle={loading ? 'Loading...' : 'Logged wastage from backend (kg)'}
+                    subtitle={loading ? 'Loading...' : `${monthLabel} logged wastage (kg)`}
                     icon={
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.108 0 00-7.5 0" />
@@ -225,15 +291,15 @@ export default function Dashboard() {
             </div>
 
             <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-                <SectionBarChart data={totalsChartData} title="Plant Totals (kg)" color="#a78bfa" />
-                <TrendLineChart data={dailyOutputTrend} title="Daily Output (kg)" color="#a78bfa" gradientId="gradDailyOut" />
-                <TrendLineChart data={dailyInputTrend} title="Daily Input (kg)" color="#60a5fa" gradientId="gradDailyIn" />
+                <SectionBarChart data={totalsChartData} title={`${monthLabel} Plant Totals (kg)`} color="#a78bfa" />
+                <TrendLineChart data={dailyOutputTrend} title={`${monthLabel} Daily Output (kg)`} color="#a78bfa" gradientId="gradDailyOut" />
+                <TrendLineChart data={dailyInputTrend} title={`${monthLabel} Daily Input (kg)`} color="#60a5fa" gradientId="gradDailyIn" />
             </div>
 
             {/* Recent Wastage Logs */}
             <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden mt-6">
                 <div className="px-6 pt-6 pb-4">
-                    <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">Recent Wastage Logs</h3>
+                    <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">{monthLabel} Wastage Logs</h3>
                 </div>
 
                 <div className="overflow-x-auto">
