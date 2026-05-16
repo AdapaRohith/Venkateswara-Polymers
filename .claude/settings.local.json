@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(ui-ux-pro-max)",
+      "Read(//c/Users/paran/.claude/plugins/cache/ui-ux-pro-max-skill/ui-ux-pro-max/2.5.0/.claude/skills/ui-ux-pro-max/**)",
+      "Bash(python scripts/search.py \"inventory management manufacturing industrial B2B dark professional\" --design-system -p \"Venkateswara Polymers\" -f markdown)",
+      "Bash(python *)"
+    ]
+  }
+}

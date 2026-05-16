@@ -16,7 +16,6 @@ import Fulfillment from './pages/Fulfillment'
 import MachineReports from './pages/MachineReports'
 import Trading from './pages/Trading'
 import { getOrders } from './utils/orders'
-import avlokaiLogo from '../avlokai_logo.png'
 
 const AUTH_TOKEN_KEY = 'token'
 const AUTH_USER_ID_KEY = 'user_id'
@@ -43,27 +42,18 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
   if (!user) return <Navigate to="/login" />
 
   return (
-    <div className="flex min-h-screen bg-bg-primary relative overflow-hidden transition-colors duration-500">
-      {/* Background watermark */}
-      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-[0.03]">
-          <img src={avlokaiLogo} alt="" className="w-[800px] max-w-none rotate-[-12deg] grayscale" />
-        </div>
-        <div className="absolute -top-24 -left-24 w-96 h-96 bg-primary/5 rounded-full blur-[100px]" />
-        <div className="absolute bottom-0 right-0 w-[500px] h-[500px] bg-blue-500/5 rounded-full blur-[120px]" />
-      </div>
-
+    <div className="flex min-h-screen bg-bg-primary">
       <Sidebar user={user} onLogout={handleLogout} />
 
-      <main className="flex-1 ml-0 lg:ml-64 pt-16 lg:pt-0 min-h-screen relative z-10">
-        <div className="max-w-[1600px] mx-auto px-4 pb-28 pt-4 sm:px-6 sm:pt-6 lg:px-10 lg:pb-12 lg:pt-10">
+      <main className="flex-1 ml-0 lg:ml-64 pt-14 lg:pt-0 min-h-screen">
+        <div className="max-w-[1600px] mx-auto px-4 pb-28 pt-4 sm:px-6 sm:pt-6 lg:px-8 lg:pb-10 lg:pt-8">
           <AnimatePresence mode="wait">
             <motion.div
               key={location.pathname}
-              initial={{ opacity: 0, y: 8 }}
+              initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
               className="min-w-0"
             >
               <Routes location={location}>
@@ -182,19 +172,13 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
             </motion.div>
           </AnimatePresence>
 
-          <footer className="mt-16 border-t border-border-default/50 pt-10 text-center relative z-10">
-            <div className="flex flex-col items-center gap-4">
-              <img src={avlokaiLogo} alt="AvlokAI" className="h-9 w-auto object-contain opacity-20 grayscale hover:opacity-100 hover:grayscale-0 transition-all duration-700" />
-              <div className="space-y-1">
-                <p className="text-[10px] font-bold tracking-[0.2em] uppercase text-text-secondary/40">Precision Polymer Tracking System</p>
-                <p className="text-[11px] text-text-secondary/60">
-                  © 2026 Venkateswara Polymers · Engineered by{' '}
-                  <a href="https://avlokai.com" target="_blank" rel="noopener noreferrer" className="text-primary/60 hover:text-primary font-bold">
-                    AvlokAI
-                  </a>
-                </p>
-              </div>
-            </div>
+          <footer className="mt-12 border-t border-border-default pt-6 text-center">
+            <p className="text-[11px] text-text-secondary/50">
+              © 2026 Venkateswara Polymers · Built by{' '}
+              <a href="https://avlokai.com" target="_blank" rel="noopener noreferrer" className="text-accent-gold/60 hover:text-accent-gold transition-colors font-semibold">
+                AvlokAI
+              </a>
+            </p>
           </footer>
         </div>
       </main>

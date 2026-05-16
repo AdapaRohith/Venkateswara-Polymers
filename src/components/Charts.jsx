@@ -10,15 +10,21 @@ import {
     Area,
 } from 'recharts'
 
+const GRID_COLOR = 'var(--border-default)'
+const TICK_COLOR = 'var(--text-secondary)'
+
 function CustomTooltip({ active, payload, label }) {
     if (!active || !payload || !payload.length) return null
     return (
-        <div className="bg-bg-tooltip border border-border-default rounded-lg px-4 py-3 shadow-xl shadow-black/40">
-            <p className="text-xs text-text-secondary mb-2 font-medium">{label}</p>
+        <div className="bg-bg-tooltip border border-border-default rounded-md px-3 py-2.5 shadow-lg">
+            <p className="text-xs text-text-secondary mb-1.5 font-medium">{label}</p>
             {payload.map((entry, i) => (
-                <p key={i} className="text-sm text-text-primary">
-                    <span className="inline-block w-2 h-2 rounded-full mr-2" style={{ backgroundColor: entry.color }} />
-                    {entry.name}: <span className="font-semibold">{Number(entry.value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <p key={i} className="text-sm text-text-primary flex items-center gap-2">
+                    <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: entry.color }} />
+                    <span>{entry.name}:</span>
+                    <span className="font-semibold tabular-nums">
+                        {Number(entry.value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
                 </p>
             ))}
         </div>
@@ -27,68 +33,50 @@ function CustomTooltip({ active, payload, label }) {
 
 export function ComparisonBarChart({ data }) {
     return (
-        <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6">
-            <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">
+        <div className="bg-bg-card rounded-lg border border-border-default p-5">
+            <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase mb-5">
                 Raw Material Production
             </h3>
-            <ResponsiveContainer width="100%" height={320}>
+            <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={data} barGap={8} barCategoryGap="25%">
-                    <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" vertical={false} />
-                    <XAxis
-                        dataKey="name"
-                        tick={{ fill: '#9494a8', fontSize: 12 }}
-                        axisLine={{ stroke: '#2a2a3a' }}
-                        tickLine={false}
-                    />
-                    <YAxis
-                        tick={{ fill: '#9494a8', fontSize: 12 }}
-                        axisLine={false}
-                        tickLine={false}
-                    />
-                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(167,139,250,0.04)' }} />
-                    <Bar dataKey="value" fill="#a78bfa" radius={[4, 4, 0, 0]} maxBarSize={56} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
+                    <XAxis dataKey="name" tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={{ stroke: GRID_COLOR }} tickLine={false} />
+                    <YAxis tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'var(--accent-gold-muted)' }} />
+                    <Bar dataKey="value" fill="var(--chart-bar1)" radius={[3, 3, 0, 0]} maxBarSize={52} />
                 </BarChart>
             </ResponsiveContainer>
         </div>
     )
 }
 
-export function TrendLineChart({ data, title = 'Trend', color = '#a78bfa', gradientId = 'gradNet' }) {
+export function TrendLineChart({ data, title = 'Trend', color, gradientId = 'gradNet' }) {
+    const lineColor = color || 'var(--chart-line)'
     return (
-        <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6">
-            <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">
+        <div className="bg-bg-card rounded-lg border border-border-default p-5">
+            <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase mb-5">
                 {title}
             </h3>
-            <ResponsiveContainer width="100%" height={260}>
+            <ResponsiveContainer width="100%" height={240}>
                 <AreaChart data={data}>
                     <defs>
                         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor={color} stopOpacity={0.35} />
-                            <stop offset="100%" stopColor={color} stopOpacity={0} />
+                            <stop offset="0%" stopColor={lineColor} stopOpacity={0.25} />
+                            <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
                         </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" vertical={false} />
-                    <XAxis
-                        dataKey="label"
-                        tick={{ fill: '#9494a8', fontSize: 11 }}
-                        axisLine={{ stroke: '#2a2a3a' }}
-                        tickLine={false}
-                    />
-                    <YAxis
-                        domain={[0, 'auto']}
-                        tick={{ fill: '#9494a8', fontSize: 11 }}
-                        axisLine={false}
-                        tickLine={false}
-                    />
-                    <Tooltip content={<CustomTooltip />} cursor={{ stroke: `${color}33` }} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
+                    <XAxis dataKey="label" tick={{ fill: TICK_COLOR, fontSize: 11 }} axisLine={{ stroke: GRID_COLOR }} tickLine={false} />
+                    <YAxis domain={[0, 'auto']} tick={{ fill: TICK_COLOR, fontSize: 11 }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} cursor={{ stroke: lineColor, strokeWidth: 1, strokeDasharray: '4 4' }} />
                     <Area
                         type="monotone"
                         dataKey="value"
-                        stroke={color}
+                        stroke={lineColor}
                         strokeWidth={2}
                         fill={`url(#${gradientId})`}
                         dot={false}
-                        activeDot={{ r: 4, fill: color, strokeWidth: 2, stroke: '#0f0f14' }}
+                        activeDot={{ r: 4, fill: lineColor, strokeWidth: 2, stroke: 'var(--bg-card)' }}
                         name="Net Weight"
                     />
                 </AreaChart>
@@ -99,54 +87,37 @@ export function TrendLineChart({ data, title = 'Trend', color = '#a78bfa', gradi
 
 export function WastageAreaChart({ data }) {
     return (
-        <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6">
-            <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">
+        <div className="bg-bg-card rounded-lg border border-border-default p-5">
+            <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase mb-5">
                 Wastage Breakdown
             </h3>
-            <ResponsiveContainer width="100%" height={280}>
+            <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={data} barCategoryGap="30%">
-                    <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" vertical={false} />
-                    <XAxis
-                        dataKey="name"
-                        tick={{ fill: '#9494a8', fontSize: 12 }}
-                        axisLine={{ stroke: '#2a2a3a' }}
-                        tickLine={false}
-                    />
-                    <YAxis
-                        tick={{ fill: '#9494a8', fontSize: 12 }}
-                        axisLine={false}
-                        tickLine={false}
-                    />
-                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(167,139,250,0.04)' }} />
-                    <Bar dataKey="value" fill="#a78bfa" radius={[4, 4, 0, 0]} maxBarSize={48} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
+                    <XAxis dataKey="name" tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={{ stroke: GRID_COLOR }} tickLine={false} />
+                    <YAxis tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'var(--accent-gold-muted)' }} />
+                    <Bar dataKey="value" fill="var(--chart-bar3)" radius={[3, 3, 0, 0]} maxBarSize={48} />
                 </BarChart>
             </ResponsiveContainer>
         </div>
     )
 }
 
-export function SectionBarChart({ data, title = 'Breakdown', color = '#a78bfa' }) {
+export function SectionBarChart({ data, title = 'Breakdown', color }) {
+    const barColor = color || 'var(--chart-bar1)'
     return (
-        <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-6">
-            <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">
+        <div className="bg-bg-card rounded-lg border border-border-default p-5">
+            <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase mb-5">
                 {title}
             </h3>
-            <ResponsiveContainer width="100%" height={280}>
+            <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={data} barCategoryGap="30%">
-                    <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" vertical={false} />
-                    <XAxis
-                        dataKey="name"
-                        tick={{ fill: '#9494a8', fontSize: 12 }}
-                        axisLine={{ stroke: '#2a2a3a' }}
-                        tickLine={false}
-                    />
-                    <YAxis
-                        tick={{ fill: '#9494a8', fontSize: 12 }}
-                        axisLine={false}
-                        tickLine={false}
-                    />
-                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(167,139,250,0.04)' }} />
-                    <Bar dataKey="value" fill={color} radius={[4, 4, 0, 0]} maxBarSize={48} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
+                    <XAxis dataKey="name" tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={{ stroke: GRID_COLOR }} tickLine={false} />
+                    <YAxis tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'var(--accent-gold-muted)' }} />
+                    <Bar dataKey="value" fill={barColor} radius={[3, 3, 0, 0]} maxBarSize={48} />
                 </BarChart>
             </ResponsiveContainer>
         </div>

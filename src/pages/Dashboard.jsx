@@ -235,22 +235,25 @@ export default function Dashboard() {
             {/* Header */}
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                 <div>
-                    <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Dashboard</h2>
-                    <p className="mt-1 text-sm text-text-secondary">Showing month-wise plant details for {monthLabel}</p>
+                    <h2 className="text-xl font-bold text-text-primary tracking-tight">Dashboard</h2>
+                    <p className="mt-0.5 text-sm text-text-secondary">Plant overview · {monthLabel}</p>
                 </div>
                 <div>
-                    <label className="mb-2 block text-xs font-semibold uppercase tracking-widest text-text-secondary/70">Month</label>
+                    <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-text-secondary/70">Period</label>
                     <input
                         type="month"
                         value={selectedMonth}
                         onChange={(event) => setSelectedMonth(event.target.value || getCurrentMonth())}
-                        className="bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all"
+                        className="bg-bg-input text-text-primary border border-border-default rounded-md px-3 py-2 text-sm focus:border-accent-gold focus:ring-1 focus:ring-accent-gold/30 transition-all cursor-pointer"
                     />
                 </div>
             </div>
 
             {error && (
-                <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+                <div className="rounded-md border border-red-500/30 bg-red-500/8 px-4 py-3 text-sm text-red-500 flex items-center gap-2">
+                    <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.75}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                    </svg>
                     {error}
                 </div>
             )}
@@ -291,36 +294,30 @@ export default function Dashboard() {
             </div>
 
             <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-                <SectionBarChart data={totalsChartData} title={`${monthLabel} Plant Totals (kg)`} color="#a78bfa" />
-                <TrendLineChart data={dailyOutputTrend} title={`${monthLabel} Daily Output (kg)`} color="#a78bfa" gradientId="gradDailyOut" />
-                <TrendLineChart data={dailyInputTrend} title={`${monthLabel} Daily Input (kg)`} color="#60a5fa" gradientId="gradDailyIn" />
+                <SectionBarChart data={totalsChartData} title={`${monthLabel} Plant Totals (kg)`} />
+                <TrendLineChart data={dailyOutputTrend} title={`${monthLabel} Daily Output (kg)`} gradientId="gradDailyOut" />
+                <TrendLineChart data={dailyInputTrend} title={`${monthLabel} Daily Input (kg)`} color="var(--chart-bar2)" gradientId="gradDailyIn" />
             </div>
 
             {/* Recent Wastage Logs */}
-            <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 overflow-hidden mt-6">
-                <div className="px-6 pt-6 pb-4">
-                    <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase">{monthLabel} Wastage Logs</h3>
+            <div className="bg-bg-card rounded-lg border border-border-default overflow-hidden mt-2">
+                <div className="px-5 py-3.5 border-b border-border-default bg-bg-primary/40">
+                    <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase">{monthLabel} Wastage Logs</h3>
                 </div>
 
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead>
-                            <tr className="border-b border-border-default">
-                                <th className="px-6 py-4 text-left text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
-                                    Date
-                                </th>
-                                <th className="px-6 py-4 text-left text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
-                                    Order
-                                </th>
-                                <th className="px-6 py-4 text-right text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
-                                    Actual Wastage (kg)
-                                </th>
+                            <tr className="border-b border-border-default bg-bg-primary/40">
+                                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider uppercase text-text-secondary">Date</th>
+                                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider uppercase text-text-secondary">Order</th>
+                                <th className="px-5 py-3 text-right text-[11px] font-semibold tracking-wider uppercase text-text-secondary">Wastage (kg)</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody className="divide-y divide-border-subtle">
                             {!loading && recentWastage.length === 0 ? (
                                 <tr>
-                                    <td colSpan={3} className="py-12 text-center text-sm text-text-secondary/50">
+                                    <td colSpan={3} className="py-14 text-center text-sm text-text-secondary/50">
                                         No wastage entries logged yet.
                                     </td>
                                 </tr>
@@ -328,13 +325,14 @@ export default function Dashboard() {
                                 recentWastage.map((row, index) => (
                                     <tr
                                         key={row.id ?? row.transactionId ?? `${row.date}-${index}`}
-                                        className={`border-b border-border-subtle transition-colors duration-150 hover:bg-white/[0.02] ${
-                                            index % 2 === 0 ? 'bg-transparent' : 'bg-white/[0.01]'
-                                        }`}
+                                        style={{ backgroundColor: index % 2 !== 0 ? 'var(--bg-row-alt)' : 'transparent' }}
+                                        onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'var(--bg-row-hover)' }}
+                                        onMouseLeave={e => { e.currentTarget.style.backgroundColor = index % 2 !== 0 ? 'var(--bg-row-alt)' : 'transparent' }}
+                                        className="transition-colors duration-100"
                                     >
-                                        <td className="px-6 py-3.5 text-text-primary/90">{formatDate(row.date)}</td>
-                                        <td className="px-6 py-3.5 text-text-primary/90">{row.order_number || '-'}</td>
-                                        <td className="px-6 py-3.5 text-right font-semibold text-accent-gold">
+                                        <td className="px-5 py-3 text-text-primary text-sm">{formatDate(row.date)}</td>
+                                        <td className="px-5 py-3 text-text-primary text-sm">{row.order_number || '—'}</td>
+                                        <td className="px-5 py-3 text-right font-semibold text-accent-gold tabular-nums text-sm">
                                             {toNumber(row.actualWeight).toFixed(2)}
                                         </td>
                                     </tr>

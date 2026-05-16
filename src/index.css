@@ -13,6 +13,8 @@
   --color-accent-gold: var(--accent-gold);
   --color-accent-gold-hover: var(--accent-gold-hover);
   --color-accent-gold-muted: var(--accent-gold-muted);
+  --color-bg-row-hover: var(--bg-row-hover);
+  --color-bg-row-alt: var(--bg-row-alt);
   --color-chart-bar1: var(--chart-bar1);
   --color-chart-bar2: var(--chart-bar2);
   --color-chart-bar3: var(--chart-bar3);
@@ -22,43 +24,50 @@
 }
 
 @layer base {
+  /* Light mode — clean slate + emerald (default) */
   :root {
-    --primary: #19b2b3;
-    --bg-primary: #f6f6f8;
+    --primary: #1a7f37;
+    --bg-primary: #f6f8fa;
     --bg-card: #ffffff;
-    --bg-input: #ffffff;
-    --bg-tooltip: #f1f5f9;
-    --border-default: #e2e8f0;
-    --border-subtle: #f8fafc;
-    --text-primary: #0f172a;
-    --text-secondary: #64748b;
-    --accent-gold: #19b2b3;
-    --accent-gold-hover: #148f8f;
-    --accent-gold-muted: rgba(25, 178, 179, 0.15);
-    --chart-bar1: #19b2b3;
-    --chart-bar2: #38bdf8;
-    --chart-bar3: #818cf8;
-    --chart-bar4: #c084fc;
-    --chart-line: #19b2b3;
+    --bg-input: #f6f8fa;
+    --bg-tooltip: #ffffff;
+    --border-default: #d0d7de;
+    --border-subtle: #eaeef2;
+    --text-primary: #1f2328;
+    --text-secondary: #656d76;
+    --accent-gold: #1a7f37;
+    --accent-gold-hover: #116329;
+    --accent-gold-muted: rgba(26, 127, 55, 0.1);
+    --bg-row-hover: #f6f8fa;
+    --bg-row-alt: #fafbfc;
+    --chart-bar1: #1a7f37;
+    --chart-bar2: #0969da;
+    --chart-bar3: #9a6700;
+    --chart-bar4: #8250df;
+    --chart-line: #1a7f37;
   }
 
+  /* Dark mode — GitHub-style professional dark + emerald */
   .dark {
-    --bg-primary: #0f0f14;
-    --bg-card: #16161f;
-    --bg-input: #1c1c28;
-    --bg-tooltip: #1c1c28;
-    --border-default: #2a2a3a;
-    --border-subtle: #202030;
-    --text-primary: #ededf0;
-    --text-secondary: #9494a8;
-    --accent-gold: #a78bfa;
-    --accent-gold-hover: #8b5cf6;
-    --accent-gold-muted: #a78bfa33;
-    --chart-bar1: #a78bfa;
-    --chart-bar2: #7c3aed;
-    --chart-bar3: #6366f1;
-    --chart-bar4: #4f46e5;
-    --chart-line: #a78bfa;
+    --primary: #3fb950;
+    --bg-primary: #0d1117;
+    --bg-card: #161b22;
+    --bg-input: #21262d;
+    --bg-tooltip: #1c2128;
+    --border-default: #30363d;
+    --border-subtle: #21262d;
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --accent-gold: #3fb950;
+    --accent-gold-hover: #2ea043;
+    --accent-gold-muted: rgba(63, 185, 80, 0.12);
+    --bg-row-hover: rgba(255, 255, 255, 0.04);
+    --bg-row-alt: rgba(255, 255, 255, 0.02);
+    --chart-bar1: #3fb950;
+    --chart-bar2: #58a6ff;
+    --chart-bar3: #e3b341;
+    --chart-bar4: #d2a8ff;
+    --chart-line: #3fb950;
   }
 }
 
@@ -78,20 +87,21 @@
   }
 
   ::-webkit-scrollbar {
-    width: 6px;
+    width: 5px;
+    height: 5px;
   }
 
   ::-webkit-scrollbar-track {
-    background: var(--color-bg-primary);
+    background: transparent;
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #2a2a3a;
-    border-radius: 3px;
+    background: var(--border-default);
+    border-radius: 4px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #3a3a4f;
+    background: var(--text-secondary);
   }
 
   input:focus,
@@ -99,7 +109,6 @@
     outline: none;
   }
 
-  /* Hide number input spinner arrows */
   input[type='number']::-webkit-outer-spin-button,
   input[type='number']::-webkit-inner-spin-button {
     -webkit-appearance: none;
@@ -113,9 +122,8 @@
   @keyframes slide-up {
     from {
       opacity: 0;
-      transform: translateY(12px);
+      transform: translateY(10px);
     }
-
     to {
       opacity: 1;
       transform: translateY(0);
@@ -123,14 +131,11 @@
   }
 
   .animate-slide-up {
-    animation: slide-up 0.3s ease-out;
+    animation: slide-up 0.25s ease-out;
   }
 }
 
-/* ── Mobile responsive ── */
 @layer utilities {
-
-  /* Prevent horizontal scroll globally */
   html,
   body,
   #root {
@@ -140,13 +145,10 @@
 }
 
 @media (max-width: 1023px) {
-
-  /* Make all cards/containers respect screen width */
   .overflow-x-auto {
     -webkit-overflow-scrolling: touch;
   }
 
-  /* Tighter table cells on mobile */
   table th,
   table td {
     padding-left: 0.75rem !important;
@@ -154,7 +156,6 @@
     font-size: 0.75rem !important;
   }
 
-  /* Summary stat cards — stack and shrink text */
   .text-3xl {
     font-size: 1.5rem !important;
   }
@@ -163,7 +164,6 @@
     font-size: 2rem !important;
   }
 
-  /* Ensure charts don't overflow */
   .recharts-responsive-container {
     max-width: 100% !important;
   }
