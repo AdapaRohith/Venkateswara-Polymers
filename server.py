@@ -3,6 +3,7 @@ import re
 import time
 import math
 import logging
+import asyncio
 import orjson
 from contextlib import asynccontextmanager
 from decimal import Decimal
@@ -12,9 +13,9 @@ import asyncpg
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import ORJSONResponse, StreamingResponse
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 
 def _orjson_default(obj):
@@ -37,7 +38,15 @@ JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 STRICT_TOLERANCE = os.getenv("STRICT_TOLERANCE", "false").lower() == "true"
 
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def pwd_hash(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+
+def pwd_verify(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
+    except Exception:
+        return False
+
 logger = logging.getLogger("uvicorn.error")
 
 pool: asyncpg.Pool = None  # type: ignore
@@ -84,6 +93,43 @@ def _cors_headers(request: Request) -> dict:
             "Vary": "Origin",
         }
     return {}
+
+
+# ── SSE broadcaster ──────────────────────────────────────────────────────────
+_sse_clients: set[asyncio.Queue] = set()
+
+async def broadcast(event_type: str):
+    msg = f"event: update\ndata: {{\"type\": \"{event_type}\"}}\n\n"
+    dead = set()
+    for q in _sse_clients:
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            dead.add(q)
+    _sse_clients -= dead
+
+@app.get("/events")
+async def sse_stream(request: Request, user=Depends(get_user)):
+    q: asyncio.Queue = asyncio.Queue(maxsize=50)
+    _sse_clients.add(q)
+    async def generator():
+        try:
+            yield "event: connected\ndata: {}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=25)
+                    yield msg
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            _sse_clients.discard(q)
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **_cors_headers(request)},
+    )
 
 
 @app.exception_handler(Exception)
@@ -263,11 +309,11 @@ async def adjust_raw_total(conn, material_id, delta_kg: float):
         return
     r = await conn.fetchrow("SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE", pid)
     if not r:
-        raise ValueError("Material not found in raw stock")
+        raise HTTPException(400, "Material not found in raw stock")
     available = to_num(r["total_quantity_kg"])
     required = abs(delta)
     if available < required:
-        raise ValueError(f"Insufficient raw stock. Available: {available} kg")
+        raise HTTPException(400, f"Insufficient raw stock. Available: {available:.3f} kg")
     await conn.execute(
         "UPDATE raw_material_totals SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW() WHERE material_id = $2",
         required, pid)
@@ -289,11 +335,11 @@ async def adjust_floor_balance(conn, material_type_id, delta_kg: float):
         return
     r = await conn.fetchrow("SELECT total_quantity_kg FROM floor_material_balance WHERE material_type_id = $1 FOR UPDATE", pid)
     if not r:
-        raise ValueError("No issued floor stock found for this material")
+        raise HTTPException(400, "No issued floor stock found for this material")
     available = to_num(r["total_quantity_kg"])
     required = abs(delta)
     if available < required:
-        raise ValueError(f"Insufficient floor stock. Available: {available} kg")
+        raise HTTPException(400, f"Insufficient floor stock. Available: {available:.3f} kg")
     await conn.execute(
         "UPDATE floor_material_balance SET total_quantity_kg = total_quantity_kg - $1 WHERE material_type_id = $2",
         required, pid)
@@ -633,6 +679,7 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "raw_add", "mat": mat_name})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
+    await broadcast("raw_material")
     return {"message": "Raw material added successfully",
             "data": {"material_name": mat_name, "total_quantity_kg": upsert["total_quantity_kg"]},
             "tolerance": tol}
@@ -682,6 +729,7 @@ async def issue_from_raw(request: Request, user=Depends(get_user)):
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "floor_issue", "mat": mat_name})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
+    await broadcast("floor_stock")
     return {"message": "Material issued to floor and auto-assigned to all machines",
             "data": {"material_name": mat_name, "quantity_kg": qty, "material_type_id": mt_id, "machines_assigned": len(machines)},
             "tolerance": tol}
@@ -747,6 +795,7 @@ async def move_material(request: Request, user=Depends(get_user)):
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "material_move"})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
+    await broadcast("material_movement")
     return {"success": True, "movement": dict(mv), "tolerance": tol}
 
 
@@ -857,6 +906,7 @@ async def create_production_log(request: Request, user=Depends(get_user)):
                     logs.append({**dict(log_row), "tolerance": tol})
                     tolerances.append(tol)
                 batch_id = f"BATCH_{int(time.time() * 1000)}"
+                await broadcast("production")
                 return {"message": f"Batch logged: {len(logs)} production entries", "batch_id": batch_id,
                         "inserted": len(logs), "data": logs, "tolerance": tolerances}
             else:
@@ -885,6 +935,7 @@ async def create_production_log(request: Request, user=Depends(get_user)):
                     raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
                 if body.get("worker_name"):
                     await c.execute("INSERT INTO machine_state (machine_id, current_worker) VALUES ($1, $2) ON CONFLICT (machine_id) DO UPDATE SET current_worker = EXCLUDED.current_worker, updated_at = NOW()", machine_id, body["worker_name"])
+                await broadcast("production")
                 return {"message": "Production logged and pooled floor stock deducted", "data": dict(log_row), "tolerance": tol}
 
 
@@ -942,6 +993,7 @@ async def update_production_log(log_id: int, request: Request, user=Depends(get_
             tol = await eval_qty_tolerance(get_expected_qty(body, net, ["expected_net_weight_kg"]), net, c, {"op": "log_update", "log_id": log_id})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
+    await broadcast("production")
     return {"success": True, "data": dict(updated), "tolerance": tol}
 
 
@@ -957,6 +1009,7 @@ async def delete_production_log(log_id: int, user=Depends(get_user)):
             await restore_log_floor_stock(c, dict(cur))
             await c.execute("DELETE FROM material_movements WHERE movement_type = 'CONSUMPTION' AND reference_id = $1", log_id)
             await c.execute("DELETE FROM production_logs WHERE id = $1", log_id)
+    await broadcast("production")
     return {"success": True}
 
 
@@ -975,6 +1028,7 @@ async def bulk_delete_production_logs(request: Request, user=Depends(get_user)):
                 await restore_log_floor_stock(c, dict(r_))
             await c.execute("DELETE FROM material_movements WHERE movement_type = 'CONSUMPTION' AND reference_id = ANY($1::int[])", ids)
             await c.execute("DELETE FROM production_logs WHERE id = ANY($1::int[])", ids)
+    await broadcast("production")
     return {"success": True, "deleted": len(ids)}
 
 
@@ -1071,7 +1125,7 @@ async def register(request: Request):
             raise HTTPException(400, "User already exists")
         await c.execute(
             "INSERT INTO users (name, email, password_hash, role, status) VALUES ($1, $2, $3, 'worker', 'pending')",
-            body.get("name"), body.get("email"), pwd_ctx.hash(body.get("password")))
+            body.get("name"), body.get("email"), pwd_hash(body.get("password", "")))
     return {"message": "Account created. Awaiting admin approval."}
 
 
@@ -1084,7 +1138,7 @@ async def login(request: Request):
             raise HTTPException(400, "Invalid credentials")
         if user["status"] != "approved":
             raise HTTPException(403, "Account not approved")
-        if not pwd_ctx.verify(body.get("password", ""), user["password_hash"]):
+        if not pwd_verify(body.get("password", ""), user["password_hash"]):
             raise HTTPException(400, "Invalid credentials")
         token = jwt.encode({"user_id": user["id"], "role": user["role"]}, JWT_SECRET, algorithm=JWT_ALGORITHM)
     return {"token": token, "user_id": user["id"], "role": user["role"]}
@@ -1095,9 +1149,9 @@ async def change_password(request: Request, user=Depends(get_user)):
     body = await request.json()
     async with pool.acquire() as c:
         r_ = await c.fetchrow("SELECT password_hash FROM users WHERE id = $1", user.get("user_id"))
-        if not r_ or not pwd_ctx.verify(body.get("old_password", ""), r_["password_hash"]):
+        if not r_ or not pwd_verify(body.get("old_password", ""), r_["password_hash"]):
             raise HTTPException(400, "Incorrect old password")
-        await c.execute("UPDATE users SET password_hash = $1 WHERE id = $2", pwd_ctx.hash(body.get("new_password")), user.get("user_id"))
+        await c.execute("UPDATE users SET password_hash = $1 WHERE id = $2", pwd_hash(body.get("new_password", "")), user.get("user_id"))
     return {"message": "Password updated successfully"}
 
 
@@ -1114,6 +1168,7 @@ async def approve_user(request: Request, user=Depends(owner_only)):
     body = await request.json()
     async with pool.acquire() as c:
         await c.execute("UPDATE users SET status = 'approved' WHERE id = $1", body.get("user_id"))
+    await broadcast("users")
     return {"message": "User approved"}
 
 
@@ -1122,6 +1177,7 @@ async def reject_user(request: Request, user=Depends(owner_only)):
     body = await request.json()
     async with pool.acquire() as c:
         await c.execute("UPDATE users SET status = 'rejected' WHERE id = $1", body.get("user_id"))
+    await broadcast("users")
     return {"message": "User rejected"}
 
 
@@ -1148,7 +1204,8 @@ async def create_user(request: Request, user=Depends(owner_only)):
     async with pool.acquire() as c:
         r_ = await c.fetchrow(
             "INSERT INTO users (email, password_hash, name, role, status) VALUES ($1, $2, $3, $4, 'approved') RETURNING id, email, name, role, status",
-            body.get("email"), pwd_ctx.hash(body.get("password")), body.get("name"), body.get("role") or "worker")
+            body.get("email"), pwd_hash(body.get("password", "")), body.get("name"), body.get("role") or "worker")
+    await broadcast("users")
     return dict(r_)
 
 
@@ -1188,6 +1245,7 @@ async def create_order(request: Request, user=Depends(get_user)):
                     await c.execute("INSERT INTO order_items (order_id, item_name, required_quantity, unit_price) VALUES ($1, $2, $3, $4)",
                                     order["id"], item["item_name"], item["required_quantity"], item["unit_price"])
                 hydrated = await hydrate_orders(c, [order])
+            await broadcast("orders")
             return hydrated[0]
         except asyncpg.UniqueViolationError:
             raise HTTPException(400, "Order number already exists")
@@ -1227,6 +1285,7 @@ async def delete_order(order_id: int, user=Depends(get_user)):
         r_ = await c.fetchrow("DELETE FROM orders WHERE id = $1 RETURNING *", order_id)
         if not r_:
             raise HTTPException(404, "Order not found")
+    await broadcast("orders")
     return {"message": "Order deleted", "deleted": dict(r_)}
 
 
@@ -1240,6 +1299,7 @@ async def update_order_status(order_id: int, request: Request, user=Depends(get_
         r_ = await c.fetchrow("UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *", normalized, order_id)
         if not r_:
             raise HTTPException(404, "Order not found")
+    await broadcast("orders")
     return dict(r_)
 
 
@@ -1286,6 +1346,7 @@ async def create_fulfillment(request: Request, user=Depends(get_user)):
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
             await sync_order_status(c, order["id"])
+    await broadcast("orders")
     return {**dict(insert_row), "order_number": order_number, "item_name": target["item_name"], "tolerance": tol}
 
 
@@ -1318,6 +1379,7 @@ async def create_wastage(request: Request, user=Depends(get_user)):
         r_ = await c.fetchrow(
             "INSERT INTO wastage_data (id, sno, date, weight) VALUES ($1, $2, $3, $4) RETURNING id, sno, date, weight",
             seq["next_id"], seq["next_sno"], date, float(weight))
+    await broadcast("wastage")
     return AppResponse(status_code=201, content={"message": "Wastage recorded", "data": dict(r_)})
 
 
@@ -1338,6 +1400,7 @@ async def delete_wastage(wastage_id: int, user=Depends(get_user)):
         r_ = await c.fetchrow("DELETE FROM wastage_data WHERE id = $1 RETURNING id, sno", wastage_id)
         if not r_:
             raise HTTPException(404, "Wastage entry not found")
+    await broadcast("wastage")
     return {"message": "Wastage entry deleted", "deleted": dict(r_)}
 
 
@@ -1358,6 +1421,7 @@ async def create_trading(request: Request, user=Depends(get_user)):
         r_ = await c.fetchrow(
             "INSERT INTO trading_records (date, order_number, material_name, net_weight, rate, total_value, type, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW()) RETURNING *",
             body.get("date"), body.get("order_number"), body.get("material_name"), nw, rate, nw * rate, body.get("type"))
+    await broadcast("trading")
     return {"success": True, "data": dict(r_)}
 
 
@@ -1370,6 +1434,7 @@ async def update_trading(trading_id: int, request: Request, user=Depends(get_use
         r_ = await c.fetchrow(
             "UPDATE trading_records SET date=$1, order_number=$2, material_name=$3, net_weight=$4, rate=$5, total_value=$6, type=$7, updated_at=NOW() WHERE id=$8 RETURNING *",
             body.get("date"), body.get("order_number"), body.get("material_name"), nw, rate, nw * rate, body.get("type"), trading_id)
+    await broadcast("trading")
     return {"success": True, "data": dict(r_)}
 
 
@@ -1377,6 +1442,7 @@ async def update_trading(trading_id: int, request: Request, user=Depends(get_use
 async def delete_trading(trading_id: int, user=Depends(get_user)):
     async with pool.acquire() as c:
         await c.execute("DELETE FROM trading_records WHERE id = $1", trading_id)
+    await broadcast("trading")
     return {"success": True}
 
 

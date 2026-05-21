@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import useSSE from '../hooks/useSSE'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
 import TolerancePanel from '../components/TolerancePanel'
@@ -160,6 +161,12 @@ export default function RawMaterial({ user }) {
     }
   }, [])
 
+  useSSE(['raw_material'], () => {
+    refreshRawTotals().catch(() => {})
+    refreshMaterialOptions().catch(() => {})
+    refreshBatches().catch(() => {})
+  })
+
   useEffect(() => {
     // Load immediately
     refreshRawTotals().catch(() => {})
@@ -171,7 +178,7 @@ export default function RawMaterial({ user }) {
       refreshRawTotals().catch(() => {})
       refreshMaterialOptions().catch(() => {})
       refreshBatches().catch(() => {})
-    }, 10000)
+    }, 60000)
     
     return () => clearInterval(pollInterval)
   }, [refreshMaterialOptions, refreshRawTotals, refreshBatches])

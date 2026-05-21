@@ -173,6 +173,9 @@ apiClient.interceptors.response.use(
 
     if (error.response?.status === 401) {
       localStorage.removeItem(AUTH_TOKEN_KEY)
+      localStorage.removeItem('user_id')
+      localStorage.removeItem('role')
+      localStorage.removeItem('demo_user')
       ensureLoginRedirect()
     }
     return Promise.reject(error)

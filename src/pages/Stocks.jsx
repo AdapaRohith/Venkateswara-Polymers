@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import useSSE from '../hooks/useSSE'
 import { SectionBarChart } from '../components/Charts'
 import InputWithCamera from '../components/InputWithCamera'
+import StockOverflowDialog, { parseAvailableKg } from '../components/StockOverflowDialog'
 import TolerancePanel from '../components/TolerancePanel'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
@@ -24,6 +26,8 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
   const [rawTotalsLoading, setRawTotalsLoading] = useState(true)
   const [rawTotalsError, setRawTotalsError] = useState('')
   const [lastTolerance, setLastTolerance] = useState(null)
+  const [stockOverflow, setStockOverflow] = useState(null)
+  const [topUpLoading, setTopUpLoading] = useState(false)
 
   const [issueForm, setIssueForm] = usePersistentState('vp_floor_issue_form', {
     material_name: '',
@@ -99,7 +103,7 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
   }
 
   const handleSubmit = async (event) => {
-    event.preventDefault()
+    event?.preventDefault()
 
     if (!issueForm.material_name?.trim()) {
       toast.error('Please select a raw material')
@@ -153,7 +157,13 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
           actual: qtyInKg,
         })
       }
-      toast.error(error?.response?.data?.error || 'Failed to issue stock to floor')
+      const errorMsg = error?.response?.data?.detail || error?.response?.data?.error || 'Failed to issue stock to floor'
+      if (errorMsg.includes('Insufficient raw stock') || errorMsg.includes('Insufficient stock')) {
+        const available = parseAvailableKg(errorMsg) ?? 0
+        setStockOverflow({ materialName: issueForm.material_name.trim(), attempted: qtyInKg, available })
+      } else {
+        toast.error(errorMsg)
+      }
     } finally {
       setSubmitting(false)
     }
@@ -328,6 +338,31 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
 
       {stockChartData.length > 0 && (
         <SectionBarChart data={stockChartData} title="Floor Stock Breakdown (tons)" color="#60a5fa" />
+      )}
+
+      {stockOverflow && (
+        <StockOverflowDialog
+          materialName={stockOverflow.materialName}
+          attempted={stockOverflow.attempted}
+          available={stockOverflow.available}
+          loading={topUpLoading}
+          onCancel={() => setStockOverflow(null)}
+          onTopUp={async (amount) => {
+            setTopUpLoading(true)
+            try {
+              await api.post('/raw-material/add', {
+                material_name: stockOverflow.materialName,
+                quantity_kg: amount,
+              })
+              setStockOverflow(null)
+              handleSubmit({ preventDefault: () => {} })
+            } catch (err) {
+              toast.error(err?.response?.data?.detail || err?.response?.data?.error || 'Failed to add raw material')
+            } finally {
+              setTopUpLoading(false)
+            }
+          }}
+        />
       )}
     </div>
   )

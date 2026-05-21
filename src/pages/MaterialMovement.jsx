@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import useSSE from '../hooks/useSSE'
+import StockOverflowDialog, { parseAvailableKg } from '../components/StockOverflowDialog'
 import TolerancePanel from '../components/TolerancePanel'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
@@ -37,6 +39,8 @@ export default function MaterialMovement() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [lastTolerance, setLastTolerance] = useState(null)
+  const [stockOverflow, setStockOverflow] = useState(null)
+  const [topUpLoading, setTopUpLoading] = useState(false)
 
   const [form, setForm] = useState({
     material_name: '',
@@ -81,7 +85,7 @@ export default function MaterialMovement() {
   }
 
   const handleSubmit = async e => {
-    e.preventDefault()
+    e?.preventDefault()
     const qty = parseFloat(form.quantity_kg)
     if (!form.material_name) return toast.error('Select a material')
     if (!qty || qty <= 0) return toast.error('Quantity must be greater than 0')
@@ -118,7 +122,13 @@ export default function MaterialMovement() {
           actual: qty,
         })
       }
-      toast.error(err?.response?.data?.error || 'Failed to record movement')
+      const errorMsg = err?.response?.data?.detail || err?.response?.data?.error || 'Failed to record movement'
+      if (errorMsg.includes('Insufficient stock') || errorMsg.includes('Insufficient raw stock')) {
+        const available = parseAvailableKg(errorMsg) ?? 0
+        setStockOverflow({ materialName: form.material_name, attempted: qty, available })
+      } else {
+        toast.error(errorMsg)
+      }
     } finally {
       setSubmitting(false)
     }
@@ -243,6 +253,31 @@ export default function MaterialMovement() {
           <MovementHistory movements={movements} loading={loading} />
         </div>
       </div>
+
+      {stockOverflow && (
+        <StockOverflowDialog
+          materialName={stockOverflow.materialName}
+          attempted={stockOverflow.attempted}
+          available={stockOverflow.available}
+          loading={topUpLoading}
+          onCancel={() => setStockOverflow(null)}
+          onTopUp={async (amount) => {
+            setTopUpLoading(true)
+            try {
+              await api.post('/raw-material/add', {
+                material_name: stockOverflow.materialName,
+                quantity_kg: amount,
+              })
+              setStockOverflow(null)
+              handleSubmit({ preventDefault: () => {} })
+            } catch (err) {
+              toast.error(err?.response?.data?.detail || err?.response?.data?.error || 'Failed to add raw material')
+            } finally {
+              setTopUpLoading(false)
+            }
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import useSSE from '../hooks/useSSE'
 import EditEntryModal from '../components/EditEntryModal'
+import StockOverflowDialog, { parseAvailableKg } from '../components/StockOverflowDialog'
 import TolerancePanel from '../components/TolerancePanel'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
@@ -195,6 +197,8 @@ export default function Production({ user }) {
   const [savingHistoryEdit, setSavingHistoryEdit] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [lastTolerance, setLastTolerance] = useState(null)
+  const [stockOverflow, setStockOverflow] = useState(null) // { materialName, attempted, available, materialName }
+  const [topUpLoading, setTopUpLoading] = useState(false)
   const [loadingWorker, setLoadingWorker] = useState(false)
   const [loadingMaterials, setLoadingMaterials] = useState(false)
   const [hasLoadedMaterialsOnce, setHasLoadedMaterialsOnce] = useState(false)
@@ -403,7 +407,7 @@ export default function Production({ user }) {
 
   /* ── Submit entry ───────────────────────────────────────────────────────── */
   const handleSubmit = useCallback(async (e) => {
-    e.preventDefault()
+    e?.preventDefault()
     if (!activeMachine || !isValid || !materialId) return
 
     // Validation
@@ -516,8 +520,20 @@ export default function Production({ user }) {
           actual: net,
         })
       }
-      const errorMsg = err?.response?.data?.error || err?.message || 'Failed to log entry'
-      toast.error(errorMsg)
+      const errorMsg = err?.response?.data?.detail || err?.response?.data?.error || err?.message || 'Failed to log entry'
+      if (errorMsg.includes('Insufficient floor stock')) {
+        const available = parseAvailableKg(errorMsg) ?? 0
+        const selectedAssignedMaterial = assignedStock.find(mat => String(mat.material_type_id) === String(parseInt(materialId, 10)))
+        const selectedMaterial = selectedAssignedMaterial || materialsForProduction.find(mat => String(mat.id) === String(parseInt(materialId, 10)))
+        setStockOverflow({
+          materialName: selectedMaterial?.material_name || `Material ${materialId}`,
+          attempted: net,
+          available,
+          materialId,
+        })
+      } else {
+        toast.error(errorMsg)
+      }
       // Do NOT clear form on error per spec
     } finally {
       setSubmitting(false)
@@ -1148,6 +1164,35 @@ export default function Production({ user }) {
           </table>
         </div>
       </section>
+
+      {stockOverflow && (
+        <StockOverflowDialog
+          materialName={stockOverflow.materialName}
+          attempted={stockOverflow.attempted}
+          available={stockOverflow.available}
+          loading={topUpLoading}
+          onCancel={() => setStockOverflow(null)}
+          onTopUp={async (amount) => {
+            setTopUpLoading(true)
+            try {
+              await api.post('/raw-material/add', {
+                material_name: stockOverflow.materialName,
+                quantity_kg: amount,
+              })
+              await api.post('/floor/issue-from-raw', {
+                material_name: stockOverflow.materialName,
+                quantity_kg: amount,
+              })
+              setStockOverflow(null)
+              handleSubmit()
+            } catch (err) {
+              toast.error(err?.response?.data?.detail || err?.response?.data?.error || 'Failed to add floor stock')
+            } finally {
+              setTopUpLoading(false)
+            }
+          }}
+        />
+      )}
     </div>
   )
 }

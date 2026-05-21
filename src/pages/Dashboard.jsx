@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import useSSE from '../hooks/useSSE'
 import SummaryCard from '../components/SummaryCard'
 import { SectionBarChart, TrendLineChart } from '../components/Charts'
 import api from '../utils/api'
@@ -100,6 +101,8 @@ export default function Dashboard() {
     const [wastageRows, setWastageRows] = useState([])
     const [selectedMonth, setSelectedMonth] = useState(getCurrentMonth)
 
+    useSSE(['production','raw_material','floor_stock','orders','wastage','trading'], fetchMetrics)
+
     const monthRange = useMemo(() => getMonthRange(selectedMonth), [selectedMonth])
     const monthLabel = useMemo(() => formatMonthLabel(selectedMonth), [selectedMonth])
 
@@ -168,7 +171,7 @@ export default function Dashboard() {
         fetchMetrics()
 
         // Poll every 10 seconds
-        const pollInterval = setInterval(fetchMetrics, 10000)
+        const pollInterval = setInterval(fetchMetrics, 60000)
 
         return () => {
             cancelled = true
