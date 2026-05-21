@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import useSSE from '../hooks/useSSE'
 import SummaryCard from '../components/SummaryCard'
 import { SectionBarChart, TrendLineChart } from '../components/Charts'
@@ -101,83 +101,80 @@ export default function Dashboard() {
     const [wastageRows, setWastageRows] = useState([])
     const [selectedMonth, setSelectedMonth] = useState(getCurrentMonth)
 
-    useSSE(['production','raw_material','floor_stock','orders','wastage','trading'], fetchMetrics)
-
     const monthRange = useMemo(() => getMonthRange(selectedMonth), [selectedMonth])
     const monthLabel = useMemo(() => formatMonthLabel(selectedMonth), [selectedMonth])
 
-    useEffect(() => {
-        let cancelled = false
+    const cancelledRef = useRef(false)
 
-        const fetchMetrics = async () => {
-            setLoading(true)
-            setError('')
+    const fetchMetrics = useCallback(async () => {
+        setLoading(true)
+        setError('')
 
-            try {
-                const params = {
-                    date_from: monthRange.start,
-                    date_to: monthRange.end,
-                }
-
-                const [efficiencyRes, txRes, wastageRes, productionRes, rawMaterialRes] = await Promise.allSettled([
-                    api.get('/analytics/plant-efficiency-v2', { params }),
-                    api.get('/floor/transactions', { params }),
-                    api.get('/wastage', { params }),
-                    api.get('/production/logs', { params }),
-                    api.get('/inventory/transactions', { params }),
-                ])
-
-                const efficiencyData = efficiencyRes.status === 'fulfilled' ? efficiencyRes.value?.data : null
-                const txData = txRes.status === 'fulfilled' ? txRes.value?.data : null
-                const wastageDataRaw = wastageRes.status === 'fulfilled' ? wastageRes.value?.data : null
-                const productionDataRaw = productionRes.status === 'fulfilled' ? productionRes.value?.data : null
-                const rawMaterialDataRaw = rawMaterialRes.status === 'fulfilled' ? rawMaterialRes.value?.data : null
-
-                const row = efficiencyData?.data?.[0] ?? efficiencyData ?? {}
-                const txRows = extractRows(txData).filter((item) => isRowInMonth(item, selectedMonth))
-                const wastageData = extractRows(wastageDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
-                const productionRows = extractRows(productionDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
-                const rawMaterialRows = extractRows(rawMaterialDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
-
-                const computedInputKg = rawMaterialRows.reduce((sum, item) => sum + getRowQuantityKg(item), 0)
-                const computedOutputKg = productionRows.reduce(
-                    (sum, item) => sum + firstNumber(item.net_weight, item.netWeight, toNumber(item.gross_weight) - toNumber(item.tare_weight)),
-                    0,
-                )
-
-                const totalInputKg = rawMaterialRes.status === 'fulfilled'
-                    ? computedInputKg
-                    : toNumber(row.total_input_kg ?? row.total_input ?? row.totalInputKg ?? row.totalInput)
-                const totalOutputKg = productionRes.status === 'fulfilled'
-                    ? computedOutputKg
-                    : toNumber(row.total_output_kg ?? row.total_output ?? row.totalOutputKg ?? row.totalOutput)
-
-                if (!cancelled) {
-                    setMetrics({ totalInputKg, totalOutputKg })
-                    setFloorTransactions(txRows)
-                    setWastageRows(wastageData.map(normalizeWastageRow))
-                    const failed = [efficiencyRes, txRes, wastageRes, productionRes, rawMaterialRes].some((result) => result.status === 'rejected')
-                    setError(failed ? 'Some dashboard data could not be loaded. Check your internet connection and refresh.' : '')
-                }
-            } catch (err) {
-                console.error('Failed to load plant analytics', err)
-                if (!cancelled) setError(err?.response?.data?.error || err?.message || 'Failed to load analytics')
-            } finally {
-                if (!cancelled) setLoading(false)
+        try {
+            const params = {
+                date_from: monthRange.start,
+                date_to: monthRange.end,
             }
+
+            const [efficiencyRes, txRes, wastageRes, productionRes, rawMaterialRes] = await Promise.allSettled([
+                api.get('/analytics/plant-efficiency-v2', { params }),
+                api.get('/floor/transactions', { params }),
+                api.get('/wastage', { params }),
+                api.get('/production/logs', { params }),
+                api.get('/inventory/transactions', { params }),
+            ])
+
+            const efficiencyData = efficiencyRes.status === 'fulfilled' ? efficiencyRes.value?.data : null
+            const txData = txRes.status === 'fulfilled' ? txRes.value?.data : null
+            const wastageDataRaw = wastageRes.status === 'fulfilled' ? wastageRes.value?.data : null
+            const productionDataRaw = productionRes.status === 'fulfilled' ? productionRes.value?.data : null
+            const rawMaterialDataRaw = rawMaterialRes.status === 'fulfilled' ? rawMaterialRes.value?.data : null
+
+            const row = efficiencyData?.data?.[0] ?? efficiencyData ?? {}
+            const txRows = extractRows(txData).filter((item) => isRowInMonth(item, selectedMonth))
+            const wastageData = extractRows(wastageDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
+            const productionRows = extractRows(productionDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
+            const rawMaterialRows = extractRows(rawMaterialDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
+
+            const computedInputKg = rawMaterialRows.reduce((sum, item) => sum + getRowQuantityKg(item), 0)
+            const computedOutputKg = productionRows.reduce(
+                (sum, item) => sum + firstNumber(item.net_weight, item.netWeight, toNumber(item.gross_weight) - toNumber(item.tare_weight)),
+                0,
+            )
+
+            const totalInputKg = rawMaterialRes.status === 'fulfilled'
+                ? computedInputKg
+                : toNumber(row.total_input_kg ?? row.total_input ?? row.totalInputKg ?? row.totalInput)
+            const totalOutputKg = productionRes.status === 'fulfilled'
+                ? computedOutputKg
+                : toNumber(row.total_output_kg ?? row.total_output ?? row.totalOutputKg ?? row.totalOutput)
+
+            if (!cancelledRef.current) {
+                setMetrics({ totalInputKg, totalOutputKg })
+                setFloorTransactions(txRows)
+                setWastageRows(wastageData.map(normalizeWastageRow))
+                const failed = [efficiencyRes, txRes, wastageRes, productionRes, rawMaterialRes].some((result) => result.status === 'rejected')
+                setError(failed ? 'Some dashboard data could not be loaded. Check your internet connection and refresh.' : '')
+            }
+        } catch (err) {
+            console.error('Failed to load plant analytics', err)
+            if (!cancelledRef.current) setError(err?.response?.data?.error || err?.message || 'Failed to load analytics')
+        } finally {
+            if (!cancelledRef.current) setLoading(false)
         }
+    }, [monthRange.start, monthRange.end, selectedMonth])
 
-        // Call immediately
+    useSSE(['production','raw_material','floor_stock','orders','wastage','trading'], fetchMetrics)
+
+    useEffect(() => {
+        cancelledRef.current = false
         fetchMetrics()
-
-        // Poll every 10 seconds
         const pollInterval = setInterval(fetchMetrics, 60000)
-
         return () => {
-            cancelled = true
+            cancelledRef.current = true
             clearInterval(pollInterval)
         }
-    }, [monthRange.end, monthRange.start, selectedMonth])
+    }, [fetchMetrics])
 
     const wastageValue = useMemo(
         () => (Array.isArray(wastageRows) ? wastageRows : []).reduce((sum, row) => sum + toNumber(row.actualWeight), 0),

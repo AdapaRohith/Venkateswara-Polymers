@@ -95,6 +95,30 @@ def _cors_headers(request: Request) -> dict:
     return {}
 
 
+# ─────────────────────────── Auth deps ───────────────────────────
+
+async def get_user(request: Request) -> dict:
+    header = request.headers.get("Authorization", "")
+    parts = header.split(" ")
+    if len(parts) != 2 or parts[0] != "Bearer":
+        raise HTTPException(401, "Unauthorized")
+    try:
+        payload = jwt.decode(parts[1], JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        derived = payload.get("user_id") or payload.get("id") or payload.get("userId")
+        if derived is not None:
+            payload.setdefault("id", derived)
+            payload.setdefault("user_id", derived)
+        return payload
+    except JWTError:
+        raise HTTPException(401, "Invalid token")
+
+
+async def owner_only(user: dict = Depends(get_user)) -> dict:
+    if user.get("role") != "owner":
+        raise HTTPException(403, "Forbidden")
+    return user
+
+
 # ── SSE broadcaster ──────────────────────────────────────────────────────────
 _sse_clients: set[asyncio.Queue] = set()
 
@@ -486,30 +510,6 @@ async def sync_order_status(conn, order_id: int):
     next_status = "completed" if total > 0 and total == completed else "Active"
     await conn.execute("UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2", next_status, order_id)
     return next_status
-
-
-# ─────────────────────────── Auth deps ───────────────────────────
-
-async def get_user(request: Request) -> dict:
-    header = request.headers.get("Authorization", "")
-    parts = header.split(" ")
-    if len(parts) != 2 or parts[0] != "Bearer":
-        raise HTTPException(401, "Unauthorized")
-    try:
-        payload = jwt.decode(parts[1], JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        derived = payload.get("user_id") or payload.get("id") or payload.get("userId")
-        if derived is not None:
-            payload.setdefault("id", derived)
-            payload.setdefault("user_id", derived)
-        return payload
-    except JWTError:
-        raise HTTPException(401, "Invalid token")
-
-
-async def owner_only(user: dict = Depends(get_user)) -> dict:
-    if user.get("role") != "owner":
-        raise HTTPException(403, "Forbidden")
-    return user
 
 
 # ─────────────────────────── Routes ───────────────────────────
