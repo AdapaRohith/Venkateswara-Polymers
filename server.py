@@ -38,6 +38,11 @@ JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 STRICT_TOLERANCE = os.getenv("STRICT_TOLERANCE", "false").lower() == "true"
 
+# In-process caches — survive for process lifetime; invalidated on insert
+_material_cache: dict[str, int] = {}
+_material_type_cache: dict[str, int] = {}
+_tolerance_cache: dict = {"value": 10.0, "fetched_at": 0.0}
+
 def pwd_hash(plain: str) -> str:
     return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
@@ -241,14 +246,16 @@ def get_expected_qty(payload: dict, actual: float, extra: list = None) -> float:
 
 
 async def eval_tolerance(expected: float, actual: float, conn) -> dict:
-    tolerance = 10.0
-    try:
-        r = await conn.fetchrow("SELECT value FROM system_config WHERE key = 'tolerance_percent' LIMIT 1")
-        if r:
-            v = to_num(r["value"], 10.0)
-            tolerance = v
-    except asyncpg.UndefinedTableError:
-        pass
+    global _tolerance_cache
+    tolerance = _tolerance_cache["value"]
+    if time.monotonic() - _tolerance_cache["fetched_at"] > 60:
+        try:
+            r = await conn.fetchrow("SELECT value FROM system_config WHERE key = 'tolerance_percent' LIMIT 1")
+            if r:
+                tolerance = to_num(r["value"], 10.0)
+            _tolerance_cache = {"value": tolerance, "fetched_at": time.monotonic()}
+        except asyncpg.UndefinedTableError:
+            _tolerance_cache["fetched_at"] = time.monotonic()
     lower = expected * (1 - tolerance / 100)
     upper = expected * (1 + tolerance / 100)
     deviation = ((actual - expected) / expected * 100) if expected != 0 else 0.0
@@ -268,11 +275,16 @@ async def get_or_create_material(conn, name: str) -> int:
     n = str(name or "").strip()
     if not n:
         raise ValueError("material_name cannot be empty")
+    key = n.lower()
+    if key in _material_cache:
+        return _material_cache[key]
     r = await conn.fetchrow("SELECT id FROM materials_master WHERE LOWER(name) = LOWER($1) LIMIT 1", n)
     if r:
+        _material_cache[key] = r["id"]
         return r["id"]
     r = await conn.fetchrow(
         "INSERT INTO materials_master (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", n)
+    _material_cache[key] = r["id"]
     return r["id"]
 
 
@@ -280,11 +292,16 @@ async def get_or_create_material_type(conn, name: str) -> int:
     n = str(name or "").strip()
     if not n:
         raise ValueError("material_name cannot be empty")
+    key = n.lower()
+    if key in _material_type_cache:
+        return _material_type_cache[key]
     r = await conn.fetchrow("SELECT id FROM material_types WHERE LOWER(name) = LOWER($1) LIMIT 1", n)
     if r:
+        _material_type_cache[key] = r["id"]
         return r["id"]
     r = await conn.fetchrow(
         "INSERT INTO material_types (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", n)
+    _material_type_cache[key] = r["id"]
     return r["id"]
 
 
@@ -377,13 +394,13 @@ async def adjust_machine_assignments(conn, material_type_id, delta_kg: float):
     assignments = await conn.fetch(
         "SELECT id, machine_id, quantity_kg FROM machine_stock_assignments WHERE material_type_id = $1 ORDER BY id", pid)
     if delta > 0:
-        machines = await conn.fetch("SELECT id::text AS id FROM machines ORDER BY id")
-        for m in machines:
-            await conn.execute(
-                """INSERT INTO machine_stock_assignments (machine_id, material_type_id, quantity_kg)
-                   VALUES ($1, $2, $3) ON CONFLICT (machine_id, material_type_id)
-                   DO UPDATE SET quantity_kg = machine_stock_assignments.quantity_kg + $3, updated_at = NOW()""",
-                m["id"], pid, delta)
+        await conn.execute(
+            """INSERT INTO machine_stock_assignments (machine_id, material_type_id, quantity_kg)
+               SELECT id::text, $1, $2 FROM machines
+               ON CONFLICT (machine_id, material_type_id)
+               DO UPDATE SET quantity_kg = machine_stock_assignments.quantity_kg + EXCLUDED.quantity_kg,
+                             updated_at = NOW()""",
+            pid, delta)
         return
     required = abs(delta)
     if not assignments:
@@ -718,11 +735,14 @@ async def issue_from_raw(request: Request, user=Depends(get_user)):
             await c.execute(
                 "INSERT INTO floor_material_balance (material_type_id, total_quantity_kg) VALUES ($1, $2) ON CONFLICT (material_type_id) DO UPDATE SET total_quantity_kg = floor_material_balance.total_quantity_kg + $2",
                 mt_id, qty)
-            machines = await c.fetch("SELECT id::text AS id FROM machines ORDER BY id")
-            for m in machines:
-                await c.execute(
-                    "INSERT INTO machine_stock_assignments (machine_id, material_type_id, quantity_kg) VALUES ($1, $2, $3) ON CONFLICT (machine_id, material_type_id) DO UPDATE SET quantity_kg = machine_stock_assignments.quantity_kg + $3, updated_at = NOW()",
-                    m["id"], mt_id, qty)
+            machine_count = await c.fetchval("SELECT COUNT(*) FROM machines")
+            await c.execute(
+                """INSERT INTO machine_stock_assignments (machine_id, material_type_id, quantity_kg)
+                   SELECT id::text, $1, $2 FROM machines
+                   ON CONFLICT (machine_id, material_type_id)
+                   DO UPDATE SET quantity_kg = machine_stock_assignments.quantity_kg + EXCLUDED.quantity_kg,
+                                 updated_at = NOW()""",
+                mt_id, qty)
             await c.execute(
                 "INSERT INTO material_movements (material_id, quantity_kg, direction, movement_type, reference_id, note, created_by) VALUES ($1, $2, 'OUT', 'FLOOR_TRANSFER', $3, $4, $5)",
                 mat_id, qty, None, "Issued to floor and auto-assigned to all machines", user.get("id"))
@@ -731,7 +751,7 @@ async def issue_from_raw(request: Request, user=Depends(get_user)):
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
     await broadcast("floor_stock")
     return {"message": "Material issued to floor and auto-assigned to all machines",
-            "data": {"material_name": mat_name, "quantity_kg": qty, "material_type_id": mt_id, "machines_assigned": len(machines)},
+            "data": {"material_name": mat_name, "quantity_kg": qty, "material_type_id": mt_id, "machines_assigned": machine_count},
             "tolerance": tol}
 
 
