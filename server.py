@@ -5,15 +5,17 @@ import math
 import logging
 import asyncio
 import orjson
+from pathlib import Path
+from uuid import uuid4
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from datetime import date as dt_date
 
 import asyncpg
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, ORJSONResponse, StreamingResponse
 import bcrypt
 from jose import JWTError, jwt
 
@@ -37,6 +39,18 @@ load_dotenv()
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 STRICT_TOLERANCE = os.getenv("STRICT_TOLERANCE", "false").lower() == "true"
+ISSUE_UPLOAD_DIR = Path(os.getenv("ISSUE_UPLOAD_DIR", "issue_uploads")).resolve()
+ISSUE_MAX_FILES = int(os.getenv("ISSUE_MAX_FILES", "5"))
+ISSUE_MAX_FILE_MB = int(os.getenv("ISSUE_MAX_FILE_MB", "25"))
+ISSUE_ALLOWED_CONTENT_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+}
 
 # In-process caches — survive for process lifetime; invalidated on insert
 _material_cache: dict[str, int] = {}
@@ -128,6 +142,7 @@ async def owner_only(user: dict = Depends(get_user)) -> dict:
 _sse_clients: set[asyncio.Queue] = set()
 
 async def broadcast(event_type: str):
+    global _sse_clients
     msg = f"event: update\ndata: {{\"type\": \"{event_type}\"}}\n\n"
     dead = set()
     for q in _sse_clients:
@@ -198,6 +213,16 @@ def parse_date(s: str) -> dt_date:
         raise HTTPException(400, "Invalid date. Use YYYY-MM-DD")
 
 
+def parse_required_date(s, field: str = "date") -> dt_date:
+    if not s:
+        raise HTTPException(400, f"{field} is required")
+    return parse_date(s)
+
+
+def parse_optional_date(s) -> dt_date | None:
+    return parse_date(s) if s else None
+
+
 def build_date_where(date_from, date_to, values: list, column: str) -> str:
     conds = []
     if date_from:
@@ -207,6 +232,27 @@ def build_date_where(date_from, date_to, values: list, column: str) -> str:
         values.append(parse_date(date_to))
         conds.append(f"{column} < (${len(values)}::date + INTERVAL '1 day')")
     return f"WHERE {' AND '.join(conds)}" if conds else ""
+
+
+def is_owner_or_admin(user: dict) -> bool:
+    return user.get("role") in {"owner", "admin"}
+
+
+def require_owner_or_admin(user: dict):
+    if not is_owner_or_admin(user):
+        raise HTTPException(403, "Forbidden")
+
+
+def user_id_from_token(user: dict) -> int | None:
+    raw = user.get("user_id") or user.get("id") or user.get("userId")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def issue_attachment_url(report_id: int, attachment_id: int) -> str:
+    return f"/issue-reports/{report_id}/attachments/{attachment_id}"
 
 
 def get_machine_variants(machine_id) -> list[str]:
@@ -1388,17 +1434,15 @@ async def get_fulfillment(order_number: str = None, limit: str = "500", user=Dep
 @app.post("/wastage")
 async def create_wastage(request: Request, user=Depends(get_user)):
     body = await request.json()
-    date = body.get("date")
+    waste_date = parse_required_date(body.get("date"))
     weight = body.get("weight")
-    if not date:
-        raise HTTPException(400, "date is required")
     if weight is None or float(weight) <= 0:
         raise HTTPException(400, "weight must be greater than 0")
     async with pool.acquire() as c:
         seq = await c.fetchrow("SELECT COALESCE(MAX(id), 0) + 1 AS next_id, COALESCE(MAX(sno), 0) + 1 AS next_sno FROM wastage_data")
         r_ = await c.fetchrow(
             "INSERT INTO wastage_data (id, sno, date, weight) VALUES ($1, $2, $3, $4) RETURNING id, sno, date, weight",
-            seq["next_id"], seq["next_sno"], date, float(weight))
+            seq["next_id"], seq["next_sno"], waste_date, float(weight))
     await broadcast("wastage")
     return AppResponse(status_code=201, content={"message": "Wastage recorded", "data": dict(r_)})
 
@@ -1435,12 +1479,13 @@ async def get_trading(user=Depends(get_user)):
 @app.post("/trading")
 async def create_trading(request: Request, user=Depends(get_user)):
     body = await request.json()
+    trading_date = parse_optional_date(body.get("date"))
     nw = to_num(body.get("net_weight"))
     rate = to_num(body.get("rate"))
     async with pool.acquire() as c:
         r_ = await c.fetchrow(
             "INSERT INTO trading_records (date, order_number, material_name, net_weight, rate, total_value, type, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW()) RETURNING *",
-            body.get("date"), body.get("order_number"), body.get("material_name"), nw, rate, nw * rate, body.get("type"))
+            trading_date, body.get("order_number"), body.get("material_name"), nw, rate, nw * rate, body.get("type"))
     await broadcast("trading")
     return {"success": True, "data": dict(r_)}
 
@@ -1448,12 +1493,13 @@ async def create_trading(request: Request, user=Depends(get_user)):
 @app.put("/trading/{trading_id}")
 async def update_trading(trading_id: int, request: Request, user=Depends(get_user)):
     body = await request.json()
+    trading_date = parse_optional_date(body.get("date"))
     nw = to_num(body.get("net_weight"))
     rate = to_num(body.get("rate"))
     async with pool.acquire() as c:
         r_ = await c.fetchrow(
             "UPDATE trading_records SET date=$1, order_number=$2, material_name=$3, net_weight=$4, rate=$5, total_value=$6, type=$7, updated_at=NOW() WHERE id=$8 RETURNING *",
-            body.get("date"), body.get("order_number"), body.get("material_name"), nw, rate, nw * rate, body.get("type"), trading_id)
+            trading_date, body.get("order_number"), body.get("material_name"), nw, rate, nw * rate, body.get("type"), trading_id)
     await broadcast("trading")
     return {"success": True, "data": dict(r_)}
 
@@ -1467,6 +1513,207 @@ async def delete_trading(trading_id: int, user=Depends(get_user)):
 
 
 # ─────────────────────────── Table init ───────────────────────────
+
+# ── Issue reports ──
+
+@app.post("/issue-reports")
+async def create_issue_report(
+    title: str = Form(...),
+    description: str = Form(""),
+    page_url: str = Form(""),
+    app_version: str = Form(""),
+    files: list[UploadFile] = File(default=[]),
+    user=Depends(get_user),
+):
+    clean_title = title.strip()
+    if not clean_title:
+        raise HTTPException(400, "title is required")
+    if len(files) > ISSUE_MAX_FILES:
+        raise HTTPException(400, f"Maximum {ISSUE_MAX_FILES} attachments allowed")
+
+    ISSUE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    saved_files = []
+    async with pool.acquire() as c:
+        async with c.transaction():
+            report = await c.fetchrow(
+                """INSERT INTO issue_reports (title, description, page_url, app_version, created_by)
+                   VALUES ($1, $2, $3, $4, $5)
+                   RETURNING id, title, description, page_url, app_version, created_by, status, created_at""",
+                clean_title,
+                description.strip(),
+                page_url.strip(),
+                app_version.strip(),
+                user_id_from_token(user),
+            )
+
+            attachment_rows = []
+            try:
+                for upload in files:
+                    content_type = upload.content_type or "application/octet-stream"
+                    extension = ISSUE_ALLOWED_CONTENT_TYPES.get(content_type)
+                    if not extension:
+                        raise HTTPException(400, f"Unsupported attachment type: {content_type}")
+
+                    stored_name = f"{report['id']}_{uuid4().hex}{extension}"
+                    stored_path = ISSUE_UPLOAD_DIR / stored_name
+                    saved_files.append(stored_path)
+                    size_bytes = 0
+                    with stored_path.open("wb") as out:
+                        while chunk := await upload.read(1024 * 1024):
+                            size_bytes += len(chunk)
+                            if size_bytes > ISSUE_MAX_FILE_MB * 1024 * 1024:
+                                raise HTTPException(400, f"Each attachment must be {ISSUE_MAX_FILE_MB}MB or less")
+                            out.write(chunk)
+
+                    attachment = await c.fetchrow(
+                        """INSERT INTO issue_report_attachments
+                           (report_id, original_filename, stored_path, content_type, size_bytes)
+                           VALUES ($1, $2, $3, $4, $5)
+                           RETURNING id, original_filename, content_type, size_bytes, created_at""",
+                        report["id"],
+                        upload.filename or stored_name,
+                        stored_name,
+                        content_type,
+                        size_bytes,
+                    )
+                    item = dict(attachment)
+                    item["url"] = issue_attachment_url(report["id"], attachment["id"])
+                    attachment_rows.append(item)
+            except Exception:
+                for path in saved_files:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("Could not remove failed issue attachment: %s", path)
+                raise
+
+    await broadcast("issue_reports")
+    data = dict(report)
+    data["attachments"] = attachment_rows
+    return AppResponse(status_code=201, content={"success": True, "data": data})
+
+
+@app.get("/issue-reports")
+async def get_issue_reports(limit: str = "100", user=Depends(get_user)):
+    require_owner_or_admin(user)
+    safe_limit = min(max(int(limit) if str(limit).isdigit() else 100, 1), 500)
+    async with pool.acquire() as c:
+        reports = rows(await c.fetch(
+            """SELECT ir.*, u.name AS reporter_name, u.email AS reporter_email
+               FROM issue_reports ir
+               LEFT JOIN users u ON u.id = ir.created_by
+               ORDER BY ir.created_at DESC
+               LIMIT $1""",
+            safe_limit,
+        ))
+        ids = [r["id"] for r in reports]
+        attachment_rows = rows(await c.fetch(
+            """SELECT id, report_id, original_filename, content_type, size_bytes, created_at
+               FROM issue_report_attachments
+               WHERE report_id = ANY($1::int[])
+               ORDER BY id ASC""",
+            ids,
+        )) if ids else []
+
+    grouped = {}
+    for attachment in attachment_rows:
+        attachment["url"] = issue_attachment_url(attachment["report_id"], attachment["id"])
+        grouped.setdefault(attachment["report_id"], []).append(attachment)
+    for report in reports:
+        report["attachments"] = grouped.get(report["id"], [])
+    return {"success": True, "data": reports}
+
+
+@app.put("/issue-reports/{report_id}")
+async def update_issue_report(report_id: int, request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
+    body = await request.json()
+    title = body.get("title")
+    description = body.get("description")
+    status = body.get("status")
+    allowed_statuses = {"open", "fixed"}
+
+    if title is not None and not str(title).strip():
+        raise HTTPException(400, "title is required")
+    if status is not None:
+        status = str(status).strip().lower()
+        if status not in allowed_statuses:
+            raise HTTPException(400, "status must be open or fixed")
+
+    async with pool.acquire() as c:
+        current = await c.fetchrow("SELECT * FROM issue_reports WHERE id = $1", report_id)
+        if not current:
+            raise HTTPException(404, "Issue report not found")
+
+        updated = await c.fetchrow(
+            """UPDATE issue_reports
+               SET title = $1,
+                   description = $2,
+                   status = $3,
+                   updated_at = NOW()
+               WHERE id = $4
+               RETURNING *""",
+            str(title).strip() if title is not None else current["title"],
+            str(description).strip() if description is not None else current["description"],
+            status if status is not None else current["status"],
+            report_id,
+        )
+
+    await broadcast("issue_reports")
+    return {"success": True, "data": dict(updated)}
+
+
+@app.delete("/issue-reports/{report_id}")
+async def delete_issue_report(report_id: int, user=Depends(get_user)):
+    require_owner_or_admin(user)
+    async with pool.acquire() as c:
+        async with c.transaction():
+            attachments = rows(await c.fetch(
+                "SELECT stored_path FROM issue_report_attachments WHERE report_id = $1",
+                report_id,
+            ))
+            deleted = await c.fetchrow("DELETE FROM issue_reports WHERE id = $1 RETURNING id", report_id)
+            if not deleted:
+                raise HTTPException(404, "Issue report not found")
+
+    for attachment in attachments:
+        file_path = (ISSUE_UPLOAD_DIR / attachment["stored_path"]).resolve()
+        if ISSUE_UPLOAD_DIR in file_path.parents:
+            try:
+                file_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove issue attachment: %s", file_path)
+
+    await broadcast("issue_reports")
+    return {"success": True, "deleted": dict(deleted)}
+
+
+@app.get("/issue-reports/{report_id}/attachments/{attachment_id}")
+async def get_issue_report_attachment(report_id: int, attachment_id: int, user=Depends(get_user)):
+    async with pool.acquire() as c:
+        attachment = await c.fetchrow(
+            """SELECT ira.*, ir.created_by
+               FROM issue_report_attachments ira
+               JOIN issue_reports ir ON ir.id = ira.report_id
+               WHERE ira.id = $1 AND ira.report_id = $2""",
+            attachment_id,
+            report_id,
+        )
+    if not attachment:
+        raise HTTPException(404, "Attachment not found")
+    if not is_owner_or_admin(user) and user_id_from_token(user) != attachment["created_by"]:
+        raise HTTPException(403, "Forbidden")
+
+    file_path = (ISSUE_UPLOAD_DIR / attachment["stored_path"]).resolve()
+    if ISSUE_UPLOAD_DIR not in file_path.parents or not file_path.exists():
+        raise HTTPException(404, "Attachment file not found")
+    return FileResponse(
+        file_path,
+        media_type=attachment["content_type"],
+        filename=attachment["original_filename"],
+        content_disposition_type="inline",
+    )
+
 
 async def initialize_tables():
     async with pool.acquire() as c:
@@ -1490,6 +1737,26 @@ async def initialize_tables():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
         await c.execute("CREATE INDEX IF NOT EXISTS idx_fulfillment_records_order_id ON fulfillment_records(order_id)")
         await c.execute("CREATE INDEX IF NOT EXISTS idx_fulfillment_records_order_item_id ON fulfillment_records(order_item_id)")
+        await c.execute("""CREATE TABLE IF NOT EXISTS issue_reports (
+            id SERIAL PRIMARY KEY,
+            title VARCHAR(255) NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            page_url TEXT NOT NULL DEFAULT '',
+            app_version VARCHAR(100) NOT NULL DEFAULT '',
+            created_by INTEGER,
+            status VARCHAR(50) NOT NULL DEFAULT 'open',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_issue_reports_created_at ON issue_reports(created_at DESC)")
+        await c.execute("""CREATE TABLE IF NOT EXISTS issue_report_attachments (
+            id SERIAL PRIMARY KEY,
+            report_id INTEGER NOT NULL REFERENCES issue_reports(id) ON DELETE CASCADE,
+            original_filename TEXT NOT NULL,
+            stored_path TEXT NOT NULL,
+            content_type VARCHAR(100) NOT NULL,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_issue_attachments_report_id ON issue_report_attachments(report_id)")
         await c.execute("""CREATE TABLE IF NOT EXISTS machine_stock_assignments (
             id SERIAL PRIMARY KEY, machine_id VARCHAR(10) NOT NULL, material_type_id INTEGER NOT NULL,
             quantity_kg NUMERIC(12, 2) NOT NULL DEFAULT 0,

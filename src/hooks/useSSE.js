@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
-
-const API_BASE = 'https://vp-api.avlokai.com'
+import { BASE_URL } from '../utils/api'
 
 export default function useSSE(events, onEvent) {
   const onEventRef = useRef(onEvent)
@@ -17,7 +16,7 @@ export default function useSSE(events, onEvent) {
       if (!token || !active) return
 
       try {
-        const res = await fetch(`${API_BASE}/events`, {
+        const res = await fetch(`${BASE_URL}/events`, {
           headers: { Authorization: `Bearer ${token}` },
           signal: controller.signal,
         })

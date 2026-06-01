@@ -59,7 +59,8 @@ apiClient.interceptors.request.use(
     }
 
     const method = (config.method ?? 'get').toLowerCase()
-    if (!config.headers['Content-Type'] && ['post', 'put', 'patch'].includes(method)) {
+    const isFormData = typeof FormData !== 'undefined' && config.data instanceof FormData
+    if (!isFormData && !config.headers['Content-Type'] && ['post', 'put', 'patch'].includes(method)) {
       config.headers['Content-Type'] = 'application/json'
     }
 

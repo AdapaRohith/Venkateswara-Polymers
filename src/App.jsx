@@ -15,6 +15,7 @@ import ProductionOrders from './pages/ProductionOrders'
 import Fulfillment from './pages/Fulfillment'
 import MachineReports from './pages/MachineReports'
 import Trading from './pages/Trading'
+import IssueReports from './pages/IssueReports'
 import { getOrders } from './utils/orders'
 
 const AUTH_TOKEN_KEY = 'token'
@@ -159,6 +160,16 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
                       user={user}
                       allowedRoles={['owner']}
                       element={<Users />}
+                    />
+                  }
+                />
+                <Route
+                  path="/issue-reports"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner']}
+                      element={<IssueReports />}
                     />
                   }
                 />

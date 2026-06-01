@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { Bug, MessageSquareWarning } from 'lucide-react'
 import avlokaiLogo from '../../avlokai_logo.png'
+import IssueReportDialog from './IssueReportDialog'
 
 const Icon = {
   grid: (
@@ -48,6 +50,7 @@ const Icon = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
     </svg>
   ),
+  issues: <MessageSquareWarning className="w-4 h-4" />,
   trading: (
     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.75}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
@@ -99,6 +102,7 @@ const ownerNavGroups = [
     label: 'Administration',
     items: [
       { name: 'Users', path: '/users', icon: Icon.users },
+      { name: 'Issue Reports', path: '/issue-reports', icon: Icon.issues },
     ],
   },
 ]
@@ -118,6 +122,7 @@ const flatWorker = workerNavGroups.flatMap(g => g.items)
 
 export default function Sidebar({ user, onLogout }) {
   const [open, setOpen] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
   const [isDarkMode, setIsDarkMode] = useState(true)
   const location = useLocation()
   const isWorker = String(user?.role || '').toLowerCase() === 'worker'
@@ -316,6 +321,15 @@ export default function Sidebar({ user, onLogout }) {
           </div>
 
           {/* Theme toggle */}
+          <button
+            onClick={() => setReportOpen(true)}
+            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-row-hover transition-all text-sm cursor-pointer"
+          >
+            <Bug className="w-4 h-4 shrink-0" />
+            <span className="text-xs font-medium">Report Issue</span>
+          </button>
+
+          {/* Theme toggle */}
           {!isWorker && (
             <button
               onClick={toggleTheme}
@@ -351,6 +365,7 @@ export default function Sidebar({ user, onLogout }) {
           </div>
         </div>
       </aside>
+      <IssueReportDialog open={reportOpen} onClose={() => setReportOpen(false)} />
     </>
   )
 }
