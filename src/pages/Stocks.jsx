@@ -62,18 +62,13 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
   }, [])
 
   useEffect(() => {
-    const loadStockData = async () => {
-      return Promise.allSettled([refreshFloorStock?.(), refreshRawTotals()]).catch(() => {})
-    }
-    
-    // Load immediately
-    loadStockData()
-    
-    // Poll every 10 seconds
-    const pollInterval = setInterval(loadStockData, 10000)
-    
-    return () => clearInterval(pollInterval)
+    Promise.allSettled([refreshFloorStock?.(), refreshRawTotals()]).catch(() => {})
   }, [refreshFloorStock, refreshRawTotals])
+
+  useSSE(['floor_stock', 'raw_material'], () => {
+    refreshFloorStock?.()
+    refreshRawTotals()
+  })
 
   const totalAvailableKg = useMemo(
     () => (Array.isArray(floorStock) ? floorStock : []).reduce((sum, row) => sum + toNumber(row.total_quantity_kg), 0),
