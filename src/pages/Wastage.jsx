@@ -90,9 +90,9 @@ export default function Wastage({ user }) {
 
   useEffect(() => {
     loadWastage()
-    const pollInterval = setInterval(loadWastage, 50000)
-    return () => clearInterval(pollInterval)
   }, [loadWastage])
+
+  useSSE(['wastage'], loadWastage)
 
   const handleChange = (event) => {
     const { name, value } = event.target
@@ -125,14 +125,16 @@ export default function Wastage({ user }) {
 
     setSubmitting(true)
     try {
-      await api.post('/wastage', {
+      const { data } = await api.post('/wastage', {
         date: form.date,
         weight,
         wastage_generated: weight,
       })
       toast.success('Wastage logged successfully')
       setForm((previous) => ({ ...previous, weight: '' }))
-      loadWastage()
+      if (data) {
+        setWastageRows((prev) => [normalizeWastageRow(data, prev.length), ...prev])
+      }
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to log wastage')
     } finally {
