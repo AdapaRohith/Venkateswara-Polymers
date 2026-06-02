@@ -70,14 +70,10 @@ export default function MaterialMovement() {
   }
 
   useEffect(() => {
-    // Load immediately
     loadData()
-    
-    // Poll every 10 seconds
-    const pollInterval = setInterval(loadData, 10000)
-    
-    return () => clearInterval(pollInterval)
   }, [])
+
+  useSSE(['material_movement', 'floor_stock'], loadData)
 
   const handleChange = e => {
     const { name, value } = e.target
@@ -111,7 +107,9 @@ export default function MaterialMovement() {
         toast.warning('Movement recorded with tolerance breach')
       }
       setForm(prev => ({ ...prev, quantity_kg: '', expected_quantity_kg: '', note: '' }))
-      loadData()
+      if (data?.movement) {
+        setMovements(prev => [{ ...data.movement, material_name: form.material_name }, ...prev])
+      }
     } catch (err) {
       const strictDetails = err?.response?.data?.details
       if (strictDetails) {
