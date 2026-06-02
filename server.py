@@ -600,6 +600,7 @@ async def post_materials(request: Request):
         r = await c.fetchrow("SELECT id, name FROM materials_master WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1", name)
         material = dict(r) if r else dict(await c.fetchrow("INSERT INTO materials_master (name) VALUES ($1) RETURNING id, name", name))
         all_mats = rows(await c.fetch("SELECT id, name FROM materials_master ORDER BY name ASC"))
+    await broadcast("raw_material")
     return {"selected": material, "materials": all_mats}
 
 
@@ -662,6 +663,7 @@ async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
                                            {"op": "batch_update", "batch_id": batch_id})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
+    await broadcast("raw_material")
     return {"success": True, "data": dict(updated), "tolerance": tol}
 
 
@@ -676,6 +678,7 @@ async def delete_batch(batch_id: int, user=Depends(get_user)):
                 raise HTTPException(404, "Batch not found")
             await adjust_raw_total(c, cur["material_id"], -to_num(cur["quantity_kg"]))
             await c.execute("DELETE FROM raw_material_batches WHERE id = $1", batch_id)
+    await broadcast("raw_material")
     return {"success": True}
 
 
@@ -694,6 +697,7 @@ async def bulk_delete_batches(request: Request, user=Depends(get_user)):
             for r_ in rs_:
                 await adjust_raw_total(c, r_["material_id"], -to_num(r_["quantity_kg"]))
             await c.execute("DELETE FROM raw_material_batches WHERE id = ANY($1::int[])", ids)
+    await broadcast("raw_material")
     return {"success": True, "deleted": len(ids)}
 
 
@@ -902,6 +906,7 @@ async def update_floor_tx(mv_id: int, request: Request, user=Depends(get_user)):
             updated = await c.fetchrow(
                 "UPDATE material_movements SET material_id=$1, quantity_kg=$2, direction=$3, movement_type=$4, note=$5 WHERE id=$6 RETURNING *",
                 next_mat_id, qty, direction, mt, body.get("note"), mv_id)
+    await broadcast("material_movement")
     return {"success": True, "data": dict(updated)}
 
 
@@ -918,6 +923,7 @@ async def delete_floor_tx(mv_id: int, user=Depends(get_user)):
                 raise HTTPException(400, "Production consumption entries must be deleted from production history")
             await apply_movement_effect(c, dict(cur), -1)
             await c.execute("DELETE FROM material_movements WHERE id = $1", mv_id)
+    await broadcast("material_movement")
     return {"success": True}
 
 
@@ -937,6 +943,7 @@ async def bulk_delete_floor_tx(request: Request, user=Depends(get_user)):
             for r_ in rs_:
                 await apply_movement_effect(c, dict(r_), -1)
             await c.execute("DELETE FROM material_movements WHERE id = ANY($1::int[])", ids)
+    await broadcast("material_movement")
     return {"success": True, "deleted": len(ids)}
 
 
