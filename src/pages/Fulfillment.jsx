@@ -55,10 +55,9 @@ export default function Fulfillment() {
 
   useEffect(() => {
     loadData()
-
-    const pollInterval = setInterval(loadData, 50000)
-    return () => clearInterval(pollInterval)
   }, [loadData, refreshKey])
+
+  useSSE(['orders', 'floor_stock'], loadData)
 
   // An order counts as "completed" if status flag is set OR every item is fully fulfilled
   const isOrderComplete = (order) => {
