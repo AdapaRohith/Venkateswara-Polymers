@@ -147,10 +147,9 @@ export default function MachineReports() {
 
   useEffect(() => {
     loadReport()
-
-    const pollInterval = setInterval(pollForUpdates, 50000)
-    return () => clearInterval(pollInterval)
   }, []) // eslint-disable-line
+
+  useSSE(['production'], pollForUpdates)
 
   const totalEntries = report.reduce((sum, row) => sum + toNumber(row.total_entries), 0)
   const totalNet = report.reduce((sum, row) => sum + toNumber(row.total_net_weight_kg), 0)
