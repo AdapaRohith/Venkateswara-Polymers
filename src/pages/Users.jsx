@@ -18,18 +18,14 @@ export default function Users() {
     const [pendingAction, setPendingAction] = useState(null)
 
     useEffect(() => {
-        // Load immediately
         fetchUsers()
         loadPendingUsers()
-        
-        // Poll every 10 seconds
-        const pollInterval = setInterval(() => {
-            fetchUsers()
-            loadPendingUsers()
-        }, 10000)
-        
-        return () => clearInterval(pollInterval)
     }, [])
+
+    useSSE(['users'], () => {
+        fetchUsers()
+        loadPendingUsers()
+    })
 
     const fetchUsers = async () => {
         try {
