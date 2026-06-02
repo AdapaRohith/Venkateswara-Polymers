@@ -238,28 +238,24 @@ export default function Production({ user }) {
   const isInvalid = !isCuttingMachine && grossWeight !== '' && tareWeight !== '' && netWeight !== null && netWeight <= 0
 
   /* ── Load floor stock (issued materials) for production ───────────────────── */
-  useEffect(() => {
-    const loadFloorStock = async () => {
-      setLoadingMaterials(true)
-      try {
-        const { data } = await api.get('/floor/stock')
-        setFloorStock(Array.isArray(data) ? data : [])
-        setHasLoadedMaterialsOnce(true)
-      } catch (err) {
-        console.error('Failed to load floor stock:', err)
-      } finally {
-        setLoadingMaterials(false)
-      }
+  const loadFloorStock = useCallback(async () => {
+    setLoadingMaterials(true)
+    try {
+      const { data } = await api.get('/floor/stock')
+      setFloorStock(Array.isArray(data) ? data : [])
+      setHasLoadedMaterialsOnce(true)
+    } catch (err) {
+      console.error('Failed to load floor stock:', err)
+    } finally {
+      setLoadingMaterials(false)
     }
-    
-    // Load immediately
-    loadFloorStock()
-    
-    // Poll every 50 seconds
-    const pollInterval = setInterval(loadFloorStock, 50000)
-    
-    return () => clearInterval(pollInterval)
   }, [])
+
+  useEffect(() => {
+    loadFloorStock()
+  }, [loadFloorStock])
+
+  useSSE(['production', 'floor_stock'], loadFloorStock)
 
   /* ── Persist worker name & size ─────────────────────────────────────────── */
   useEffect(() => { saveWorkerName(workerName) }, [workerName])
