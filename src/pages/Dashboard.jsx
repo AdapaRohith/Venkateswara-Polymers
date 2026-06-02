@@ -169,10 +169,8 @@ export default function Dashboard() {
     useEffect(() => {
         cancelledRef.current = false
         fetchMetrics()
-        const pollInterval = setInterval(fetchMetrics, 60000)
         return () => {
             cancelledRef.current = true
-            clearInterval(pollInterval)
         }
     }, [fetchMetrics])
 
