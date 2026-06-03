@@ -24,7 +24,7 @@ export default function Users() {
 
     useSSE(['users'], () => {
         fetchUsers()
-        loadPendingUsers()
+        loadPendingUsers(true)
     })
 
     const fetchUsers = async () => {
@@ -38,8 +38,8 @@ export default function Users() {
         }
     }
 
-    const loadPendingUsers = async () => {
-        setPendingLoading(true)
+    const loadPendingUsers = async (silent = false) => {
+        if (!silent) setPendingLoading(true)
         setPendingError('')
 
         try {
@@ -49,9 +49,9 @@ export default function Users() {
             const message = error.response?.data?.error || 'Failed to load pending users'
             setPendingError(message)
             setPendingUsers([])
-            toast.error(message)
+            if (!silent) toast.error(message)
         } finally {
-            setPendingLoading(false)
+            if (!silent) setPendingLoading(false)
         }
     }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import useSSE from '../hooks/useSSE'
 import { useToast } from '../components/Toast'
 import { exportMultiSheet, exportSingleSheet } from '../utils/exportToExcel'
@@ -41,23 +41,25 @@ export default function Fulfillment() {
     note: '',
   })
 
-  const loadData = useCallback(async () => {
-    setLoading(true)
+  const loadData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       const data = await getOrders({ includeItems: true })
       setOrders(Array.isArray(data) ? data : [])
     } catch {
       setOrders([])
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [])
 
+  const firstLoad = useRef(true)
   useEffect(() => {
-    loadData()
+    loadData(!firstLoad.current)
+    firstLoad.current = false
   }, [loadData, refreshKey])
 
-  useSSE(['orders', 'floor_stock'], loadData)
+  useSSE(['orders', 'floor_stock'], () => loadData(true))
 
   // An order counts as "completed" if status flag is set OR every item is fully fulfilled
   const isOrderComplete = (order) => {

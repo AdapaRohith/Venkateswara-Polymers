@@ -116,9 +116,9 @@ export default function RawMaterial({ user }) {
   const [loadingBatches, setLoadingBatches] = useState(true)
   const [batchesError, setBatchesError] = useState('')
 
-  const refreshRawTotals = useCallback(async () => {
+  const refreshRawTotals = useCallback(async (silent = false) => {
     console.info('[RawMaterial] calling GET /raw-material/totals')
-    setLoadingTotals(true)
+    if (!silent) setLoadingTotals(true)
     setTotalsError('')
     try {
       const { data } = await api.get('/raw-material/totals')
@@ -127,13 +127,13 @@ export default function RawMaterial({ user }) {
       console.error('Failed to load raw material totals', error)
       setTotalsError(error?.response?.data?.error || 'Failed to load raw material totals')
     } finally {
-      setLoadingTotals(false)
+      if (!silent) setLoadingTotals(false)
     }
   }, [])
 
-  const refreshMaterialOptions = useCallback(async () => {
+  const refreshMaterialOptions = useCallback(async (silent = false) => {
     console.info('[RawMaterial] calling GET /raw-material/options')
-    setLoadingMaterialOptions(true)
+    if (!silent) setLoadingMaterialOptions(true)
     setMaterialOptionsError('')
     try {
       const { data } = await api.get('/raw-material/options')
@@ -142,13 +142,13 @@ export default function RawMaterial({ user }) {
       console.error('Failed to load raw material options', error)
       setMaterialOptionsError(error?.response?.data?.error || 'Failed to load raw material options')
     } finally {
-      setLoadingMaterialOptions(false)
+      if (!silent) setLoadingMaterialOptions(false)
     }
   }, [])
 
-  const refreshBatches = useCallback(async () => {
+  const refreshBatches = useCallback(async (silent = false) => {
     console.info('[RawMaterial] calling GET /raw-material/batches')
-    setLoadingBatches(true)
+    if (!silent) setLoadingBatches(true)
     setBatchesError('')
     try {
       const { data } = await api.get('/raw-material/batches')
@@ -157,14 +157,14 @@ export default function RawMaterial({ user }) {
       console.error('Failed to load raw material batches', error)
       setBatchesError(error?.response?.data?.error || 'Failed to load batches')
     } finally {
-      setLoadingBatches(false)
+      if (!silent) setLoadingBatches(false)
     }
   }, [])
 
   useSSE(['raw_material'], () => {
-    refreshRawTotals().catch(() => {})
-    refreshMaterialOptions().catch(() => {})
-    refreshBatches().catch(() => {})
+    refreshRawTotals(true).catch(() => {})
+    refreshMaterialOptions(true).catch(() => {})
+    refreshBatches(true).catch(() => {})
   })
 
   useEffect(() => {

@@ -106,8 +106,8 @@ export default function Dashboard() {
 
     const cancelledRef = useRef(false)
 
-    const fetchMetrics = useCallback(async () => {
-        setLoading(true)
+    const fetchMetrics = useCallback(async (silent = false) => {
+        if (!silent) setLoading(true)
         setError('')
 
         try {
@@ -160,11 +160,11 @@ export default function Dashboard() {
             console.error('Failed to load plant analytics', err)
             if (!cancelledRef.current) setError(err?.response?.data?.error || err?.message || 'Failed to load analytics')
         } finally {
-            if (!cancelledRef.current) setLoading(false)
+            if (!cancelledRef.current && !silent) setLoading(false)
         }
     }, [monthRange.start, monthRange.end, selectedMonth])
 
-    useSSE(['production','raw_material','floor_stock','orders','wastage','trading'], fetchMetrics)
+    useSSE(['production','raw_material','floor_stock','orders','wastage','trading'], () => fetchMetrics(true))
 
     useEffect(() => {
         cancelledRef.current = false

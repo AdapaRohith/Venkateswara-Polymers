@@ -70,8 +70,8 @@ export default function Wastage({ user }) {
     weight: '',
   })
 
-  const loadWastage = useCallback(async () => {
-    setLoading(true)
+  const loadWastage = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       const { data } = await api.get('/wastage')
       const rows = extractRows(data)
@@ -84,7 +84,7 @@ export default function Wastage({ user }) {
       console.error('Failed to load wastage logs', err)
       setWastageRows([])
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [])
 
@@ -92,7 +92,7 @@ export default function Wastage({ user }) {
     loadWastage()
   }, [loadWastage])
 
-  useSSE(['wastage'], loadWastage)
+  useSSE(['wastage'], () => loadWastage(true))
 
   const handleChange = (event) => {
     const { name, value } = event.target
@@ -106,7 +106,7 @@ export default function Wastage({ user }) {
     try {
       await api.delete(`/wastage/${row.transactionId || row.id}`)
       toast.success('Entry deleted')
-      loadWastage()
+      setWastageRows((prev) => prev.filter((r) => r.id !== row.id))
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to delete entry')
     } finally {

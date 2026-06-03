@@ -238,8 +238,8 @@ export default function Production({ user }) {
   const isInvalid = !isCuttingMachine && grossWeight !== '' && tareWeight !== '' && netWeight !== null && netWeight <= 0
 
   /* ── Load floor stock (issued materials) for production ───────────────────── */
-  const loadFloorStock = useCallback(async () => {
-    setLoadingMaterials(true)
+  const loadFloorStock = useCallback(async (silent = false) => {
+    if (!silent) setLoadingMaterials(true)
     try {
       const { data } = await api.get('/floor/stock')
       setFloorStock(Array.isArray(data) ? data : [])
@@ -247,7 +247,7 @@ export default function Production({ user }) {
     } catch (err) {
       console.error('Failed to load floor stock:', err)
     } finally {
-      setLoadingMaterials(false)
+      if (!silent) setLoadingMaterials(false)
     }
   }, [])
 
@@ -255,7 +255,7 @@ export default function Production({ user }) {
     loadFloorStock()
   }, [loadFloorStock])
 
-  useSSE(['production', 'floor_stock'], loadFloorStock)
+  useSSE(['production', 'floor_stock'], () => loadFloorStock(true))
 
   /* ── Persist worker name & size ─────────────────────────────────────────── */
   useEffect(() => { saveWorkerName(workerName) }, [workerName])

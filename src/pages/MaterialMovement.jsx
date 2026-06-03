@@ -51,8 +51,8 @@ export default function MaterialMovement() {
     note: '',
   })
 
-  const loadData = async () => {
-    setLoading(true)
+  const loadData = async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       const [matRes, movRes] = await Promise.allSettled([
         api.get('/raw-material/options'),
@@ -65,7 +65,7 @@ export default function MaterialMovement() {
         setMovements(Array.isArray(movRes.value.data) ? movRes.value.data : [])
       }
     } catch {/* ignore */} finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -73,7 +73,7 @@ export default function MaterialMovement() {
     loadData()
   }, [])
 
-  useSSE(['material_movement', 'floor_stock'], loadData)
+  useSSE(['material_movement', 'floor_stock'], () => loadData(true))
 
   const handleChange = e => {
     const { name, value } = e.target
