@@ -102,7 +102,6 @@ const ownerNavGroups = [
     label: 'Administration',
     items: [
       { name: 'Users', path: '/users', icon: Icon.users },
-      { name: 'Issue Reports', path: '/issue-reports', icon: Icon.issues },
     ],
   },
 ]
@@ -296,6 +295,13 @@ export default function Sidebar({ user, onLogout }) {
               </ul>
             </div>
           ))}
+          <button
+            onClick={() => { setReportOpen(true); setOpen(false) }}
+            className="w-full flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-md font-medium transition-all duration-150 text-red-500 hover:text-red-400 hover:bg-red-500/10 cursor-pointer"
+          >
+            <Bug className="w-4 h-4 shrink-0 text-red-500/70" />
+            <span>Report Issue</span>
+          </button>
         </nav>
 
         {/* Footer */}
@@ -320,14 +326,28 @@ export default function Sidebar({ user, onLogout }) {
             </span>
           </div>
 
-          {/* Theme toggle */}
-          <button
-            onClick={() => setReportOpen(true)}
-            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-row-hover transition-all text-sm cursor-pointer"
-          >
-            <Bug className="w-4 h-4 shrink-0" />
-            <span className="text-xs font-medium">Report Issue</span>
-          </button>
+          {!isWorker && (
+            <NavLink
+              to="/issue-reports"
+              onClick={() => setOpen(false)}
+              className={({ isActive }) =>
+                `w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md transition-all text-sm cursor-pointer ${
+                  isActive
+                    ? 'bg-accent-gold-muted text-accent-gold'
+                    : 'text-text-secondary hover:text-text-primary hover:bg-bg-row-hover'
+                }`
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <span className={isActive ? 'text-accent-gold' : 'text-text-secondary/70'}>
+                    <MessageSquareWarning className="w-4 h-4" />
+                  </span>
+                  <span className="text-xs font-medium">Issue Reports</span>
+                </>
+              )}
+            </NavLink>
+          )}
 
           {/* Theme toggle */}
           {!isWorker && (
