@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import useSSE from '../hooks/useSSE'
+import useFlashRows from '../hooks/useFlashRows'
 import StockOverflowDialog, { parseAvailableKg } from '../components/StockOverflowDialog'
 import TolerancePanel from '../components/TolerancePanel'
 import { useToast } from '../components/Toast'
@@ -37,6 +38,7 @@ export default function MaterialMovement() {
   const [materials, setMaterials] = useState([])
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)
+  useFlashRows(movements.length)
   const [submitting, setSubmitting] = useState(false)
   const [lastTolerance, setLastTolerance] = useState(null)
   const [stockOverflow, setStockOverflow] = useState(null)
@@ -356,7 +358,7 @@ function MovementHistory({ movements, loading }) {
               <tr><td colSpan={7} className="py-8 text-center text-text-secondary/50">No movements recorded yet</td></tr>
             ) : (
               movements.map((row, i) => (
-                <tr key={i} className="border-b border-border-subtle hover:bg-white/[0.02] transition-colors">
+                <tr key={i} data-flash-date={String(row.created_at || '').slice(0, 10)} className="border-b border-border-subtle hover:bg-white/[0.02] transition-colors">
                   <td className="px-6 py-3.5 text-xs text-text-secondary/70 whitespace-nowrap">
                     {formatDate(row.created_at)}
                   </td>

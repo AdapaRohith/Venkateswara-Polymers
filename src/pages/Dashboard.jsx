@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import useSSE from '../hooks/useSSE'
 import SummaryCard from '../components/SummaryCard'
 import { SectionBarChart, TrendLineChart } from '../components/Charts'
@@ -51,6 +52,10 @@ function getRowQuantityKg(row = {}) {
     return firstNumber(row.quantity_kg, row.quantityKg, row.quantity_in_kg, row.quantityInKg, row.quantity, row.total_quantity_kg, row.totalQuantityKg)
 }
 
+function getProductionNetKg(row = {}) {
+    return firstNumber(row.net_weight, row.netWeight, toNumber(row.gross_weight) - toNumber(row.tare_weight))
+}
+
 function normalizeWastageRow(row = {}, index = 0) {
     return {
         ...row,
@@ -94,10 +99,12 @@ function isRowInMonth(row, month) {
 }
 
 export default function Dashboard() {
+    const navigate = useNavigate()
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState('')
     const [metrics, setMetrics] = useState({ totalInputKg: 0, totalOutputKg: 0 })
-    const [floorTransactions, setFloorTransactions] = useState([])
+    const [productionRows, setProductionRows] = useState([])
+    const [rawMaterialRows, setRawMaterialRows] = useState([])
     const [wastageRows, setWastageRows] = useState([])
     const [selectedMonth, setSelectedMonth] = useState(getCurrentMonth)
 
@@ -116,22 +123,19 @@ export default function Dashboard() {
                 date_to: monthRange.end,
             }
 
-            const [efficiencyRes, txRes, wastageRes, productionRes, rawMaterialRes] = await Promise.allSettled([
+            const [efficiencyRes, wastageRes, productionRes, rawMaterialRes] = await Promise.allSettled([
                 api.get('/analytics/plant-efficiency-v2', { params }),
-                api.get('/floor/transactions', { params }),
                 api.get('/wastage', { params }),
                 api.get('/production/logs', { params }),
                 api.get('/inventory/transactions', { params }),
             ])
 
             const efficiencyData = efficiencyRes.status === 'fulfilled' ? efficiencyRes.value?.data : null
-            const txData = txRes.status === 'fulfilled' ? txRes.value?.data : null
             const wastageDataRaw = wastageRes.status === 'fulfilled' ? wastageRes.value?.data : null
             const productionDataRaw = productionRes.status === 'fulfilled' ? productionRes.value?.data : null
             const rawMaterialDataRaw = rawMaterialRes.status === 'fulfilled' ? rawMaterialRes.value?.data : null
 
             const row = efficiencyData?.data?.[0] ?? efficiencyData ?? {}
-            const txRows = extractRows(txData).filter((item) => isRowInMonth(item, selectedMonth))
             const wastageData = extractRows(wastageDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
             const productionRows = extractRows(productionDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
             const rawMaterialRows = extractRows(rawMaterialDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
@@ -151,9 +155,10 @@ export default function Dashboard() {
 
             if (!cancelledRef.current) {
                 setMetrics({ totalInputKg, totalOutputKg })
-                setFloorTransactions(txRows)
+                setProductionRows(productionRows)
+                setRawMaterialRows(rawMaterialRows)
                 setWastageRows(wastageData.map(normalizeWastageRow))
-                const failed = [efficiencyRes, txRes, wastageRes, productionRes, rawMaterialRes].some((result) => result.status === 'rejected')
+                const failed = [efficiencyRes, wastageRes, productionRes, rawMaterialRes].some((result) => result.status === 'rejected')
                 setError(failed ? 'Some dashboard data could not be loaded. Check your internet connection and refresh.' : '')
             }
         } catch (err) {
@@ -198,35 +203,48 @@ export default function Dashboard() {
 
     const dailyOutputTrend = useMemo(() => {
         const daily = {}
-        ;(Array.isArray(floorTransactions) ? floorTransactions : []).forEach((row) => {
+        ;(Array.isArray(productionRows) ? productionRows : []).forEach((row) => {
             const date = getRowDate(row)
             if (!date) return
-            const direction = String(row.direction ?? '').toUpperCase()
-            if (direction !== 'OUT') return
-            daily[date] = (daily[date] || 0) + getRowQuantityKg(row)
+            daily[date] = (daily[date] || 0) + getProductionNetKg(row)
         })
 
         return Object.entries(daily)
             .sort(([a], [b]) => a.localeCompare(b))
             .map(([date, value]) => ({ label: date, value: Number(toNumber(value).toFixed(2)) }))
-    }, [floorTransactions])
+    }, [productionRows])
 
     const dailyInputTrend = useMemo(() => {
         const daily = {}
-        ;(Array.isArray(floorTransactions) ? floorTransactions : []).forEach((row) => {
+        ;(Array.isArray(rawMaterialRows) ? rawMaterialRows : []).forEach((row) => {
             const date = getRowDate(row)
             if (!date) return
-            const direction = String(row.direction ?? '').toUpperCase()
-            const movementType = String(row.movement_type ?? row.movementType ?? '').toUpperCase()
-            const isFloorInput = direction === 'OUT' || movementType === 'FLOOR_TRANSFER'
-            if (!isFloorInput) return
             daily[date] = (daily[date] || 0) + getRowQuantityKg(row)
         })
 
         return Object.entries(daily)
             .sort(([a], [b]) => a.localeCompare(b))
             .map(([date, value]) => ({ label: date, value: Number(toNumber(value).toFixed(2)) }))
-    }, [floorTransactions])
+    }, [rawMaterialRows])
+
+    // Plant Totals bar → target page, flash whole selected month.
+    const handleTotalsBarClick = useCallback((entry) => {
+        const route = {
+            'Total Input': '/materials',
+            'Total Output': '/production-log',
+            'Wastage': '/wastage',
+        }[entry?.name]
+        if (route) navigate(route, { state: { flashDate: selectedMonth } })
+    }, [navigate, selectedMonth])
+
+    // Daily trend point → target page, flash that single day (label is YYYY-MM-DD).
+    const handleOutputPointClick = useCallback((label) => {
+        if (label) navigate('/production-log', { state: { flashDate: label } })
+    }, [navigate])
+
+    const handleInputPointClick = useCallback((label) => {
+        if (label) navigate('/materials', { state: { flashDate: label } })
+    }, [navigate])
 
     return (
         <div className="space-y-6">
@@ -292,9 +310,9 @@ export default function Dashboard() {
             </div>
 
             <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-                <SectionBarChart data={totalsChartData} title={`${monthLabel} Plant Totals (kg)`} />
-                <TrendLineChart data={dailyOutputTrend} title={`${monthLabel} Daily Output (kg)`} gradientId="gradDailyOut" />
-                <TrendLineChart data={dailyInputTrend} title={`${monthLabel} Daily Input (kg)`} color="var(--chart-bar2)" gradientId="gradDailyIn" />
+                <SectionBarChart data={totalsChartData} title={`${monthLabel} Plant Totals (kg)`} onBarClick={handleTotalsBarClick} />
+                <TrendLineChart data={dailyOutputTrend} title={`${monthLabel} Daily Output (kg)`} gradientId="gradDailyOut" onPointClick={handleOutputPointClick} />
+                <TrendLineChart data={dailyInputTrend} title={`${monthLabel} Daily Input (kg)`} color="var(--chart-bar2)" gradientId="gradDailyIn" onPointClick={handleInputPointClick} />
             </div>
 
             {/* Recent Wastage Logs */}

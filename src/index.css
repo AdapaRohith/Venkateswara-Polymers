@@ -1,5 +1,15 @@
 @import "tailwindcss";
 
+/* Row flash highlight — triggered by dashboard chart click → useFlashRows hook.
+   inset box-shadow overlays any existing row background without shifting layout. */
+@keyframes rowFlash {
+  0%, 100% { box-shadow: inset 0 0 0 9999px transparent; }
+  20%, 60% { box-shadow: inset 0 0 0 9999px var(--accent-gold-muted); }
+}
+.flash-row {
+  animation: rowFlash 2s ease-in-out;
+}
+
 @theme {
   --color-primary: var(--primary);
   --color-bg-primary: var(--bg-primary);

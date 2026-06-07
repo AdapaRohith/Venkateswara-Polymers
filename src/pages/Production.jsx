@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import useSSE from '../hooks/useSSE'
+import useFlashRows from '../hooks/useFlashRows'
 import EditEntryModal from '../components/EditEntryModal'
 import StockOverflowDialog, { parseAvailableKg } from '../components/StockOverflowDialog'
 import TolerancePanel from '../components/TolerancePanel'
@@ -184,6 +185,7 @@ export default function Production({ user }) {
   const [productionDate, setProductionDate] = useState(getTodayDate)
   const [history, setHistory] = useState([])
   const [historyMachineFilter, setHistoryMachineFilter] = useState('')
+  useFlashRows(history.length)
   const [selectedHistoryIds, setSelectedHistoryIds] = useState([])
   const [editingHistoryRow, setEditingHistoryRow] = useState(null)
   const [editHistoryForm, setEditHistoryForm] = useState({
@@ -1113,6 +1115,7 @@ export default function Production({ user }) {
                 history.map((row, idx) => (
                   <tr
                     key={row.id}
+                    data-flash-date={String(row.time || '').slice(0, 10)}
                     className={`
                       border-b border-white/[0.08] transition-colors hover:bg-white/[0.04]
                       ${idx === 0 ? 'bg-accent-gold/[0.03]' : idx % 2 === 0 ? '' : 'bg-white/[0.015]'}

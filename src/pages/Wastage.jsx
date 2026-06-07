@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import useSSE from '../hooks/useSSE'
+import useFlashRows from '../hooks/useFlashRows'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { exportSingleSheet } from '../utils/exportToExcel'
@@ -63,6 +64,7 @@ export default function Wastage({ user }) {
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [wastageRows, setWastageRows] = useState([])
+  useFlashRows(wastageRows.length)
   const [deletingId, setDeletingId] = useState(null)
 
   const [form, setForm] = useState({
@@ -272,7 +274,7 @@ export default function Wastage({ user }) {
                 </tr>
               ) : (
                 wastageRows.map((row, index) => (
-                  <tr key={`${row.source}-${row.id || index}`} className="hover:bg-white/[0.02] transition-colors">
+                  <tr key={`${row.source}-${row.id || index}`} data-flash-date={String(row.date || '').slice(0, 10)} className="hover:bg-white/[0.02] transition-colors">
                     <td className="px-6 py-3.5 text-text-secondary/60">{row.sno || index + 1}</td>
                     <td className="px-6 py-3.5 text-text-primary/90">{formatDate(row.date)}</td>
                     <td className="px-6 py-3.5 text-text-primary/90">{row.order_number || '-'}</td>

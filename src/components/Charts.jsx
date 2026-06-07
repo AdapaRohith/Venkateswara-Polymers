@@ -50,15 +50,18 @@ export function ComparisonBarChart({ data }) {
     )
 }
 
-export function TrendLineChart({ data, title = 'Trend', color, gradientId = 'gradNet' }) {
+export function TrendLineChart({ data, title = 'Trend', color, gradientId = 'gradNet', onPointClick }) {
     const lineColor = color || 'var(--chart-line)'
+    const handleChartClick = onPointClick
+        ? (state) => { if (state?.activeLabel) onPointClick(state.activeLabel) }
+        : undefined
     return (
         <div className="bg-bg-card rounded-lg border border-border-default p-5">
             <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase mb-5">
                 {title}
             </h3>
             <ResponsiveContainer width="100%" height={240}>
-                <AreaChart data={data}>
+                <AreaChart data={data} onClick={handleChartClick} style={onPointClick ? { cursor: 'pointer' } : undefined}>
                     <defs>
                         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
                             <stop offset="0%" stopColor={lineColor} stopOpacity={0.25} />
@@ -104,8 +107,11 @@ export function WastageAreaChart({ data }) {
     )
 }
 
-export function SectionBarChart({ data, title = 'Breakdown', color }) {
+export function SectionBarChart({ data, title = 'Breakdown', color, onBarClick }) {
     const barColor = color || 'var(--chart-bar1)'
+    const handleBarClick = onBarClick
+        ? (entry) => onBarClick(entry?.payload ?? entry)
+        : undefined
     return (
         <div className="bg-bg-card rounded-lg border border-border-default p-5">
             <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase mb-5">
@@ -117,7 +123,14 @@ export function SectionBarChart({ data, title = 'Breakdown', color }) {
                     <XAxis dataKey="name" tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={{ stroke: GRID_COLOR }} tickLine={false} />
                     <YAxis tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={false} tickLine={false} />
                     <Tooltip content={<CustomTooltip />} cursor={{ fill: 'var(--accent-gold-muted)' }} />
-                    <Bar dataKey="value" fill={barColor} radius={[3, 3, 0, 0]} maxBarSize={48} />
+                    <Bar
+                        dataKey="value"
+                        fill={barColor}
+                        radius={[3, 3, 0, 0]}
+                        maxBarSize={48}
+                        onClick={handleBarClick}
+                        cursor={onBarClick ? 'pointer' : undefined}
+                    />
                 </BarChart>
             </ResponsiveContainer>
         </div>

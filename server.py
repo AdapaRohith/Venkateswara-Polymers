@@ -113,7 +113,6 @@ def _cors_headers(request: Request) -> dict:
         }
     return {}
 
-
 # ─────────────────────────── Auth deps ───────────────────────────
 
 async def get_user(request: Request) -> dict:
