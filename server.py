@@ -1298,6 +1298,7 @@ async def create_order(request: Request, user=Depends(get_user)):
         raise HTTPException(400, "order_number is required")
     if not client_name:
         raise HTTPException(400, "client_name is required")
+    order_date = parse_optional_date(body.get("order_date"))
     normalized_status = normalize_order_status(body.get("status", "Active"))
     norm_items = [
         {"item_name": str(i.get("item_name") or "").strip(),
@@ -1310,8 +1311,8 @@ async def create_order(request: Request, user=Depends(get_user)):
         try:
             async with c.transaction():
                 order_row = await c.fetchrow(
-                    "INSERT INTO orders (order_number, client_name, status) VALUES ($1, $2, $3) RETURNING *",
-                    order_number, client_name, normalized_status)
+                    "INSERT INTO orders (order_number, client_name, status, order_date) VALUES ($1, $2, $3, $4) RETURNING *",
+                    order_number, client_name, normalized_status, order_date)
                 order = dict(order_row)
                 for item in norm_items:
                     await c.execute("INSERT INTO order_items (order_id, item_name, required_quantity, unit_price) VALUES ($1, $2, $3, $4)",
@@ -1729,6 +1730,7 @@ async def initialize_tables():
             id SERIAL PRIMARY KEY, order_number VARCHAR(255) UNIQUE,
             client_name VARCHAR(255), status VARCHAR(50) NOT NULL DEFAULT 'Active',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        await c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_date DATE")
         await c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_number ON orders(order_number) WHERE order_number IS NOT NULL")
         await c.execute("""CREATE TABLE IF NOT EXISTS order_items (
             id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,

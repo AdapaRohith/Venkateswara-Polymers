@@ -14,6 +14,8 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
+const getTodayDate = () => new Date().toISOString().split('T')[0]
+
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
   return Number.isFinite(numericValue) ? numericValue : fallback
@@ -29,7 +31,7 @@ function formatCurrency(value) {
 function CreatePOPanel({ onCreated }) {
   const toast = useToast()
   const [submitting, setSubmitting] = useState(false)
-  const [form, setForm] = useState({ po_number: '', client_name: '' })
+  const [form, setForm] = useState({ po_number: '', client_name: '', order_date: getTodayDate() })
   const [items, setItems] = useState([{ item_name: '', required_quantity: '', unit_price: '' }])
 
   const addItem = () => setItems((prev) => [...prev, { item_name: '', required_quantity: '', unit_price: '' }])
@@ -60,12 +62,13 @@ function CreatePOPanel({ onCreated }) {
       await createOrder({
         order_number: form.po_number.trim(),
         client_name: form.client_name.trim(),
+        order_date: form.order_date,
         status: 'Active',
         items: validItems,
       })
 
       toast.success(`PO ${form.po_number.trim()} created`)
-      setForm({ po_number: '', client_name: '' })
+      setForm({ po_number: '', client_name: '', order_date: getTodayDate() })
       setItems([{ item_name: '', required_quantity: '', unit_price: '' }])
       onCreated?.()
     } catch (err) {
@@ -79,7 +82,17 @@ function CreatePOPanel({ onCreated }) {
     <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm p-6">
       <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60 mb-6">Create New PO</h2>
       <form onSubmit={handleSubmit} className="space-y-5">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Order Date</label>
+            <input
+              type="date"
+              value={form.order_date}
+              onChange={(e) => setForm((prev) => ({ ...prev, order_date: e.target.value }))}
+              required
+              className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all"
+            />
+          </div>
           <div>
             <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">PO Number</label>
             <input
@@ -206,7 +219,7 @@ function POTable({ orders }) {
                         : 'text-accent-gold bg-accent-gold/10 border-accent-gold/20'
                     }`}>{order?.status || 'Active'}</span>
                   </td>
-                  <td className="px-4 py-3 text-text-secondary/40 text-xs whitespace-nowrap">{formatDate(order.created_at)}</td>
+                  <td className="px-4 py-3 text-text-secondary/40 text-xs whitespace-nowrap">{formatDate(order.order_date || order.created_at)}</td>
                 </tr>
               )
             }
@@ -244,7 +257,7 @@ function POTable({ orders }) {
                             : 'text-accent-gold bg-accent-gold/10 border-accent-gold/20'
                         }`}>{order?.status || 'Active'}</span>
                       </td>
-                      <td className="px-4 py-3 text-text-secondary/40 text-xs whitespace-nowrap" rowSpan={rowSpan}>{formatDate(order.created_at)}</td>
+                      <td className="px-4 py-3 text-text-secondary/40 text-xs whitespace-nowrap" rowSpan={rowSpan}>{formatDate(order.order_date || order.created_at)}</td>
                     </>
                   )}
                 </tr>
@@ -304,7 +317,7 @@ export default function ProductionOrders() {
     for (const order of list) {
       const items = Array.isArray(order?.items) ? order.items : []
       if (items.length === 0) {
-        rows.push({ po_number: order.order_number, client: order.client_name, item: '(No items)', required_kg: '', unit_price: '', total: '', fulfilled_kg: '', remaining_kg: '', pct_done: '', status: order?.status || 'Active', created: formatDate(order.created_at) })
+        rows.push({ po_number: order.order_number, client: order.client_name, item: '(No items)', required_kg: '', unit_price: '', total: '', fulfilled_kg: '', remaining_kg: '', pct_done: '', status: order?.status || 'Active', created: formatDate(order.order_date || order.created_at) })
       } else {
         for (const item of items) {
           const req = toNumber(item.required_quantity)
@@ -312,7 +325,7 @@ export default function ProductionOrders() {
           const rem = Math.max(0, req - ful)
           const lineTotal = toNumber(item.total_amount, req * toNumber(item.unit_price))
           const pct = req > 0 ? Math.min(100, (ful / req) * 100) : 0
-          rows.push({ po_number: order.order_number, client: order.client_name, item: item.item_name, required_kg: req.toFixed(2), unit_price: formatCurrency(item.unit_price), total: formatCurrency(lineTotal), fulfilled_kg: ful.toFixed(2), remaining_kg: rem.toFixed(2), pct_done: `${pct.toFixed(0)}%`, status: order?.status || 'Active', created: formatDate(order.created_at) })
+          rows.push({ po_number: order.order_number, client: order.client_name, item: item.item_name, required_kg: req.toFixed(2), unit_price: formatCurrency(item.unit_price), total: formatCurrency(lineTotal), fulfilled_kg: ful.toFixed(2), remaining_kg: rem.toFixed(2), pct_done: `${pct.toFixed(0)}%`, status: order?.status || 'Active', created: formatDate(order.order_date || order.created_at) })
         }
       }
     }
