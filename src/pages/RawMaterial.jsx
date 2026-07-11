@@ -53,6 +53,9 @@ export default function RawMaterial({ user }) {
   const [submittingMaterial, setSubmittingMaterial] = useState(false)
   const [deletingBatchId, setDeletingBatchId] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)  // { id, materialName, quantityKg }
+  const [editTotal, setEditTotal] = useState(null)  // { materialName, currentTotal }
+  const [editQuantity, setEditQuantity] = useState('')
+  const [submittingEdit, setSubmittingEdit] = useState(false)
 
   const handleExport = async () => {
     try {
@@ -123,6 +126,38 @@ export default function RawMaterial({ user }) {
       materialName: row.material_name,
       quantityKg: toNumber(row.quantity_kg).toFixed(2),
     })
+  }
+
+  const openEditTotal = (row) => {
+    setEditTotal({
+      materialName: row.material_name,
+      currentTotal: toNumber(row.total_quantity_kg),
+    })
+    setEditQuantity('')
+  }
+
+  const handleEditTotal = async () => {
+    const qty = toNumber(editQuantity)
+    if (qty <= 0) {
+      toast.error('Quantity must be greater than zero')
+      return
+    }
+    setSubmittingEdit(true)
+    try {
+      await api.post('/raw-material/add', {
+        material_name: editTotal.materialName,
+        quantity_kg: qty,
+        note: 'Manual stock adjustment',
+      })
+      toast.success(`Added ${qty.toFixed(2)} kg to ${editTotal.materialName}. Total is now ${(editTotal.currentTotal + qty).toFixed(2)} kg.`)
+      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
+      setEditTotal(null)
+    } catch (error) {
+      console.error('Failed to adjust stock', error)
+      toast.error(error?.response?.data?.error || error?.response?.data?.detail || 'Failed to adjust stock')
+    } finally {
+      setSubmittingEdit(false)
+    }
   }
 
   useEffect(() => {
@@ -418,6 +453,7 @@ export default function RawMaterial({ user }) {
         columns={columns}
         data={tableData}
         emptyMessage={loadingTotals ? 'Loading raw material totals...' : 'No raw materials yet.'}
+        onEdit={openEditTotal}
       />
 
       <div className="pt-6 border-t border-border-default space-y-4">
@@ -533,6 +569,71 @@ export default function RawMaterial({ user }) {
                 className="flex-1 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-red-700 active:scale-[0.98] disabled:opacity-50"
               >
                 {deletingBatchId === confirmDelete.id ? 'Deleting...' : 'Delete Batch'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editTotal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-bg-card rounded-2xl border border-border-default shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div>
+              <h3 className="text-lg font-semibold text-text-primary">Edit Stock Total</h3>
+              <p className="text-sm text-text-secondary mt-1">
+                Add stock to <strong>{editTotal.materialName}</strong>. This creates a new batch entry — use the delete button on batch entries to reduce stock.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-border-default bg-bg-primary/40 p-4 space-y-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-text-secondary">Current Total</span>
+                <span className="text-text-primary font-semibold">{editTotal.currentTotal.toFixed(2)} kg</span>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Quantity to Add (kg)</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  min="0.01"
+                  value={editQuantity}
+                  onChange={(e) => setEditQuantity(e.target.value)}
+                  placeholder="Enter quantity to add..."
+                  className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm w-full transition-colors duration-200 focus:border-accent-gold"
+                  disabled={submittingEdit}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleEditTotal()
+                  }}
+                  autoFocus
+                />
+              </div>
+              {editQuantity && toNumber(editQuantity) > 0 && (
+                <div className="flex justify-between text-sm pt-1 border-t border-border-subtle">
+                  <span className="text-text-secondary">New Total</span>
+                  <span className="text-accent-gold font-semibold">
+                    {(editTotal.currentTotal + toNumber(editQuantity)).toFixed(2)} kg
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => { setEditTotal(null); setEditQuantity('') }}
+                disabled={submittingEdit}
+                className="flex-1 rounded-lg border border-gray-700 px-4 py-2.5 text-sm font-semibold text-text-primary transition-colors hover:bg-bg-input/50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleEditTotal}
+                disabled={submittingEdit || toNumber(editQuantity) <= 0}
+                className="flex-1 rounded-lg bg-accent-gold px-4 py-2.5 text-sm font-semibold text-black transition-all hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50"
+              >
+                {submittingEdit ? 'Saving...' : 'Add Stock'}
               </button>
             </div>
           </div>
