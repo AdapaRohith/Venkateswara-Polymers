@@ -51,6 +51,8 @@ export default function RawMaterial({ user }) {
   const [showAddMaterial, setShowAddMaterial] = useState(false)
   const [newMaterialName, setNewMaterialName] = useState('')
   const [submittingMaterial, setSubmittingMaterial] = useState(false)
+  const [deletingBatchId, setDeletingBatchId] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(null)  // { id, materialName, quantityKg }
 
   const handleExport = async () => {
     try {
@@ -98,6 +100,29 @@ export default function RawMaterial({ user }) {
     } finally {
       setSubmittingMaterial(false)
     }
+  }
+
+  const handleDeleteBatch = async (batchId) => {
+    setDeletingBatchId(batchId)
+    try {
+      await api.delete(`/raw-material/batches/${batchId}`)
+      toast.success('Raw material batch deleted. Stock total has been consolidated.')
+      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
+    } catch (error) {
+      console.error('Failed to delete batch', error)
+      toast.error(error?.response?.data?.error || error?.response?.data?.detail || 'Failed to delete batch')
+    } finally {
+      setDeletingBatchId(null)
+      setConfirmDelete(null)
+    }
+  }
+
+  const promptDelete = (row) => {
+    setConfirmDelete({
+      id: row.id,
+      materialName: row.material_name,
+      quantityKg: toNumber(row.quantity_kg).toFixed(2),
+    })
   }
 
   useEffect(() => {
@@ -416,6 +441,7 @@ export default function RawMaterial({ user }) {
           columns={batchColumns}
           data={batches}
           emptyMessage={loadingBatches ? 'Loading batches...' : 'No raw material batches found.'}
+          onDelete={promptDelete}
         />
       </div>
 
@@ -463,6 +489,50 @@ export default function RawMaterial({ user }) {
                 className="flex-1 rounded-lg bg-accent-gold px-4 py-2.5 text-sm font-semibold text-black transition-all hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50"
               >
                 {submittingMaterial ? 'Adding...' : 'Add Material'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-bg-card rounded-2xl border border-border-default shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div>
+              <h3 className="text-lg font-semibold text-text-primary">Delete Raw Material Batch</h3>
+              <p className="text-sm text-text-secondary mt-1">
+                This will permanently delete this batch entry and deduct its quantity from the total stock.
+                Other entries will remain unchanged.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-border-default bg-bg-primary/40 p-4 space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-text-secondary">Material</span>
+                <span className="text-text-primary font-medium">{confirmDelete.materialName}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-text-secondary">Quantity</span>
+                <span className="text-red-400 font-semibold">{confirmDelete.quantityKg} kg</span>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(null)}
+                disabled={deletingBatchId !== null}
+                className="flex-1 rounded-lg border border-gray-700 px-4 py-2.5 text-sm font-semibold text-text-primary transition-colors hover:bg-bg-input/50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteBatch(confirmDelete.id)}
+                disabled={deletingBatchId !== null}
+                className="flex-1 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-red-700 active:scale-[0.98] disabled:opacity-50"
+              >
+                {deletingBatchId === confirmDelete.id ? 'Deleting...' : 'Delete Batch'}
               </button>
             </div>
           </div>
