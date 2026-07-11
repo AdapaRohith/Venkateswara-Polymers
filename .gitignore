@@ -27,3 +27,9 @@ server.js
 server_bak.js
 API_ENDPOINTS.md
 issue_uploads/
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
