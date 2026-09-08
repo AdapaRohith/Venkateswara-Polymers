@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 from contextlib import asynccontextmanager
 from decimal import Decimal
-from datetime import date as dt_date, datetime, timedelta, timezone
+from datetime import date as dt_date, datetime, time as dtime, timedelta, timezone
 
 import asyncpg
 from dotenv import load_dotenv
@@ -83,6 +83,19 @@ APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Kolkata")
 os.environ["TZ"] = APP_TIMEZONE
 if hasattr(time, "tzset"):
     time.tzset()
+
+
+def _parse_clock(text: str, fallback: dtime) -> dtime:
+    try:
+        return dtime.fromisoformat(text)
+    except (TypeError, ValueError):
+        return fallback
+
+
+# The clock time stamped on an entry filed for a past date. Start of the working
+# day, so backdated rows sort ahead of anything genuinely logged that day and are
+# recognisable as entered-after-the-fact at a glance.
+BACKDATED_ENTRY_TIME = _parse_clock(os.getenv("BACKDATED_ENTRY_TIME", "09:00:00"), dtime(9, 0, 0))
 
 pool: asyncpg.Pool = None  # type: ignore
 
@@ -378,15 +391,22 @@ def parse_optional_date(s) -> dt_date | None:
 def parse_entry_timestamp(payload: dict):
     """Honour a caller-supplied entry date so a shift can be logged after the fact.
 
-    Returns None for today (or when absent) so the column default stands; otherwise
-    the given date carrying the current time, keeping same-day ordering intact.
+    Today (or no date at all) returns None, so the column default stands and the
+    entry keeps the real clock time it was made at.
+
+    A past date gets BACKDATED_ENTRY_TIME instead of the current clock. When a
+    row is typed in says nothing about when the work happened, and stamping "now"
+    on it put two entries for the same past shift hours apart purely because one
+    was keyed in after lunch. A fixed time keeps every backdated entry for a day
+    at the same hour, and reads plainly as "entered later" rather than as a real
+    observation.
     """
     raw = (payload or {}).get("production_date") or (payload or {}).get("entry_date") \
         or (payload or {}).get("date")
     d = parse_optional_date(raw)
     if not d or d == dt_date.today():
         return None
-    return datetime.combine(d, datetime.now().time())
+    return datetime.combine(d, BACKDATED_ENTRY_TIME)
 
 
 def build_date_where(date_from, date_to, values: list, column: str) -> str:

@@ -194,6 +194,7 @@ export default function RawMaterial({ user }) {
   // date is part of the entry rather than whenever someone got to the computer.
   // Empty means today, which is the common case.
   const entryDate = addForm.date || todayIST()
+  const isBackdated = entryDate !== todayIST()
 
   const [batches, setBatches] = useState([])
   const [loadingBatches, setLoadingBatches] = useState(true)
@@ -448,6 +449,13 @@ export default function RawMaterial({ user }) {
               disabled={submittingAdd}
             />
           </div>
+
+          {isBackdated && (
+              <p className="inline-flex items-center gap-1.5 text-xs text-orange-400 md:col-span-4">
+                <Pictogram name="clock" size={13} />
+                Past date — this entry will be saved at 09:00:00 am
+              </p>
+            )}
 
           <div className="flex items-end">
             <button

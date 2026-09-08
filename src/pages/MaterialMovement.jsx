@@ -66,6 +66,7 @@ export default function MaterialMovement() {
   // Empty means today, which is the common case; a transfer written up the next
   // morning still lands on the day it happened.
   const entryDate = form.date || todayIST()
+  const isBackdated = entryDate !== todayIST()
 
   const loadData = async (silent = false) => {
     if (!silent) setLoading(true)
@@ -219,6 +220,13 @@ export default function MaterialMovement() {
                   className={fieldClass}
                 />
               </div>
+
+              {isBackdated && (
+                <p className="inline-flex items-center gap-1.5 text-xs text-orange-400">
+                  <Pictogram name="clock" size={13} />
+                  Past date — saved at 09:00:00 am
+                </p>
+              )}
 
               <button
                 type="submit"

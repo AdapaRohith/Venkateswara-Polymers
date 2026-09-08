@@ -716,7 +716,7 @@ export default function Production({ user }) {
             {isBackdated && (
               <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-orange-400">
                 <Pictogram name="warning" size={13} />
-                Logging for {formatDateIST(productionDate)}
+                Logging for {formatDateIST(productionDate)} — saved at 09:00:00 am
               </p>
             )}
           </div>
