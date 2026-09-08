@@ -44,7 +44,8 @@ BEGIN
     shifted := shifted + 1;
   END LOOP;
 
-  INSERT INTO system_config (key, value) VALUES ('timestamps_ist_shift_applied', now()::text);
+  -- system_config.value is numeric, so the marker records the epoch second.
+  INSERT INTO system_config (key, value) VALUES ('timestamps_ist_shift_applied', extract(epoch from now()));
   RAISE NOTICE 'Shifted % timestamp columns to IST', shifted;
 END $$;
 

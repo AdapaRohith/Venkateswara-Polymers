@@ -7,7 +7,7 @@ import usePersistentState from '../hooks/usePersistentState'
 import { exportSingleSheet } from '../utils/exportToExcel'
 import api from '../utils/api'
 import { getOrders } from '../utils/orders'
-import { todayIST } from '../utils/datetime'
+import { formatDate as formatDateIST, todayIST } from '../utils/datetime'
 
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -19,10 +19,10 @@ const getTodayDate = () => todayIST()
 
 const columns = [
     { key: 'sno', label: 'S.No' },
-    { key: 'date', label: 'Date', render: (v) => v ? new Date(v).toISOString().split('T')[0] : '' },
-    { key: 'order_number', label: 'Order' },
-    { key: 'material_name', label: 'Material' },
-    { key: 'netWeight', label: 'Net Weight', render: (v) => Number(v).toFixed(2) },
+    { key: 'date', label: 'Date', icon: 'date', render: (v) => formatDateIST(v, '') },
+    { key: 'order_number', label: 'Order', icon: 'order' },
+    { key: 'material_name', label: 'Material', icon: 'material' },
+    { key: 'netWeight', label: 'Net Weight', icon: 'weight', render: (v) => Number(v).toFixed(2) },
     {
         key: 'type', label: 'Type', render: (v) => (
             <span className={`px-2 py-0.5 rounded text-xs font-medium ${v === 'Buy' ? 'bg-accent-gold/15 text-accent-gold' : 'bg-emerald-500/15 text-emerald-400'}`}>
@@ -285,6 +285,8 @@ export default function Trading() {
 
             <DataTable
                title="Trading History"
+               titleIcon="date"
+               groupByDate="date"
                columns={columns}
                data={mappedData}
                emptyMessage="No trading entries yet."

@@ -516,7 +516,7 @@ export default function MachineReports() {
       )}
 
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between gap-4">
+        <div className="px-3 py-2 border-b border-border-subtle flex items-center justify-between gap-4">
           <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Machine Output Breakdown</h2>
           <div className="flex items-center gap-2">
             {report.length > 0 && (
@@ -535,7 +535,7 @@ export default function MachineReports() {
         {loading ? (
           <div className="divide-y divide-border-subtle">
             {[...Array(5)].map((_, index) => (
-              <div key={index} className="flex items-center gap-4 px-6 py-4">
+              <div key={index} className="flex items-center gap-4 px-3 py-2">
                 <div className="h-4 w-24 bg-bg-primary rounded animate-pulse" />
                 <div className="h-4 flex-1 bg-bg-primary rounded animate-pulse" />
                 <div className="h-4 w-20 bg-bg-primary rounded animate-pulse" />
@@ -551,12 +551,12 @@ export default function MachineReports() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border-subtle bg-bg-primary/50">
-                  <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Machine</th>
-                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Entries</th>
-                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Net Output (kg)</th>
-                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Gross (kg)</th>
-                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Tare (kg)</th>
-                  <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Bar</th>
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Machine</th>
+                  <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Entries</th>
+                  <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Net Output (kg)</th>
+                  <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Gross (kg)</th>
+                  <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Tare (kg)</th>
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Bar</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle">
@@ -569,17 +569,17 @@ export default function MachineReports() {
 
                     return (
                       <tr key={row.machine_id} className={`hover:bg-white/[0.02] transition-colors ${!hasData ? 'opacity-40' : ''}`}>
-                        <td className="px-6 py-4">
+                        <td className="px-3 py-2">
                           <div className="flex items-center gap-2">
                             <div className={`w-2 h-2 rounded-full ${hasData ? 'bg-accent-gold' : 'bg-text-secondary/20'}`} />
                             <span className="font-semibold text-text-primary">{row.machine_name || `Machine ${row.machine_id}`}</span>
                           </div>
                         </td>
-                        <td className="px-6 py-4 text-right font-mono text-text-secondary">{toNumber(row.total_entries)}</td>
-                        <td className="px-6 py-4 text-right font-mono font-bold text-accent-gold">{net.toFixed(3)}</td>
-                        <td className="px-6 py-4 text-right font-mono text-text-secondary/80">{toNumber(row.total_gross_weight_kg).toFixed(3)}</td>
-                        <td className="px-6 py-4 text-right font-mono text-text-secondary/60">{toNumber(row.total_tare_weight_kg).toFixed(3)}</td>
-                        <td className="px-6 py-4">
+                        <td className="px-3 py-2 text-right font-mono text-text-secondary">{toNumber(row.total_entries)}</td>
+                        <td className="px-3 py-2 text-right font-mono font-bold text-accent-gold">{net.toFixed(3)}</td>
+                        <td className="px-3 py-2 text-right font-mono text-text-secondary/80">{toNumber(row.total_gross_weight_kg).toFixed(3)}</td>
+                        <td className="px-3 py-2 text-right font-mono text-text-secondary/60">{toNumber(row.total_tare_weight_kg).toFixed(3)}</td>
+                        <td className="px-3 py-2">
                           <div className="w-32 h-2 bg-bg-primary rounded-full overflow-hidden">
                             <div
                               className="h-full bg-accent-gold rounded-full transition-all duration-700"
@@ -593,10 +593,10 @@ export default function MachineReports() {
               </tbody>
               <tfoot>
                 <tr className="border-t-2 border-border-default bg-bg-primary/30">
-                  <td className="px-6 py-3 text-xs font-bold uppercase tracking-wide text-text-secondary/60">Total</td>
-                  <td className="px-6 py-3 text-right font-mono font-bold text-text-primary">{totalEntries}</td>
-                  <td className="px-6 py-3 text-right font-mono font-bold text-accent-gold">{totalNet.toFixed(3)}</td>
-                  <td className="px-6 py-3 text-right font-mono font-bold text-text-secondary/80">{totalGross.toFixed(3)}</td>
+                  <td className="px-3 py-2 text-xs font-bold uppercase tracking-wide text-text-secondary/60">Total</td>
+                  <td className="px-3 py-2 text-right font-mono font-bold text-text-primary">{totalEntries}</td>
+                  <td className="px-3 py-2 text-right font-mono font-bold text-accent-gold">{totalNet.toFixed(3)}</td>
+                  <td className="px-3 py-2 text-right font-mono font-bold text-text-secondary/80">{totalGross.toFixed(3)}</td>
                   <td colSpan={2} />
                 </tr>
               </tfoot>
@@ -608,7 +608,7 @@ export default function MachineReports() {
       {/* ── Size Totals Table ── */}
       {!loading && sizeTotals.length > 0 && (
         <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
-          <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between gap-4">
+          <div className="px-3 py-2 border-b border-border-subtle flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-cyan-500/15 flex items-center justify-center">
                 <svg className="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -630,7 +630,7 @@ export default function MachineReports() {
             </div>
           </div>
           {/* ── Size Totals Search Bar ── */}
-          <div className="px-6 py-3 border-b border-border-subtle bg-bg-primary/30 flex flex-wrap items-center gap-3">
+          <div className="px-3 py-2 border-b border-border-subtle bg-bg-primary/30 flex flex-wrap items-center gap-3">
             <div className="relative flex-1 min-w-[180px] max-w-xs">
               <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary/40" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
@@ -682,12 +682,12 @@ export default function MachineReports() {
                   <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">
                     <input type="checkbox" checked={allSizesSelected} onChange={toggleAllSizes} className="h-4 w-4 accent-cyan-400" aria-label="Select all sizes" />
                   </th>
-                  <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Size</th>
-                  <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Machine(s)</th>
-                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Entries</th>
-                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Net (kg)</th>
-                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Gross (kg)</th>
-                  <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Tare (kg)</th>
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Size</th>
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Machine(s)</th>
+                  <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Entries</th>
+                  <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Net (kg)</th>
+                  <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Gross (kg)</th>
+                  <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Total Tare (kg)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle">
@@ -696,24 +696,24 @@ export default function MachineReports() {
                     <td className="px-4 py-4">
                       <input type="checkbox" checked={selectedSizeIds.includes(s.size)} onChange={() => toggleOneSize(s.size)} className="h-4 w-4 accent-cyan-400" aria-label={`Select size ${s.size}`} />
                     </td>
-                    <td className="px-6 py-4 font-semibold text-text-primary">{s.size}</td>
-                    <td className="px-6 py-4 text-text-secondary/80 text-xs">{s.machines}</td>
-                    <td className="px-6 py-4 text-right font-mono text-text-secondary">{s.entries}</td>
-                    <td className="px-6 py-4 text-right font-mono font-bold text-cyan-400">{s.net.toFixed(3)}</td>
-                    <td className="px-6 py-4 text-right font-mono text-text-secondary/80">{s.gross.toFixed(3)}</td>
-                    <td className="px-6 py-4 text-right font-mono text-text-secondary/60">{s.tare.toFixed(3)}</td>
+                    <td className="px-3 py-2 font-semibold text-text-primary">{s.size}</td>
+                    <td className="px-3 py-2 text-text-secondary/80 text-xs">{s.machines}</td>
+                    <td className="px-3 py-2 text-right font-mono text-text-secondary">{s.entries}</td>
+                    <td className="px-3 py-2 text-right font-mono font-bold text-cyan-400">{s.net.toFixed(3)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-text-secondary/80">{s.gross.toFixed(3)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-text-secondary/60">{s.tare.toFixed(3)}</td>
                   </tr>
                 ))}
               </tbody>
               <tfoot>
                 <tr className="border-t-2 border-border-default bg-bg-primary/30">
                   <td className="px-4 py-3" />
-                  <td className="px-6 py-3 text-xs font-bold uppercase tracking-wide text-text-secondary/60">Total</td>
-                  <td className="px-6 py-3" />
-                  <td className="px-6 py-3 text-right font-mono font-bold text-text-primary">{filteredSizeTotals.reduce((s, r) => s + r.entries, 0)}</td>
-                  <td className="px-6 py-3 text-right font-mono font-bold text-cyan-400">{filteredSizeTotals.reduce((s, r) => s + r.net, 0).toFixed(3)}</td>
-                  <td className="px-6 py-3 text-right font-mono font-bold text-text-secondary/80">{filteredSizeTotals.reduce((s, r) => s + r.gross, 0).toFixed(3)}</td>
-                  <td className="px-6 py-3 text-right font-mono font-bold text-text-secondary/60">{filteredSizeTotals.reduce((s, r) => s + r.tare, 0).toFixed(3)}</td>
+                  <td className="px-3 py-2 text-xs font-bold uppercase tracking-wide text-text-secondary/60">Total</td>
+                  <td className="px-3 py-2" />
+                  <td className="px-3 py-2 text-right font-mono font-bold text-text-primary">{filteredSizeTotals.reduce((s, r) => s + r.entries, 0)}</td>
+                  <td className="px-3 py-2 text-right font-mono font-bold text-cyan-400">{filteredSizeTotals.reduce((s, r) => s + r.net, 0).toFixed(3)}</td>
+                  <td className="px-3 py-2 text-right font-mono font-bold text-text-secondary/80">{filteredSizeTotals.reduce((s, r) => s + r.gross, 0).toFixed(3)}</td>
+                  <td className="px-3 py-2 text-right font-mono font-bold text-text-secondary/60">{filteredSizeTotals.reduce((s, r) => s + r.tare, 0).toFixed(3)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -722,7 +722,7 @@ export default function MachineReports() {
       )}
 
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between gap-4">
+        <div className="px-3 py-2 border-b border-border-subtle flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-purple-500/15 flex items-center justify-center">
               <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -752,7 +752,7 @@ export default function MachineReports() {
         {detailLoading ? (
           <div className="divide-y divide-border-subtle">
             {[...Array(5)].map((_, index) => (
-              <div key={index} className="flex items-center gap-4 px-6 py-4">
+              <div key={index} className="flex items-center gap-4 px-3 py-2">
                 <div className="h-4 w-20 bg-bg-primary rounded animate-pulse" />
                 <div className="h-4 flex-1 bg-bg-primary rounded animate-pulse" />
                 <div className="h-4 w-16 bg-bg-primary rounded animate-pulse" />

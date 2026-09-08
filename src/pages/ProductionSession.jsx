@@ -286,10 +286,10 @@ export default function ProductionSession() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border-default">
-                      <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
+                      <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
                         Material Name
                       </th>
-                      <th className="px-6 py-3 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
+                      <th className="px-3 py-2 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
                         Qty (kg)
                       </th>
                     </tr>
@@ -309,8 +309,8 @@ export default function ProductionSession() {
                             index % 2 === 0 ? '' : 'bg-white/[0.01]'
                           }`}
                         >
-                          <td className="px-6 py-3 text-text-primary/90">{row.material_name}</td>
-                          <td className="px-6 py-3 text-right font-semibold text-accent-gold">
+                          <td className="px-3 py-2 text-text-primary/90">{row.material_name}</td>
+                          <td className="px-3 py-2 text-right font-semibold text-accent-gold">
                             {toNumber(row.total_quantity_kg).toFixed(2)}
                           </td>
                         </tr>
@@ -393,10 +393,10 @@ export default function ProductionSession() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border-default">
-                        <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Time</th>
-                        <th className="px-6 py-3 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Gross</th>
-                        <th className="px-6 py-3 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Tare</th>
-                        <th className="px-6 py-3 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Net</th>
+                        <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Time</th>
+                        <th className="px-3 py-2 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Gross</th>
+                        <th className="px-3 py-2 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Tare</th>
+                        <th className="px-3 py-2 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">Net</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -414,10 +414,10 @@ export default function ProductionSession() {
                               index % 2 === 0 ? '' : 'bg-white/[0.01]'
                             }`}
                           >
-                            <td className="px-6 py-3 text-text-primary/90">{formatDateTime(row.createdAt)}</td>
-                            <td className="px-6 py-3 text-right text-text-primary/90">{toNumber(row.grossWeight).toFixed(2)}</td>
-                            <td className="px-6 py-3 text-right text-text-primary/90">{toNumber(row.tareWeight).toFixed(2)}</td>
-                            <td className="px-6 py-3 text-right font-semibold text-accent-gold">{toNumber(row.netWeight).toFixed(2)}</td>
+                            <td className="px-3 py-2 text-text-primary/90">{formatDateTime(row.createdAt)}</td>
+                            <td className="px-3 py-2 text-right text-text-primary/90">{toNumber(row.grossWeight).toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right text-text-primary/90">{toNumber(row.tareWeight).toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right font-semibold text-accent-gold">{toNumber(row.netWeight).toFixed(2)}</td>
                           </tr>
                         ))
                       )}

@@ -220,7 +220,7 @@ export default function LogHistory() {
       )}
 
       <div className="rounded-[28px] border border-border-default bg-bg-card shadow-lg shadow-black/30">
-        <div className="flex items-center justify-between border-b border-border-default px-6 py-4">
+        <div className="flex items-center justify-between border-b border-border-default px-3 py-2">
           <div className="flex items-center gap-3">
             <span className="rounded px-2.5 py-1 text-xs font-medium bg-accent-gold/15 text-accent-gold">
               Floor Transactions
@@ -262,22 +262,22 @@ export default function LogHistory() {
                     aria-label="Select all floor transactions"
                   />
                 </th>
-                <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
+                <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
                   Material
                 </th>
-                <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
+                <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
                   Type
                 </th>
-                <th className="px-6 py-3 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
+                <th className="px-3 py-2 text-right text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
                   Qty (kg)
                 </th>
-                <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
+                <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
                   Direction
                 </th>
-                <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
+                <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
                   Time
                 </th>
-                <th className="px-6 py-3 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
+                <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-widest text-text-secondary/60">
                   Actions
                 </th>
               </tr>
@@ -316,12 +316,12 @@ export default function LogHistory() {
                         <span className="text-[10px] text-text-secondary/40">Locked</span>
                       )}
                     </td>
-                    <td className="px-6 py-3 text-text-primary/90">{row.material_name || `Material ${row.material_type_id}`}</td>
-                    <td className="px-6 py-3 text-text-primary/90">{row.movement_type || row.transaction_type || '—'}</td>
-                    <td className="px-6 py-3 text-right font-medium text-accent-gold">{toNumber(row.quantity_kg).toFixed(2)}</td>
-                    <td className="px-6 py-3 text-text-primary/90">{row.direction || '—'}</td>
-                    <td className="px-6 py-3 text-text-secondary">{formatDateTime(row.created_at || row.createdAt)}</td>
-                    <td className="px-6 py-3">
+                    <td className="px-3 py-2 text-text-primary/90">{row.material_name || `Material ${row.material_type_id}`}</td>
+                    <td className="px-3 py-2 text-text-primary/90">{row.movement_type || row.transaction_type || '—'}</td>
+                    <td className="px-3 py-2 text-right font-medium text-accent-gold">{toNumber(row.quantity_kg).toFixed(2)}</td>
+                    <td className="px-3 py-2 text-text-primary/90">{row.direction || '—'}</td>
+                    <td className="px-3 py-2 text-text-secondary">{formatDateTime(row.created_at || row.createdAt)}</td>
+                    <td className="px-3 py-2">
                       {String(row.movement_type || '').toUpperCase() === 'CONSUMPTION' ? (
                         <span className="text-[10px] text-text-secondary/40">Edit in Production</span>
                       ) : (

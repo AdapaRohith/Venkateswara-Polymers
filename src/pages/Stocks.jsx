@@ -294,10 +294,10 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border-default">
-                <th className="text-left px-6 py-4 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
+                <th className="text-left px-3 py-2 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
                   Material Name
                 </th>
-                <th className="text-right px-6 py-4 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
+                <th className="text-right px-3 py-2 text-[11px] font-medium tracking-widest uppercase text-text-secondary/60">
                   Available Quantity (kg)
                 </th>
               </tr>
@@ -317,10 +317,10 @@ export default function Stocks({ floorStock = [], refreshFloorStock }) {
                       idx % 2 === 0 ? 'bg-transparent' : 'bg-white/[0.01]'
                     }`}
                   >
-                    <td className="px-6 py-3.5 text-text-primary/90 font-normal">
+                    <td className="px-3 py-1.5 text-text-primary/90 font-normal">
                       {row.material_name || `Material ${row.material_type_id}`}
                     </td>
-                    <td className="px-6 py-3.5 text-right text-accent-gold font-semibold">
+                    <td className="px-3 py-1.5 text-right text-accent-gold font-semibold">
                       {toNumber(row.total_quantity_kg).toFixed(2)}
                     </td>
                   </tr>

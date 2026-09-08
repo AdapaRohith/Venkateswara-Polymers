@@ -239,7 +239,7 @@ export default function Wastage({ user }) {
       </div>
 
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between">
+        <div className="px-3 py-2 border-b border-border-subtle flex items-center justify-between">
           <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Wastage Logs</h2>
           {totalWastage > 0 && (
             <span className="text-xs font-semibold font-mono text-accent-gold bg-accent-gold/10 border border-accent-gold/20 rounded-lg px-3 py-1">
@@ -252,13 +252,13 @@ export default function Wastage({ user }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border-subtle bg-bg-primary/30">
-                <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">S.No</th>
-                <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Date</th>
-                <th className="px-6 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Order</th>
-                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Gross (kg)</th>
-                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Net (kg)</th>
-                <th className="px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Actual Wastage (kg)</th>
-                <th className="px-6 py-3 text-center text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Action</th>
+                <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">S.No</th>
+                <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Date</th>
+                <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Order</th>
+                <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Gross (kg)</th>
+                <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Net (kg)</th>
+                <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Actual Wastage (kg)</th>
+                <th className="px-3 py-2 text-center text-[10px] font-semibold uppercase tracking-widest text-text-secondary/50">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border-subtle">
@@ -273,13 +273,13 @@ export default function Wastage({ user }) {
               ) : (
                 wastageRows.map((row, index) => (
                   <tr key={`${row.source}-${row.id || index}`} data-flash-date={String(row.date || '').slice(0, 10)} className="hover:bg-white/[0.02] transition-colors">
-                    <td className="px-6 py-3.5 text-text-secondary/60">{row.sno || index + 1}</td>
-                    <td className="px-6 py-3.5 text-text-primary/90">{formatDate(row.date)}</td>
-                    <td className="px-6 py-3.5 text-text-primary/90">{row.order_number || '-'}</td>
-                    <td className="px-6 py-3.5 text-right font-mono text-text-secondary/80">{toNumber(row.grossWeight).toFixed(2)}</td>
-                    <td className="px-6 py-3.5 text-right font-mono text-text-secondary/80">{toNumber(row.netWeight).toFixed(2)}</td>
-                    <td className="px-6 py-3.5 text-right font-mono font-bold text-accent-gold">{toNumber(row.actualWeight).toFixed(2)}</td>
-                    <td className="px-6 py-3.5 text-center">
+                    <td className="px-3 py-1.5 text-text-secondary/60">{row.sno || index + 1}</td>
+                    <td className="px-3 py-1.5 text-text-primary/90">{formatDate(row.date)}</td>
+                    <td className="px-3 py-1.5 text-text-primary/90">{row.order_number || '-'}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-text-secondary/80">{toNumber(row.grossWeight).toFixed(2)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-text-secondary/80">{toNumber(row.netWeight).toFixed(2)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono font-bold text-accent-gold">{toNumber(row.actualWeight).toFixed(2)}</td>
+                    <td className="px-3 py-1.5 text-center">
                       <button
                         type="button"
                         onClick={() => handleDelete(row)}
