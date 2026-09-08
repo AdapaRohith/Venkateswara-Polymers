@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 from contextlib import asynccontextmanager
 from decimal import Decimal
-from datetime import date as dt_date
+from datetime import date as dt_date, datetime, timedelta, timezone
 
 import asyncpg
 from dotenv import load_dotenv
@@ -37,7 +37,15 @@ class AppResponse(ORJSONResponse):
 load_dotenv()
 
 JWT_SECRET = os.getenv("JWT_SECRET", "")
+if not JWT_SECRET or len(JWT_SECRET) < 16:
+    raise RuntimeError(
+        "JWT_SECRET is missing or too short. Refusing to start — an empty signing key "
+        "lets anyone mint an owner token."
+    )
 JWT_ALGORITHM = "HS256"
+# Lifetime for newly issued tokens. Tokens issued before this change carry no `exp`
+# and stay valid, so nobody is logged out by the upgrade.
+JWT_TTL_SECONDS = int(os.getenv("JWT_TTL_SECONDS", str(30 * 24 * 3600)))
 STRICT_TOLERANCE = os.getenv("STRICT_TOLERANCE", "false").lower() == "true"
 ISSUE_UPLOAD_DIR = Path(os.getenv("ISSUE_UPLOAD_DIR", "issue_uploads")).resolve()
 ISSUE_MAX_FILES = int(os.getenv("ISSUE_MAX_FILES", "5"))
@@ -88,24 +96,34 @@ async def lifespan(app: FastAPI):
     await pool.close()
 
 
-app = FastAPI(lifespan=lifespan, default_response_class=AppResponse)
-
+# A single label only (no dots) in front of the allowed apex domains, so
+# `https://evil.attacker.com.avlokai.com.example.net` and friends cannot match, and
+# third-party sites parked on shared hosts stay out unless explicitly allowed.
+_CORS_EXTRA_ORIGINS = [
+    o.strip() for o in os.getenv("CORS_EXTRA_ORIGINS", "").split(",") if o.strip()
+]
 CORS_ORIGIN_RE = re.compile(
-    r"(https://.*\.(avlokai\.com|vercel\.app|pages\.dev)|http://localhost:\d+|http://.*\.devtunnels\.ms)"
+    r"(https://[A-Za-z0-9-]+\.avlokai\.com"
+    r"|https://[A-Za-z0-9-]+(-[A-Za-z0-9-]+)*\.vercel\.app"
+    r"|https://[A-Za-z0-9-]+\.pages\.dev"
+    r"|http://localhost:\d+|http://127\.0\.0\.1:\d+"
+    r"|https?://[A-Za-z0-9-]+\.devtunnels\.ms)"
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=CORS_ORIGIN_RE.pattern,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Internal-Token", "X-Requested-With"],
-)
+CORS_ALLOW_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
+CORS_ALLOW_HEADERS = {"Content-Type", "Authorization", "X-Internal-Token", "X-Requested-With"}
 
 
-def _cors_headers(request: Request) -> dict:
-    origin = request.headers.get("origin", "")
-    if origin and CORS_ORIGIN_RE.fullmatch(origin):
+def _origin_allowed(origin: str) -> bool:
+    if not origin:
+        return False
+    if origin in _CORS_EXTRA_ORIGINS:
+        return True
+    return bool(CORS_ORIGIN_RE.fullmatch(origin))
+
+
+def _cors_headers_for_origin(origin: str) -> dict:
+    if _origin_allowed(origin):
         return {
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Credentials": "true",
@@ -113,7 +131,119 @@ def _cors_headers(request: Request) -> dict:
         }
     return {}
 
+
+# ── Raw ASGI CORS catch-all ──────────────────────────────────────────────────
+# Wraps the FastAPI app at the lowest level so EVERY response gets CORS headers,
+# including proxy error pages and responses that bypass Starlette middleware.
+class _ASGICorsMiddleware:
+    def __init__(self, app, origin_re, allow_methods: set[str], allow_headers: set[str]):
+        self.app = app
+        self.origin_re = origin_re
+        self.allow_methods = allow_methods
+        self.allow_headers = allow_headers
+        self._allow_headers_str = ", ".join(sorted(
+            {h.lower() for h in allow_headers}
+            | {"accept", "accept-language", "content-language", "content-type"},
+        ))
+        self._allow_methods_str = ", ".join(sorted(allow_methods))
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Decode origin from raw ASGI scope headers
+        origin = ""
+        for key, val in scope.get("headers", []):
+            if key == b"origin":
+                origin = val.decode()
+                break
+
+        # Handle OPTIONS preflight at the raw ASGI level
+        if scope["method"] == "OPTIONS":
+            has_acrm = any(k == b"access-control-request-method" for k, _ in scope.get("headers", []))
+            if has_acrm:
+                if _origin_allowed(origin):
+                    await send({
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [
+                            (b"access-control-allow-origin", origin.encode()),
+                            (b"access-control-allow-credentials", b"true"),
+                            (b"access-control-allow-methods", self._allow_methods_str.encode()),
+                            (b"access-control-allow-headers", self._allow_headers_str.encode()),
+                            (b"access-control-max-age", b"600"),
+                            (b"vary", b"Origin"),
+                            (b"content-length", b"0"),
+                        ],
+                    })
+                    await send({"type": "http.response.body", "body": b""})
+                    return
+                # Origin not allowed — let the request proceed, the inner app
+                # will return the actual error (401/403/etc.) with CORS headers
+                # injected by the send wrapper below.
+
+        # Inject CORS headers into every non-preflight response
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start" and origin and _origin_allowed(origin):
+                headers = list(message.get("headers", []))
+                # Only add if not already present (don't double-add)
+                existing = {k.lower(): True for k, _ in headers}
+                if b"access-control-allow-origin" not in existing:
+                    headers.append((b"access-control-allow-origin", origin.encode()))
+                if b"access-control-allow-credentials" not in existing:
+                    headers.append((b"access-control-allow-credentials", b"true"))
+                if b"vary" not in existing:
+                    headers.append((b"vary", b"Origin"))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+app = FastAPI(lifespan=lifespan, default_response_class=AppResponse)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=CORS_ORIGIN_RE.pattern,
+    allow_credentials=True,
+    allow_methods=sorted(CORS_ALLOW_METHODS),
+    allow_headers=sorted(CORS_ALLOW_HEADERS),
+)
+
+
+def _cors_headers(request: Request) -> dict:
+    return _cors_headers_for_origin(request.headers.get("origin", ""))
+
 # ─────────────────────────── Auth deps ───────────────────────────
+
+# Role and account status live in the database, not in the token. Cached briefly so a
+# revoked account or a demoted owner stops working within seconds instead of never.
+_ACCOUNT_CACHE_TTL = 30.0
+_account_cache: dict[int, tuple[float, dict | None]] = {}
+
+
+async def _load_account(user_id: int) -> dict | None:
+    now = time.monotonic()
+    hit = _account_cache.get(user_id)
+    if hit and now - hit[0] < _ACCOUNT_CACHE_TTL:
+        return hit[1]
+    async with pool.acquire() as c:
+        r = await c.fetchrow("SELECT id, role, status FROM users WHERE id = $1", user_id)
+    account = dict(r) if r else None
+    _account_cache[user_id] = (now, account)
+    return account
+
+
+def invalidate_account_cache(user_id=None):
+    if user_id is None:
+        _account_cache.clear()
+        return
+    try:
+        _account_cache.pop(int(user_id), None)
+    except (TypeError, ValueError):
+        _account_cache.clear()
+
 
 async def get_user(request: Request) -> dict:
     header = request.headers.get("Authorization", "")
@@ -122,13 +252,23 @@ async def get_user(request: Request) -> dict:
         raise HTTPException(401, "Unauthorized")
     try:
         payload = jwt.decode(parts[1], JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        derived = payload.get("user_id") or payload.get("id") or payload.get("userId")
-        if derived is not None:
-            payload.setdefault("id", derived)
-            payload.setdefault("user_id", derived)
-        return payload
     except JWTError:
         raise HTTPException(401, "Invalid token")
+    derived = payload.get("user_id") or payload.get("id") or payload.get("userId")
+    if derived is not None:
+        payload.setdefault("id", derived)
+        payload.setdefault("user_id", derived)
+    uid = user_id_from_token(payload)
+    if uid is None:
+        raise HTTPException(401, "Invalid token")
+    account = await _load_account(uid)
+    if not account:
+        raise HTTPException(401, "Account no longer exists")
+    if str(account.get("status") or "").lower() != "approved":
+        raise HTTPException(403, "Account not approved")
+    # DB role always wins over whatever the token was minted with.
+    payload["role"] = account.get("role")
+    return payload
 
 
 async def owner_only(user: dict = Depends(get_user)) -> dict:
@@ -222,6 +362,20 @@ def parse_optional_date(s) -> dt_date | None:
     return parse_date(s) if s else None
 
 
+def parse_entry_timestamp(payload: dict):
+    """Honour a caller-supplied entry date so a shift can be logged after the fact.
+
+    Returns None for today (or when absent) so the column default stands; otherwise
+    the given date carrying the current time, keeping same-day ordering intact.
+    """
+    raw = (payload or {}).get("production_date") or (payload or {}).get("entry_date") \
+        or (payload or {}).get("date")
+    d = parse_optional_date(raw)
+    if not d or d == dt_date.today():
+        return None
+    return datetime.combine(d, datetime.now().time())
+
+
 def build_date_where(date_from, date_to, values: list, column: str) -> str:
     conds = []
     if date_from:
@@ -254,6 +408,14 @@ def issue_attachment_url(report_id: int, attachment_id: int) -> str:
     return f"/issue-reports/{report_id}/attachments/{attachment_id}"
 
 
+def parse_machine_id(value) -> int:
+    """Accept 1, '1' or 'M1' from query strings without blowing up on a 500."""
+    digits = re.sub(r"\D", "", str(value or ""))
+    if not digits:
+        raise HTTPException(400, "Invalid machine_id")
+    return int(digits)
+
+
 def get_machine_variants(machine_id) -> list[str]:
     raw = str(machine_id or "").strip()
     if not raw:
@@ -267,8 +429,10 @@ def get_machine_variants(machine_id) -> list[str]:
 
 
 def normalize_order_status(s: str) -> str:
-    v = str(s or "Active").strip().lower()
-    return "completed" if v == "completed" else "cancelled" if v == "cancelled" else "Active"
+    v = str(s or "").strip().lower()
+    if v in ("active", "completed", "cancelled"):
+        return "completed" if v == "completed" else "cancelled" if v == "cancelled" else "Active"
+    return v  # let caller validate
 
 
 def normalize_movement_type(s: str) -> str:
@@ -276,7 +440,13 @@ def normalize_movement_type(s: str) -> str:
     return "ADJUSTMENT" if v == "WASTAGE" else v
 
 
-def get_expected_qty(payload: dict, actual: float, extra: list = None) -> float:
+def get_expected_qty(payload: dict, actual: float, extra: list = None):
+    """The target quantity the caller declared, or None if it declared none.
+
+    Returning `actual` as a fallback made expected == actual, so deviation was always
+    0 and the tolerance check could never report a breach. None keeps that case
+    honest: the entry is recorded as not measured rather than as passing.
+    """
     keys = list(extra or []) + [
         "expected_quantity_kg", "expected_quantity", "expected_net_weight_kg",
         "planned_quantity_kg", "target_quantity_kg", "required_quantity",
@@ -287,7 +457,7 @@ def get_expected_qty(payload: dict, actual: float, extra: list = None) -> float:
             f = to_num(v, None)
             if f is not None:
                 return f
-    return actual
+    return None
 
 
 async def eval_tolerance(expected: float, actual: float, conn) -> dict:
@@ -309,11 +479,17 @@ async def eval_tolerance(expected: float, actual: float, conn) -> dict:
             "deviation_percent": deviation, "tolerance_status": status}
 
 
-async def eval_qty_tolerance(expected: float, actual: float, conn, ctx: dict = None) -> dict:
+async def eval_qty_tolerance(expected, actual: float, conn, ctx: dict = None) -> dict:
+    evaluated = expected is not None
+    if not evaluated:
+        expected = actual
     info = await eval_tolerance(expected, actual, conn)
-    if info["tolerance_status"] == "BREACH":
+    if not evaluated:
+        # No declared target to measure against — report it, don't pretend it passed.
+        info = {**info, "tolerance_status": "OK", "deviation_percent": 0.0}
+    elif info["tolerance_status"] == "BREACH":
         logger.warning(f"Tolerance breach: {ctx} expected={expected} actual={actual}")
-    return {**info, "expected": expected, "actual": actual}
+    return {**info, "expected": expected, "actual": actual, "evaluated": evaluated}
 
 
 async def get_or_create_material(conn, name: str) -> int:
@@ -379,13 +555,47 @@ async def resolve_material_type_id(conn, material_id, material_name: str):
     return None
 
 
+def require_tx(conn):
+    """Every stock mutation must be inside a transaction — otherwise the
+    SELECT ... FOR UPDATE below releases its lock immediately and two concurrent
+    writers can both pass the 'enough stock?' check."""
+    if not conn.is_in_transaction():
+        raise RuntimeError("Stock mutations must run inside a transaction")
+
+
+async def reverse_raw_batch(conn, batch_row):
+    """Undo a raw-material batch's effect on the running total.
+
+    Refuses when the quantity is no longer in raw stock — it has since been issued
+    to the floor, or the batch predates a stock reset. Silently skipping the
+    reversal would leave the total overstating what is physically there.
+    """
+    qty = to_num(batch_row["quantity_kg"])
+    if qty <= 0:
+        return
+    available = to_num(await conn.fetchval(
+        "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
+        batch_row["material_id"]))
+    if available < qty:
+        raise HTTPException(400, (
+            f"Cannot delete this entry: only {available:.3f} kg of its {qty:.3f} kg is "
+            f"still in raw stock. The material has already been issued to the floor, "
+            f"or the entry predates the stock reset."))
+    await adjust_raw_total(conn, batch_row["material_id"], -qty)
+
+
 async def adjust_raw_total(conn, material_id, delta_kg: float):
+    require_tx(conn)
     pid = int(material_id)
     delta = to_num(delta_kg)
     if pid <= 0:
         raise ValueError("Invalid material id")
     if not delta:
         return
+    # Take the row lock first in both directions so concurrent writers serialise
+    # on the same row instead of racing between the check and the update.
+    r = await conn.fetchrow(
+        "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE", pid)
     if delta > 0:
         await conn.execute(
             """INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at)
@@ -393,10 +603,7 @@ async def adjust_raw_total(conn, material_id, delta_kg: float):
                DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2, updated_at = NOW()""",
             pid, delta)
         return
-    r = await conn.fetchrow("SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE", pid)
-    if not r:
-        raise HTTPException(400, "Material not found in raw stock")
-    available = to_num(r["total_quantity_kg"])
+    available = to_num(r["total_quantity_kg"]) if r else 0.0
     required = abs(delta)
     if available < required:
         raise HTTPException(400, f"Insufficient raw stock. Available: {available:.3f} kg")
@@ -406,56 +613,62 @@ async def adjust_raw_total(conn, material_id, delta_kg: float):
 
 
 async def adjust_floor_balance(conn, material_type_id, delta_kg: float):
+    require_tx(conn)
     pid = int(material_type_id)
     delta = to_num(delta_kg)
     if pid <= 0:
         raise ValueError("Invalid floor material id")
     if not delta:
         return
+    r = await conn.fetchrow(
+        "SELECT total_quantity_kg FROM floor_material_balance WHERE material_type_id = $1 FOR UPDATE", pid)
     if delta > 0:
         await conn.execute(
             """INSERT INTO floor_material_balance (material_type_id, total_quantity_kg)
                VALUES ($1, $2) ON CONFLICT (material_type_id)
                DO UPDATE SET total_quantity_kg = floor_material_balance.total_quantity_kg + $2""",
             pid, delta)
-        return
-    r = await conn.fetchrow("SELECT total_quantity_kg FROM floor_material_balance WHERE material_type_id = $1 FOR UPDATE", pid)
-    if not r:
-        raise HTTPException(400, "No issued floor stock found for this material")
-    available = to_num(r["total_quantity_kg"])
-    required = abs(delta)
-    if available < required:
-        raise HTTPException(400, f"Insufficient floor stock. Available: {available:.3f} kg")
-    await conn.execute(
-        "UPDATE floor_material_balance SET total_quantity_kg = total_quantity_kg - $1 WHERE material_type_id = $2",
-        required, pid)
-
-
-async def adjust_machine_assignments(conn, material_type_id, delta_kg: float):
-    pid = int(material_type_id)
-    delta = to_num(delta_kg)
-    if pid <= 0 or not delta:
-        return
-    assignments = await conn.fetch(
-        "SELECT id, machine_id, quantity_kg FROM machine_stock_assignments WHERE material_type_id = $1 ORDER BY id", pid)
-    if delta > 0:
+    else:
+        # Same wording whether the row is missing or merely short, so the client's
+        # "top up floor stock" prompt fires in both cases.
+        available = to_num(r["total_quantity_kg"]) if r else 0.0
+        required = abs(delta)
+        if available < required:
+            raise HTTPException(400, f"Insufficient floor stock. Available: {available:.3f} kg")
         await conn.execute(
-            """INSERT INTO machine_stock_assignments (machine_id, material_type_id, quantity_kg)
-               SELECT id::text, $1, $2 FROM machines
-               ON CONFLICT (machine_id, material_type_id)
-               DO UPDATE SET quantity_kg = machine_stock_assignments.quantity_kg + EXCLUDED.quantity_kg,
-                             updated_at = NOW()""",
-            pid, delta)
+            "UPDATE floor_material_balance SET total_quantity_kg = total_quantity_kg - $1 WHERE material_type_id = $2",
+            required, pid)
+    # Machine assignments are a view of the pooled floor balance, never an
+    # independent counter, so they cannot drift away from it.
+    await sync_machine_assignments(conn, pid)
+
+
+async def sync_machine_assignments(conn, material_type_id):
+    """Mirror the pooled floor balance onto every machine's assignment row.
+
+    Deduction is pooled (floor_material_balance is the single source of truth), so
+    each machine's row reports what is actually available to it. Derived on every
+    change — never incremented — so it is idempotent and drift-free.
+    """
+    pid = int(material_type_id)
+    if pid <= 0:
         return
-    required = abs(delta)
-    if not assignments:
-        raise ValueError("No machine assignments found for this floor stock")
-    for a in assignments:
-        if to_num(a["quantity_kg"]) < required:
-            raise ValueError(f"Cannot reduce assigned stock for machine {a['machine_id']}")
+    balance = await conn.fetchval(
+        "SELECT total_quantity_kg FROM floor_material_balance WHERE material_type_id = $1", pid)
+    qty = to_num(balance)
+    if qty < 0:
+        qty = 0.0
     await conn.execute(
-        "UPDATE machine_stock_assignments SET quantity_kg = quantity_kg - $1, updated_at = NOW() WHERE material_type_id = $2",
-        required, pid)
+        """INSERT INTO machine_stock_assignments (machine_id, material_type_id, quantity_kg)
+           SELECT id::text, $1, $2 FROM machines
+           ON CONFLICT (machine_id, material_type_id)
+           DO UPDATE SET quantity_kg = EXCLUDED.quantity_kg, updated_at = NOW()""",
+        pid, qty)
+
+
+async def adjust_machine_assignments(conn, material_type_id, delta_kg: float = 0.0):
+    """Back-compat shim: assignments are now derived from the floor balance."""
+    await sync_machine_assignments(conn, material_type_id)
 
 
 async def apply_movement_effect(conn, movement: dict, multiplier: int = 1):
@@ -485,48 +698,104 @@ async def apply_movement_effect(conn, movement: dict, multiplier: int = 1):
         if not mt_id:
             raise ValueError("Unable to resolve floor material")
         floor_delta = (qty if direction == "OUT" else -qty) * multiplier
+        # adjust_floor_balance re-derives the machine assignments itself.
         await adjust_floor_balance(conn, mt_id, floor_delta)
-        await adjust_machine_assignments(conn, mt_id, floor_delta)
+
+
+async def master_id_for_type(conn, material_type_id) -> int:
+    """materials_master id matching a material_types row, matched by name.
+
+    `materials_master` and `material_types` are separate id spaces. Movements are
+    recorded in the materials_master space; floor balances in the material_types
+    space. Mixing them corrupts unrelated materials, so translate explicitly.
+    """
+    try:
+        pid = int(material_type_id)
+    except (TypeError, ValueError):
+        return 0
+    if pid <= 0:
+        return 0
+    r = await conn.fetchrow("SELECT name FROM material_types WHERE id = $1 LIMIT 1", pid)
+    if not r:
+        return 0
+    return await get_or_create_material(conn, r["name"])
+
+
+async def consumption_movement_for_log(conn, log_id: int):
+    return await conn.fetchrow(
+        """SELECT id, quantity_kg, material_id, material_type_id
+             FROM material_movements
+            WHERE movement_type = 'CONSUMPTION' AND reference_id = $1
+            ORDER BY id DESC LIMIT 1""",
+        log_id)
 
 
 async def upsert_consumption_movement(conn, log_id: int, payload: dict):
+    """Record (or correct) the consumption ledger row for a production log.
+
+    The row is the receipt for the floor deduction: reversal reads it back, so the
+    quantity and the material type stored here must match what was actually taken.
+    """
     qty = to_num(payload.get("net_weight"))
     try:
-        mat_id = int(payload.get("material_id"))
+        mt_id = int(payload.get("material_type_id") or 0)
     except (TypeError, ValueError):
-        mat_id = 0
+        mt_id = 0
     if log_id <= 0:
         return
-    existing = await conn.fetchrow(
-        "SELECT id FROM material_movements WHERE movement_type = 'CONSUMPTION' AND reference_id = $1 ORDER BY id DESC LIMIT 1",
-        log_id)
-    if qty <= 0 or mat_id <= 0:
+    existing = await consumption_movement_for_log(conn, log_id)
+    if qty <= 0 or mt_id <= 0:
+        if existing:
+            await conn.execute("DELETE FROM material_movements WHERE id = $1", existing["id"])
+        return
+    master_id = await master_id_for_type(conn, mt_id)
+    if master_id <= 0:
         if existing:
             await conn.execute("DELETE FROM material_movements WHERE id = $1", existing["id"])
         return
     note = f"Production consumption from machine {payload.get('machine_id')}"
     if existing:
         await conn.execute(
-            "UPDATE material_movements SET material_id = $1, quantity_kg = $2, direction = 'OUT', movement_type = 'CONSUMPTION', note = $3 WHERE id = $4",
-            mat_id, qty, note, existing["id"])
+            """UPDATE material_movements
+                  SET material_id = $1, material_type_id = $2, quantity_kg = $3,
+                      direction = 'OUT', movement_type = 'CONSUMPTION', note = $4
+                WHERE id = $5""",
+            master_id, mt_id, qty, note, existing["id"])
     else:
         await conn.execute(
-            "INSERT INTO material_movements (material_id, quantity_kg, direction, movement_type, reference_id, note) VALUES ($1, $2, 'OUT', 'CONSUMPTION', $3, $4)",
-            mat_id, qty, log_id, note)
+            """INSERT INTO material_movements
+                   (material_id, material_type_id, quantity_kg, direction, movement_type, reference_id, note)
+               VALUES ($1, $2, $3, 'OUT', 'CONSUMPTION', $4, $5)""",
+            master_id, mt_id, qty, log_id, note)
 
 
-async def restore_log_floor_stock(conn, log_row: dict):
+async def restore_log_floor_stock(conn, log_row: dict) -> float:
+    """Return to the floor exactly what this log took — no more, no less.
+
+    The amount comes from the recorded consumption movement, never recomputed from
+    the log's weights. A log that never deducted has no movement and therefore
+    restores nothing, so deleting it cannot create stock out of nothing.
+    Movements written before this ledger was corrected carry no material_type_id
+    and are deliberately not reversed.
+    """
     if not log_row:
-        return
-    net = to_num(log_row.get("gross_weight")) - to_num(log_row.get("tare_weight"))
-    if net <= 0:
-        return
-    try:
-        mt_id = await resolve_material_type_id(conn, log_row.get("material_id"), log_row.get("material_name"))
-        if mt_id:
-            await adjust_floor_balance(conn, mt_id, net)
-    except Exception as e:
-        logger.warning(f"Skipping floor-stock restore for log {log_row.get('id')}: {e}")
+        return 0.0
+    log_id = log_row.get("id")
+    if not log_id:
+        return 0.0
+    mv = await consumption_movement_for_log(conn, int(log_id))
+    if not mv:
+        return 0.0
+    qty = to_num(mv["quantity_kg"])
+    mt_id = mv["material_type_id"]
+    if qty <= 0 or not mt_id:
+        if not mt_id:
+            logger.warning(
+                "Log %s: consumption movement %s predates the material_type_id ledger; "
+                "not restoring floor stock", log_id, mv["id"])
+        return 0.0
+    await adjust_floor_balance(conn, int(mt_id), qty)
+    return qty
 
 
 async def fetch_order_items(conn, order_id: int) -> list:
@@ -590,7 +859,7 @@ async def get_materials(user=Depends(get_user)):
 
 
 @app.post("/materials")
-async def post_materials(request: Request):
+async def post_materials(request: Request, user=Depends(get_user)):
     body = await request.json()
     name = str(body.get("name") or "").strip()
     if not name:
@@ -634,10 +903,12 @@ async def get_batches(date_from: str = None, date_to: str = None, user=Depends(g
 
 @app.put("/raw-material/batches/{batch_id}")
 async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
     body = await request.json()
     next_qty = to_num(body.get("quantity_kg"))
     next_name = str(body.get("material_name") or "").strip()
     next_note = body.get("note")
+    next_thickness = str(body.get("thickness") or "").strip() or None
     if batch_id <= 0:
         raise HTTPException(400, "Invalid batch id")
     if not next_name or next_qty <= 0:
@@ -645,7 +916,7 @@ async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
     async with pool.acquire() as c:
         async with c.transaction():
             cur = await c.fetchrow(
-                "SELECT id, material_id, material_name, quantity_kg, note FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
+                "SELECT id, material_id, material_name, quantity_kg, note, thickness FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
             if not cur:
                 raise HTTPException(404, "Batch not found")
             cur_qty = to_num(cur["quantity_kg"])
@@ -656,8 +927,8 @@ async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
                 await adjust_raw_total(c, cur["material_id"], -cur_qty)
                 await adjust_raw_total(c, next_mat_id, next_qty)
             updated = await c.fetchrow(
-                "UPDATE raw_material_batches SET material_id=$1, material_name=$2, quantity_kg=$3, note=$4 WHERE id=$5 RETURNING *",
-                next_mat_id, next_name, next_qty, next_note, batch_id)
+                "UPDATE raw_material_batches SET material_id=$1, material_name=$2, quantity_kg=$3, note=$4, thickness=$5 WHERE id=$6 RETURNING *",
+                next_mat_id, next_name, next_qty, next_note, next_thickness, batch_id)
             tol = await eval_qty_tolerance(get_expected_qty(body, next_qty), next_qty, c,
                                            {"op": "batch_update", "batch_id": batch_id})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
@@ -668,6 +939,7 @@ async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
 
 @app.delete("/raw-material/batches/{batch_id}")
 async def delete_batch(batch_id: int, user=Depends(get_user)):
+    require_owner_or_admin(user)
     if batch_id <= 0:
         raise HTTPException(400, "Invalid batch id")
     async with pool.acquire() as c:
@@ -675,7 +947,7 @@ async def delete_batch(batch_id: int, user=Depends(get_user)):
             cur = await c.fetchrow("SELECT id, material_id, quantity_kg FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
             if not cur:
                 raise HTTPException(404, "Batch not found")
-            await adjust_raw_total(c, cur["material_id"], -to_num(cur["quantity_kg"]))
+            await reverse_raw_batch(c, cur)
             await c.execute("DELETE FROM raw_material_batches WHERE id = $1", batch_id)
     await broadcast("raw_material")
     return {"success": True}
@@ -683,6 +955,7 @@ async def delete_batch(batch_id: int, user=Depends(get_user)):
 
 @app.post("/raw-material/batches/bulk-delete")
 async def bulk_delete_batches(request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
     body = await request.json()
     ids = [int(v) for v in (body.get("ids") or []) if str(v).lstrip("-").isdigit() and int(v) > 0]
     if not ids:
@@ -694,7 +967,7 @@ async def bulk_delete_batches(request: Request, user=Depends(get_user)):
             if len(rs_) != len(ids):
                 raise HTTPException(404, "One or more batches were not found")
             for r_ in rs_:
-                await adjust_raw_total(c, r_["material_id"], -to_num(r_["quantity_kg"]))
+                await reverse_raw_batch(c, r_)
             await c.execute("DELETE FROM raw_material_batches WHERE id = ANY($1::int[])", ids)
     await broadcast("raw_material")
     return {"success": True, "deleted": len(ids)}
@@ -726,6 +999,7 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
     mat_name = str(body.get("material_name") or "").strip()
     qty = to_num(body.get("quantity_kg"))
     note = body.get("note")
+    thickness = str(body.get("thickness") or "").strip() or None
     if not mat_name or qty <= 0:
         raise HTTPException(400, "Invalid input")
     if not user.get("id"):
@@ -740,8 +1014,8 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
                    RETURNING total_quantity_kg, updated_at""",
                 mat_id, qty)
             await c.execute(
-                "INSERT INTO raw_material_batches (material_id, material_name, quantity_kg, created_by, note) VALUES ($1, $2, $3, $4, $5)",
-                mat_id, mat_name, qty, user["id"], note or None)
+                "INSERT INTO raw_material_batches (material_id, material_name, quantity_kg, created_by, note, thickness) VALUES ($1, $2, $3, $4, $5, $6)",
+                mat_id, mat_name, qty, user["id"], note or None, thickness)
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "raw_add", "mat": mat_name})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
@@ -770,28 +1044,12 @@ async def issue_from_raw(request: Request, user=Depends(get_user)):
     async with pool.acquire() as c:
         async with c.transaction():
             mat_id = await get_or_create_material(c, mat_name)
-            raw_row = await c.fetchrow("SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE", mat_id)
-            if not raw_row:
-                raise HTTPException(400, "Material not found in raw stock")
-            if to_num(raw_row["total_quantity_kg"]) < qty:
-                raise HTTPException(400, f"Insufficient raw stock. Available: {to_num(raw_row['total_quantity_kg'])} kg")
-            await c.execute("UPDATE raw_material_totals SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW() WHERE material_id = $2", qty, mat_id)
-            mt_row = await c.fetchrow("SELECT id FROM material_types WHERE LOWER(name) = LOWER($1) LIMIT 1", mat_name)
-            if mt_row:
-                mt_id = mt_row["id"]
-            else:
-                mt_id = (await c.fetchrow("INSERT INTO material_types (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", mat_name))["id"]
-            await c.execute(
-                "INSERT INTO floor_material_balance (material_type_id, total_quantity_kg) VALUES ($1, $2) ON CONFLICT (material_type_id) DO UPDATE SET total_quantity_kg = floor_material_balance.total_quantity_kg + $2",
-                mt_id, qty)
+            mt_id = await get_or_create_material_type(c, mat_name)
+            # One code path for every stock move: locks the row, checks availability,
+            # then re-derives the machine assignments from the new floor balance.
+            await adjust_raw_total(c, mat_id, -qty)
+            await adjust_floor_balance(c, mt_id, qty)
             machine_count = await c.fetchval("SELECT COUNT(*) FROM machines")
-            await c.execute(
-                """INSERT INTO machine_stock_assignments (machine_id, material_type_id, quantity_kg)
-                   SELECT id::text, $1, $2 FROM machines
-                   ON CONFLICT (machine_id, material_type_id)
-                   DO UPDATE SET quantity_kg = machine_stock_assignments.quantity_kg + EXCLUDED.quantity_kg,
-                                 updated_at = NOW()""",
-                mt_id, qty)
             await c.execute(
                 "INSERT INTO material_movements (material_id, quantity_kg, direction, movement_type, reference_id, note, created_by) VALUES ($1, $2, 'OUT', 'FLOOR_TRANSFER', $3, $4, $5)",
                 mat_id, qty, None, "Issued to floor and auto-assigned to all machines", user.get("id"))
@@ -883,6 +1141,7 @@ async def get_floor_transactions(date_from: str = None, date_to: str = None, use
 
 @app.put("/floor/transactions/{mv_id}")
 async def update_floor_tx(mv_id: int, request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
     body = await request.json()
     qty = to_num(body.get("quantity_kg"))
     direction = str(body.get("direction") or "").upper()
@@ -911,6 +1170,7 @@ async def update_floor_tx(mv_id: int, request: Request, user=Depends(get_user)):
 
 @app.delete("/floor/transactions/{mv_id}")
 async def delete_floor_tx(mv_id: int, user=Depends(get_user)):
+    require_owner_or_admin(user)
     if mv_id <= 0:
         raise HTTPException(400, "Invalid transaction id")
     async with pool.acquire() as c:
@@ -928,6 +1188,7 @@ async def delete_floor_tx(mv_id: int, user=Depends(get_user)):
 
 @app.post("/floor/transactions/bulk-delete")
 async def bulk_delete_floor_tx(request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
     body = await request.json()
     ids = [int(v) for v in (body.get("ids") or []) if str(v).lstrip("-").isdigit() and int(v) > 0]
     if not ids:
@@ -948,10 +1209,60 @@ async def bulk_delete_floor_tx(request: Request, user=Depends(get_user)):
 
 # ── Production logs ──
 
+async def resolve_production_material(c, machine_id, explicit_type_id, explicit_material_id):
+    """Work out which floor material a production entry consumes.
+
+    Returns (material_type_id, material_master_id). Preference order: the type id the
+    client sent, then any id it sent (disambiguated across both id spaces), then the
+    material assigned to that machine.
+    """
+    mt_id = None
+    if explicit_type_id:
+        mt_id = await resolve_material_type_id(c, explicit_type_id, "")
+    if not mt_id and explicit_material_id:
+        mt_id = await resolve_material_type_id(c, explicit_material_id, "")
+    if not mt_id:
+        assigned = await c.fetchrow(
+            """SELECT material_type_id FROM machine_stock_assignments
+                WHERE machine_id = ANY($1::text[]) ORDER BY assigned_at DESC LIMIT 1""",
+            get_machine_variants(machine_id))
+        if assigned:
+            mt_id = assigned["material_type_id"]
+    if not mt_id:
+        return None, 0
+    return int(mt_id), await master_id_for_type(c, mt_id)
+
+
+async def insert_production_log(c, *, machine_id, material_type_id, material_master_id,
+                                size, worker_name, gross, tare, created_at, returning="*"):
+    """Insert one production log and deduct exactly its net weight from the floor pool.
+
+    Deduction and insert share one transaction, and the consumption movement written
+    here is the receipt the reversal path reads back.
+    """
+    net = gross - tare
+    await adjust_floor_balance(c, material_type_id, -net)
+    log_row = await c.fetchrow(
+        f"""INSERT INTO production_logs
+                (machine_id, material_id, material_type_id, size, worker_name,
+                 gross_weight, tare_weight, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+            RETURNING {returning}""",
+        machine_id, material_master_id, material_type_id, size, worker_name,
+        gross, tare, created_at)
+    await upsert_consumption_movement(c, log_row["id"], {
+        "machine_id": machine_id,
+        "material_type_id": material_type_id,
+        "net_weight": net,
+    })
+    return log_row
+
+
 @app.post("/production/logs")
 async def create_production_log(request: Request, user=Depends(get_user)):
     body = await request.json()
     machines_list = body.get("machines")
+    entry_ts = parse_entry_timestamp(body)
     async with pool.acquire() as c:
         async with c.transaction():
             if machines_list and isinstance(machines_list, list):
@@ -967,48 +1278,62 @@ async def create_production_log(request: Request, user=Depends(get_user)):
                     net = gw - tw
                     if net <= 0:
                         raise HTTPException(400, f"Machine {m['machine_id']}: Net weight must be > 0")
-                    log_row = await c.fetchrow(
-                        "INSERT INTO production_logs (machine_id, material_id, size, worker_name, gross_weight, tare_weight) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, machine_id, material_id, size, worker_name, gross_weight, tare_weight, created_at",
-                        m["machine_id"], m.get("material_id"), m.get("size"),
-                        f"User {body.get('entered_by')}" if body.get("entered_by") else m.get("worker_name"),
-                        gw, tw)
+                    machine_no = parse_machine_id(m["machine_id"])
+                    mt_id, master_id = await resolve_production_material(
+                        c, machine_no, m.get("material_type_id"), m.get("material_id"))
+                    if not mt_id or master_id <= 0:
+                        raise HTTPException(
+                            400, f"Machine {m['machine_id']}: no material selected or assigned")
+                    log_row = await insert_production_log(
+                        c,
+                        machine_id=machine_no, material_type_id=mt_id,
+                        material_master_id=master_id, size=m.get("size"),
+                        worker_name=(f"User {body.get('entered_by')}" if body.get("entered_by")
+                                     else m.get("worker_name")),
+                        gross=gw, tare=tw,
+                        created_at=parse_entry_timestamp(m) or entry_ts,
+                        returning=("id, machine_id, material_id, size, worker_name, "
+                                   "gross_weight, tare_weight, created_at"))
                     tol = await eval_qty_tolerance(get_expected_qty(m, net, ["expected_net_weight_kg"]), net, c, {"op": "batch_log", "machine": m["machine_id"]})
                     if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                         raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
                     logs.append({**dict(log_row), "tolerance": tol})
                     tolerances.append(tol)
                 batch_id = f"BATCH_{int(time.time() * 1000)}"
-                await broadcast("production")
-                return {"message": f"Batch logged: {len(logs)} production entries", "batch_id": batch_id,
-                        "inserted": len(logs), "data": logs, "tolerance": tolerances}
+                result = {"message": f"Batch logged: {len(logs)} production entries", "batch_id": batch_id,
+                          "inserted": len(logs), "data": logs, "tolerance": tolerances}
             else:
                 machine_id = body.get("machine_id")
                 if not machine_id:
                     raise HTTPException(400, "machine_id is required")
+                machine_id = parse_machine_id(machine_id)
                 gw = to_num(body.get("gross_weight"))
                 tw = to_num(body.get("tare_weight"))
                 if gw < tw:
                     raise HTTPException(400, "Gross weight must be >= tare weight")
                 net = gw - tw
-                variants = get_machine_variants(machine_id)
-                stock_mat_id = body.get("material_type_id") or body.get("material_id")
-                if not stock_mat_id:
-                    assigned = await c.fetchrow("SELECT material_type_id FROM machine_stock_assignments WHERE machine_id = ANY($1::text[]) ORDER BY assigned_at DESC LIMIT 1", variants)
-                    if assigned:
-                        stock_mat_id = assigned["material_type_id"]
-                if stock_mat_id:
-                    await adjust_floor_balance(c, stock_mat_id, -net)
-                log_row = await c.fetchrow(
-                    "INSERT INTO production_logs (machine_id, material_id, size, worker_name, gross_weight, tare_weight) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
-                    machine_id, stock_mat_id or body.get("material_id"), body.get("size"), body.get("worker_name"), gw, tw)
-                await upsert_consumption_movement(c, log_row["id"], {"machine_id": machine_id, "material_id": stock_mat_id or body.get("material_id"), "net_weight": net})
+                if net <= 0:
+                    raise HTTPException(400, "Net weight must be greater than zero")
+                mt_id, master_id = await resolve_production_material(
+                    c, machine_id, body.get("material_type_id"), body.get("material_id"))
+                if not mt_id or master_id <= 0:
+                    raise HTTPException(400, "No material selected or assigned to this machine")
+                log_row = await insert_production_log(
+                    c,
+                    machine_id=machine_id, material_type_id=mt_id, material_master_id=master_id,
+                    size=body.get("size"), worker_name=body.get("worker_name"),
+                    gross=gw, tare=tw, created_at=entry_ts)
                 tol = await eval_qty_tolerance(get_expected_qty(body, net, ["expected_net_weight_kg"]), net, c, {"op": "production_log", "machine": machine_id})
                 if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                     raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
                 if body.get("worker_name"):
                     await c.execute("INSERT INTO machine_state (machine_id, current_worker) VALUES ($1, $2) ON CONFLICT (machine_id) DO UPDATE SET current_worker = EXCLUDED.current_worker, updated_at = NOW()", machine_id, body["worker_name"])
-                await broadcast("production")
-                return {"message": "Production logged and pooled floor stock deducted", "data": dict(log_row), "tolerance": tol}
+                result = {"message": "Production logged and pooled floor stock deducted",
+                          "data": dict(log_row), "tolerance": tol}
+    # Broadcast only once the transaction has committed, so listeners never refetch
+    # state that is about to be rolled back.
+    await broadcast("production")
+    return result
 
 
 @app.get("/production/logs")
@@ -1016,7 +1341,7 @@ async def get_production_logs(machine_id: str = None, date_from: str = None, dat
     async with pool.acquire() as c:
         conds, vals = [], []
         if machine_id:
-            vals.append(int(machine_id))
+            vals.append(parse_machine_id(machine_id))
             conds.append(f"pl.machine_id = ${len(vals)}")
         if date_from:
             vals.append(parse_date(date_from))
@@ -1028,7 +1353,15 @@ async def get_production_logs(machine_id: str = None, date_from: str = None, dat
         vals.append(parsed_limit)
         where = f"WHERE {' AND '.join(conds)}" if conds else ""
         rs_ = await c.fetch(
-            f"SELECT pl.id, pl.machine_id, pl.material_id, pl.size, pl.worker_name, pl.gross_weight, pl.tare_weight, pl.created_at, m.name AS machine_name, mat.name AS material_name FROM production_logs pl LEFT JOIN machines m ON m.id = pl.machine_id LEFT JOIN materials_master mat ON mat.id = pl.material_id {where} ORDER BY pl.created_at DESC LIMIT ${len(vals)}",
+            f"""SELECT pl.id, pl.machine_id, pl.material_id, pl.material_type_id, pl.size,
+                       pl.worker_name, pl.gross_weight, pl.tare_weight, pl.created_at,
+                       m.name AS machine_name,
+                       COALESCE(mt.name, mat.name) AS material_name
+                  FROM production_logs pl
+                  LEFT JOIN machines m ON m.id = pl.machine_id
+                  LEFT JOIN material_types mt ON mt.id = pl.material_type_id
+                  LEFT JOIN materials_master mat ON mat.id = pl.material_id
+                {where} ORDER BY pl.created_at DESC LIMIT ${len(vals)}""",
             *vals)
         return [{**dict(r_), "net_weight": to_num(r_["gross_weight"]) - to_num(r_["tare_weight"])} for r_ in rs_]
 
@@ -1050,18 +1383,38 @@ async def update_production_log(log_id: int, request: Request, user=Depends(get_
         raise HTTPException(400, "Net weight must be greater than zero")
     async with pool.acquire() as c:
         async with c.transaction():
-            cur = await c.fetchrow("SELECT pl.*, mat.name AS material_name FROM production_logs pl LEFT JOIN materials_master mat ON mat.id = pl.material_id WHERE pl.id = $1 FOR UPDATE OF pl", log_id)
+            cur = await c.fetchrow(
+                """SELECT pl.*, COALESCE(mt.name, mat.name) AS material_name
+                     FROM production_logs pl
+                     LEFT JOIN material_types mt ON mt.id = pl.material_type_id
+                     LEFT JOIN materials_master mat ON mat.id = pl.material_id
+                    WHERE pl.id = $1 FOR UPDATE OF pl""",
+                log_id)
             if not cur:
                 raise HTTPException(404, "Production log not found")
-            next_mt_id = await resolve_material_type_id(c, body.get("material_type_id") or body.get("material_id"), cur["material_name"])
+            next_mt_id = await resolve_material_type_id(
+                c, body.get("material_type_id") or body.get("material_id"), cur["material_name"])
             if not next_mt_id:
-                raise ValueError("Unable to resolve material for this production log")
+                raise HTTPException(400, "Unable to resolve material for this production log")
+            next_master_id = await master_id_for_type(c, next_mt_id)
+            if next_master_id <= 0:
+                raise HTTPException(400, "Unable to resolve material for this production log")
+            # Give back exactly what the old entry took, then take the new amount.
+            # Both legs are in this transaction, so the balance is never half-applied.
             await restore_log_floor_stock(c, dict(cur))
             await adjust_floor_balance(c, next_mt_id, -net)
             updated = await c.fetchrow(
-                "UPDATE production_logs SET machine_id=$1, material_id=$2, size=$3, worker_name=$4, gross_weight=$5, tare_weight=$6 WHERE id=$7 RETURNING *",
-                machine_id_val, next_mt_id, body.get("size"), body.get("worker_name"), gw, tw, log_id)
-            await upsert_consumption_movement(c, log_id, {"machine_id": machine_id_val, "material_id": next_mt_id, "net_weight": net})
+                """UPDATE production_logs
+                      SET machine_id=$1, material_id=$2, material_type_id=$3, size=$4,
+                          worker_name=$5, gross_weight=$6, tare_weight=$7
+                    WHERE id=$8 RETURNING *""",
+                machine_id_val, next_master_id, next_mt_id, body.get("size"),
+                body.get("worker_name"), gw, tw, log_id)
+            await upsert_consumption_movement(c, log_id, {
+                "machine_id": machine_id_val,
+                "material_type_id": next_mt_id,
+                "net_weight": net,
+            })
             tol = await eval_qty_tolerance(get_expected_qty(body, net, ["expected_net_weight_kg"]), net, c, {"op": "log_update", "log_id": log_id})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
@@ -1115,7 +1468,7 @@ async def get_reports_machines(date_from: str = None, date_to: str = None, machi
         if date_to:
             vals.append(parse_date(date_to)); conds.append(f"pl.created_at < (${len(vals)}::date + INTERVAL '1 day')")
         if machine_id:
-            vals.append(int(machine_id)); conds.append(f"pl.machine_id = ${len(vals)}")
+            vals.append(parse_machine_id(machine_id)); conds.append(f"pl.machine_id = ${len(vals)}")
         where = f"WHERE {' AND '.join(conds)}" if conds else ""
         return rows(await c.fetch(
             f"SELECT m.id AS machine_id, m.name AS machine_name, COUNT(pl.id) AS total_entries, COALESCE(SUM(pl.gross_weight - pl.tare_weight), 0)::float AS total_net_weight_kg, COALESCE(SUM(pl.gross_weight), 0)::float AS total_gross_weight_kg, COALESCE(SUM(pl.tare_weight), 0)::float AS total_tare_weight_kg FROM machines m LEFT JOIN production_logs pl ON pl.machine_id = m.id {where} GROUP BY m.id, m.name ORDER BY m.id",
@@ -1127,7 +1480,7 @@ async def get_reports_logs(machine_id: str = None, date_from: str = None, date_t
     async with pool.acquire() as c:
         conds, vals = [], []
         if machine_id:
-            vals.append(int(machine_id)); conds.append(f"mpl.machine_id = ${len(vals)}")
+            vals.append(parse_machine_id(machine_id)); conds.append(f"mpl.machine_id = ${len(vals)}")
         if date_from:
             vals.append(parse_date(date_from)); conds.append(f"mpl.created_at >= ${len(vals)}::date")
         if date_to:
@@ -1143,10 +1496,13 @@ async def get_reports_logs(machine_id: str = None, date_from: str = None, date_t
 # ── Analytics ──
 
 @app.get("/analytics/plant-efficiency")
-async def get_plant_efficiency():
+async def get_plant_efficiency(user=Depends(get_user)):
     async with pool.acquire() as c:
-        rs_ = await c.fetch("SELECT * FROM plant_efficiency")
-        return dict(rs_[0]) if rs_ else {}
+        try:
+            rs_ = await c.fetch("SELECT * FROM plant_efficiency")
+            return dict(rs_[0]) if rs_ else {}
+        except asyncpg.exceptions.UndefinedTableError:
+            return {}
 
 
 @app.get("/analytics/plant-efficiency-v2")
@@ -1154,15 +1510,22 @@ async def get_plant_efficiency_v2(date_from: str = None, date_to: str = None, us
     async with pool.acquire() as c:
         vals = []
         where = build_date_where(date_from, date_to, vals, "created_at")
+        # Input is material actually issued to the shop floor in the period, not
+        # material purchased in the period — a delivery received on the 1st is not
+        # input to the run, and dividing by it made efficiency read far too low.
+        movement_where = where.replace("created_at", "mv.created_at") if where else ""
         r_ = await c.fetchrow(
             f"""SELECT
-                  COALESCE(SUM(rb.quantity_kg), 0) AS total_input_kg,
+                  COALESCE(SUM(fi.quantity_kg), 0) AS total_input_kg,
                   COALESCE(SUM(pl.net_weight), 0) AS total_output_kg,
-                  CASE WHEN COALESCE(SUM(rb.quantity_kg), 0) = 0 THEN 0
-                  ELSE ROUND((COALESCE(SUM(pl.net_weight), 0) / COALESCE(SUM(rb.quantity_kg), 0)) * 100, 2)
+                  CASE WHEN COALESCE(SUM(fi.quantity_kg), 0) = 0 THEN 0
+                  ELSE ROUND((COALESCE(SUM(pl.net_weight), 0) / COALESCE(SUM(fi.quantity_kg), 0)) * 100, 2)
                   END AS efficiency_percent
                 FROM
-                  (SELECT COALESCE(SUM(quantity_kg), 0) AS quantity_kg FROM raw_material_batches {where}) rb,
+                  (SELECT COALESCE(SUM(mv.quantity_kg), 0) AS quantity_kg
+                     FROM material_movements mv
+                    WHERE mv.movement_type = 'FLOOR_TRANSFER' AND mv.direction = 'OUT'
+                      {('AND ' + movement_where[len('WHERE '):]) if movement_where else ''}) fi,
                   (SELECT COALESCE(SUM(gross_weight - tare_weight), 0) AS net_weight FROM production_logs {where}) pl""",
             *vals)
         return dict(r_) if r_ else {"total_input_kg": 0, "total_output_kg": 0, "efficiency_percent": 0}
@@ -1192,12 +1555,21 @@ async def get_inventory_balance(user=Depends(get_user)):
 @app.post("/auth/register")
 async def register(request: Request):
     body = await request.json()
+    name = str(body.get("name") or "").strip()
+    email = str(body.get("email") or "").strip()
+    password = str(body.get("password") or "")
+    if not name:
+        raise HTTPException(400, "name is required")
+    if not email:
+        raise HTTPException(400, "email is required")
+    if not password:
+        raise HTTPException(400, "password is required")
     async with pool.acquire() as c:
-        if await c.fetchrow("SELECT id FROM users WHERE email = $1", body.get("email")):
+        if await c.fetchrow("SELECT id FROM users WHERE email = $1", email):
             raise HTTPException(400, "User already exists")
         await c.execute(
             "INSERT INTO users (name, email, password_hash, role, status) VALUES ($1, $2, $3, 'worker', 'pending')",
-            body.get("name"), body.get("email"), pwd_hash(body.get("password", "")))
+            name, email, pwd_hash(password))
     return {"message": "Account created. Awaiting admin approval."}
 
 
@@ -1212,7 +1584,15 @@ async def login(request: Request):
             raise HTTPException(403, "Account not approved")
         if not pwd_verify(body.get("password", ""), user["password_hash"]):
             raise HTTPException(400, "Invalid credentials")
-        token = jwt.encode({"user_id": user["id"], "role": user["role"]}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+        now = datetime.now(timezone.utc)
+        token = jwt.encode(
+            {
+                "user_id": user["id"],
+                "role": user["role"],
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(seconds=JWT_TTL_SECONDS)).timestamp()),
+            },
+            JWT_SECRET, algorithm=JWT_ALGORITHM)
     return {"token": token, "user_id": user["id"], "role": user["role"]}
 
 
@@ -1240,6 +1620,7 @@ async def approve_user(request: Request, user=Depends(owner_only)):
     body = await request.json()
     async with pool.acquire() as c:
         await c.execute("UPDATE users SET status = 'approved' WHERE id = $1", body.get("user_id"))
+    invalidate_account_cache(body.get("user_id"))
     await broadcast("users")
     return {"message": "User approved"}
 
@@ -1249,6 +1630,9 @@ async def reject_user(request: Request, user=Depends(owner_only)):
     body = await request.json()
     async with pool.acquire() as c:
         await c.execute("UPDATE users SET status = 'rejected' WHERE id = $1", body.get("user_id"))
+    # Drop the cached account immediately: a rejected user must lose access now,
+    # not when a 30-second cache entry happens to expire.
+    invalidate_account_cache(body.get("user_id"))
     await broadcast("users")
     return {"message": "User rejected"}
 
@@ -1256,13 +1640,13 @@ async def reject_user(request: Request, user=Depends(owner_only)):
 # ── Machines ──
 
 @app.get("/machines")
-async def get_machines():
+async def get_machines(user=Depends(get_user)):
     async with pool.acquire() as c:
         return rows(await c.fetch("SELECT * FROM machines"))
 
 
 @app.get("/machines/{machine_id}/state")
-async def get_machine_state(machine_id: str):
+async def get_machine_state(machine_id: int, user=Depends(get_user)):
     async with pool.acquire() as c:
         r_ = await c.fetchrow("SELECT current_worker, updated_at FROM machine_state WHERE machine_id = $1", machine_id)
         return dict(r_) if r_ else {"current_worker": None}
@@ -1277,6 +1661,7 @@ async def create_user(request: Request, user=Depends(owner_only)):
         r_ = await c.fetchrow(
             "INSERT INTO users (email, password_hash, name, role, status) VALUES ($1, $2, $3, $4, 'approved') RETURNING id, email, name, role, status",
             body.get("email"), pwd_hash(body.get("password", "")), body.get("name"), body.get("role") or "worker")
+    invalidate_account_cache(r_["id"])
     await broadcast("users")
     return dict(r_)
 
@@ -1354,12 +1739,21 @@ async def get_order(order_id: int, user=Depends(get_user)):
 
 @app.delete("/orders/{order_id}")
 async def delete_order(order_id: int, user=Depends(get_user)):
+    require_owner_or_admin(user)
     async with pool.acquire() as c:
-        r_ = await c.fetchrow("DELETE FROM orders WHERE id = $1 RETURNING *", order_id)
-        if not r_:
-            raise HTTPException(404, "Order not found")
+        async with c.transaction():
+            # order_items and fulfillment_records cascade away with the order, so say
+            # how much delivery history went with it instead of deleting silently.
+            counts = await c.fetchrow(
+                """SELECT (SELECT COUNT(*) FROM order_items WHERE order_id = $1)::int AS items,
+                          (SELECT COUNT(*) FROM fulfillment_records WHERE order_id = $1)::int AS fulfilments""",
+                order_id)
+            r_ = await c.fetchrow("DELETE FROM orders WHERE id = $1 RETURNING *", order_id)
+            if not r_:
+                raise HTTPException(404, "Order not found")
     await broadcast("orders")
-    return {"message": "Order deleted", "deleted": dict(r_)}
+    return {"message": "Order deleted", "deleted": dict(r_),
+            "deleted_items": counts["items"], "deleted_fulfilments": counts["fulfilments"]}
 
 
 @app.put("/orders/{order_id}/status")
@@ -1415,7 +1809,13 @@ async def create_fulfillment(request: Request, user=Depends(get_user)):
             insert_row = await c.fetchrow(
                 "INSERT INTO fulfillment_records (order_id, order_item_id, supplied_quantity, note, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *",
                 order["id"], target["id"], quantity, note, user.get("id") or user.get("user_id"))
-            tol = await eval_tolerance(float(target["required_quantity"]), fulfilled_qty + quantity, c)
+            required_qty = float(target["required_quantity"])
+            supplied_total = fulfilled_qty + quantity
+            tol = await eval_tolerance(required_qty, supplied_total, c)
+            if supplied_total < required_qty - 1e-9:
+                # Partial deliveries are normal; the order is only measurable against
+                # tolerance once the item is fully supplied.
+                tol = {**tol, "tolerance_status": "PENDING"}
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
             await sync_order_status(c, order["id"])
@@ -1446,10 +1846,14 @@ async def create_wastage(request: Request, user=Depends(get_user)):
     if weight is None or float(weight) <= 0:
         raise HTTPException(400, "weight must be greater than 0")
     async with pool.acquire() as c:
-        seq = await c.fetchrow("SELECT COALESCE(MAX(id), 0) + 1 AS next_id, COALESCE(MAX(sno), 0) + 1 AS next_sno FROM wastage_data")
-        r_ = await c.fetchrow(
-            "INSERT INTO wastage_data (id, sno, date, weight) VALUES ($1, $2, $3, $4) RETURNING id, sno, date, weight",
-            seq["next_id"], seq["next_sno"], waste_date, float(weight))
+        async with c.transaction():
+            # MAX(id)+1 outside a lock lets two simultaneous entries pick the same id
+            # and one of them dies on the primary key. Serialise the numbering.
+            await c.execute("LOCK TABLE wastage_data IN EXCLUSIVE MODE")
+            seq = await c.fetchrow("SELECT COALESCE(MAX(id), 0) + 1 AS next_id, COALESCE(MAX(sno), 0) + 1 AS next_sno FROM wastage_data")
+            r_ = await c.fetchrow(
+                "INSERT INTO wastage_data (id, sno, date, weight) VALUES ($1, $2, $3, $4) RETURNING id, sno, date, weight",
+                seq["next_id"], seq["next_sno"], waste_date, float(weight))
     await broadcast("wastage")
     return AppResponse(status_code=201, content={"message": "Wastage recorded", "data": dict(r_)})
 
@@ -1465,6 +1869,7 @@ async def get_wastage(date_from: str = None, date_to: str = None, user=Depends(g
 
 @app.delete("/wastage/{wastage_id}")
 async def delete_wastage(wastage_id: int, user=Depends(get_user)):
+    require_owner_or_admin(user)
     if wastage_id <= 0:
         raise HTTPException(400, "Invalid id")
     async with pool.acquire() as c:
@@ -1485,36 +1890,54 @@ async def get_trading(user=Depends(get_user)):
 
 @app.post("/trading")
 async def create_trading(request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
     body = await request.json()
-    trading_date = parse_optional_date(body.get("date"))
+    trading_date = parse_optional_date(body.get("date")) or dt_date.today()
     nw = to_num(body.get("net_weight"))
     rate = to_num(body.get("rate"))
+    order_number = (body.get("order_number") or "").strip() or None
+    trade_type = (body.get("type") or "").strip().upper()
+    if trade_type not in ("BUY", "SELL"):
+        trade_type = "BUY"  # safe default
+    material_name = str(body.get("material_name") or "").strip()
+    if not material_name:
+        raise HTTPException(400, "material_name is required")
     async with pool.acquire() as c:
         r_ = await c.fetchrow(
             "INSERT INTO trading_records (date, order_number, material_name, net_weight, rate, total_value, type, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW()) RETURNING *",
-            trading_date, body.get("order_number"), body.get("material_name"), nw, rate, nw * rate, body.get("type"))
+            trading_date, order_number, material_name, nw, rate, nw * rate, trade_type)
     await broadcast("trading")
     return {"success": True, "data": dict(r_)}
 
 
 @app.put("/trading/{trading_id}")
-async def update_trading(trading_id: int, request: Request, user=Depends(get_user)):
+async def update_trading(trading_id: str, request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
     body = await request.json()
     trading_date = parse_optional_date(body.get("date"))
     nw = to_num(body.get("net_weight"))
     rate = to_num(body.get("rate"))
+    order_number = (body.get("order_number") or "").strip() or None
+    trade_type = (body.get("type") or "").strip().upper()
+    if trade_type not in ("BUY", "SELL"):
+        trade_type = "BUY"
     async with pool.acquire() as c:
         r_ = await c.fetchrow(
-            "UPDATE trading_records SET date=$1, order_number=$2, material_name=$3, net_weight=$4, rate=$5, total_value=$6, type=$7, updated_at=NOW() WHERE id=$8 RETURNING *",
-            trading_date, body.get("order_number"), body.get("material_name"), nw, rate, nw * rate, body.get("type"), trading_id)
+            "UPDATE trading_records SET date=$1, order_number=$2, material_name=$3, net_weight=$4, rate=$5, total_value=$6, type=$7, updated_at=NOW() WHERE id=$8::uuid RETURNING *",
+            trading_date, order_number, body.get("material_name"), nw, rate, nw * rate, trade_type, trading_id)
+    if not r_:
+        raise HTTPException(404, "Trading record not found")
     await broadcast("trading")
     return {"success": True, "data": dict(r_)}
 
 
 @app.delete("/trading/{trading_id}")
-async def delete_trading(trading_id: int, user=Depends(get_user)):
+async def delete_trading(trading_id: str, user=Depends(get_user)):
+    require_owner_or_admin(user)
     async with pool.acquire() as c:
-        await c.execute("DELETE FROM trading_records WHERE id = $1", trading_id)
+        r_ = await c.fetchrow("DELETE FROM trading_records WHERE id = $1::uuid RETURNING id", trading_id)
+        if not r_:
+            raise HTTPException(404, "Trading record not found")
     await broadcast("trading")
     return {"success": True}
 
@@ -1772,8 +2195,53 @@ async def initialize_tables():
             UNIQUE(machine_id, material_type_id))""")
         await c.execute("CREATE INDEX IF NOT EXISTS idx_machine_assignments_machine_id ON machine_stock_assignments(machine_id)")
         await c.execute("CREATE INDEX IF NOT EXISTS idx_machine_assignments_material_type_id ON machine_stock_assignments(material_type_id)")
+        # ── Ledger integrity migrations (all additive; existing rows untouched) ──
+        # materials_master ids and material_types ids are different id spaces. These
+        # columns record the floor material explicitly instead of overloading
+        # material_id, which was silently mixing the two.
+        await c.execute("ALTER TABLE production_logs ADD COLUMN IF NOT EXISTS material_type_id BIGINT")
+        await c.execute("ALTER TABLE material_movements ADD COLUMN IF NOT EXISTS material_type_id BIGINT")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_production_logs_material_type ON production_logs(material_type_id)")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_production_logs_created_at ON production_logs(created_at DESC)")
+        await c.execute("""CREATE INDEX IF NOT EXISTS idx_material_movements_consumption_ref
+                           ON material_movements(reference_id) WHERE movement_type = 'CONSUMPTION'""")
+
+        # Assignments mirror floor balances, which carry 3 decimals.
+        await c.execute("ALTER TABLE machine_stock_assignments ALTER COLUMN quantity_kg TYPE NUMERIC(12, 3)")
+
+        # Last line of defence: the database itself refuses negative stock, so no
+        # code path — present or future — can drive a balance below zero.
+        for table, column, name in (
+            ("raw_material_totals", "total_quantity_kg", "raw_material_totals_nonneg"),
+            ("floor_material_balance", "total_quantity_kg", "floor_material_balance_nonneg"),
+            ("machine_stock_assignments", "quantity_kg", "machine_stock_assignments_nonneg"),
+        ):
+            try:
+                await c.execute(
+                    f"ALTER TABLE {table} ADD CONSTRAINT {name} CHECK ({column} >= 0)")
+            except asyncpg.DuplicateObjectError:
+                pass
+            except Exception as e:  # a pre-existing negative row must not block startup
+                logger.warning("Could not add %s: %s", name, e)
+
+        await c.execute("""CREATE TABLE IF NOT EXISTS stock_reset_log (
+            id SERIAL PRIMARY KEY,
+            reset_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            reason TEXT NOT NULL DEFAULT '',
+            snapshot JSONB NOT NULL)""")
+
         logger.info("Database tables initialized successfully")
 
+
+# ── Wrap with ASGI-level CORS catch-all (after all routes are registered) ─────
+# This adds CORS headers to EVERY response at the raw ASGI level, even error
+# responses from proxy failures, DB connection errors, etc.
+app = _ASGICorsMiddleware(
+    app,
+    CORS_ORIGIN_RE,
+    CORS_ALLOW_METHODS,
+    CORS_ALLOW_HEADERS,
+)
 
 # ─────────────────────────── Entry point ───────────────────────────
 
@@ -1787,3 +2255,4 @@ if __name__ == "__main__":
         workers=1,
         reload=False,
     )
+
