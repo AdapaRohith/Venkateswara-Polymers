@@ -76,6 +76,14 @@ def pwd_verify(plain: str, hashed: str) -> bool:
 
 logger = logging.getLogger("uvicorn.error")
 
+# The plant runs on IST and nothing here is multi-region, so the whole stack
+# — Postgres session, Python process, and the strings sent to the browser —
+# speaks one wall clock. os.environ is set before any datetime.now() call.
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Kolkata")
+os.environ["TZ"] = APP_TIMEZONE
+if hasattr(time, "tzset"):
+    time.tzset()
+
 pool: asyncpg.Pool = None  # type: ignore
 
 
@@ -90,6 +98,11 @@ async def lifespan(app: FastAPI):
         database=os.getenv("DB_NAME", ""),
         min_size=5,
         max_size=20,
+        # Every timestamp column is `timestamp without time zone`, so NOW() is
+        # truncated using the session time zone. Pinning it to IST means stored
+        # wall-clock time is what the floor actually reads off the wall, and
+        # `::date` day boundaries fall at IST midnight rather than 05:30 IST.
+        server_settings={"timezone": APP_TIMEZONE},
     )
     await initialize_tables()
     yield
@@ -602,6 +615,7 @@ async def adjust_raw_total(conn, material_id, delta_kg: float):
                VALUES ($1, $2, NOW()) ON CONFLICT (material_id)
                DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2, updated_at = NOW()""",
             pid, delta)
+        await mirror_floor_for_master(conn, pid)
         return
     available = to_num(r["total_quantity_kg"]) if r else 0.0
     required = abs(delta)
@@ -610,9 +624,39 @@ async def adjust_raw_total(conn, material_id, delta_kg: float):
     await conn.execute(
         "UPDATE raw_material_totals SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW() WHERE material_id = $2",
         required, pid)
+    await mirror_floor_for_master(conn, pid)
+
+
+async def mirror_floor_for_master(conn, master_id):
+    """Refresh the floor mirror for whichever material type shares this name.
+
+    Materials that were never issued to the floor have no `material_types` row and
+    nothing to mirror — this deliberately does not create one, so the type list
+    stays as short as the operator's picker.
+    """
+    m = await conn.fetchrow("SELECT name FROM materials_master WHERE id = $1", master_id)
+    if not m:
+        return
+    t = await conn.fetchrow(
+        "SELECT id FROM material_types WHERE LOWER(name) = LOWER($1) LIMIT 1", m["name"])
+    if t:
+        await mirror_floor_from_raw(conn, t["id"], master_id)
 
 
 async def adjust_floor_balance(conn, material_type_id, delta_kg: float):
+    """Move stock for a material type, holding one number for the whole plant.
+
+    There used to be two independent pools: `raw_material_totals` (what the Raw
+    Material screen shows) and `floor_material_balance` (what production ate).
+    Production only ever touched the floor pool, so the number the operator was
+    watching never went down and the two drifted apart with no way to reconcile
+    them by eye.
+
+    Now `raw_material_totals` is the only counter. The floor balance and the
+    per-machine assignments are mirrors re-derived from it on every change, so
+    every screen shows the same kilograms and a production entry visibly reduces
+    the stock on hand.
+    """
     require_tx(conn)
     pid = int(material_type_id)
     delta = to_num(delta_kg)
@@ -620,26 +664,42 @@ async def adjust_floor_balance(conn, material_type_id, delta_kg: float):
         raise ValueError("Invalid floor material id")
     if not delta:
         return
-    r = await conn.fetchrow(
-        "SELECT total_quantity_kg FROM floor_material_balance WHERE material_type_id = $1 FOR UPDATE", pid)
-    if delta > 0:
-        await conn.execute(
-            """INSERT INTO floor_material_balance (material_type_id, total_quantity_kg)
-               VALUES ($1, $2) ON CONFLICT (material_type_id)
-               DO UPDATE SET total_quantity_kg = floor_material_balance.total_quantity_kg + $2""",
-            pid, delta)
-    else:
-        # Same wording whether the row is missing or merely short, so the client's
-        # "top up floor stock" prompt fires in both cases.
-        available = to_num(r["total_quantity_kg"]) if r else 0.0
-        required = abs(delta)
-        if available < required:
-            raise HTTPException(400, f"Insufficient floor stock. Available: {available:.3f} kg")
-        await conn.execute(
-            "UPDATE floor_material_balance SET total_quantity_kg = total_quantity_kg - $1 WHERE material_type_id = $2",
-            required, pid)
-    # Machine assignments are a view of the pooled floor balance, never an
-    # independent counter, so they cannot drift away from it.
+    master_id = await master_id_for_type(conn, pid)
+    if master_id <= 0:
+        raise HTTPException(400, "Unable to match this floor material to a stock item")
+    if delta < 0:
+        # Read first so the shortfall message names the material the way the
+        # operator sees it on screen.
+        available = to_num(await conn.fetchval(
+            "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1", master_id))
+        if available < abs(delta):
+            name = await get_material_name(conn, master_id)
+            raise HTTPException(400, f"Not enough {name} in stock. Available: {available:.3f} kg")
+    await adjust_raw_total(conn, master_id, delta)
+    await mirror_floor_from_raw(conn, pid, master_id)
+
+
+async def mirror_floor_from_raw(conn, material_type_id, master_id=None):
+    """Re-derive the floor balance (and machine rows) from the stock total.
+
+    Never incremented, always recomputed, so the mirrors cannot drift away from
+    `raw_material_totals` no matter which endpoint moved the stock.
+    """
+    pid = int(material_type_id)
+    if pid <= 0:
+        return
+    if master_id is None:
+        master_id = await master_id_for_type(conn, pid)
+    qty = to_num(await conn.fetchval(
+        "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1", master_id)) \
+        if master_id and master_id > 0 else 0.0
+    if qty < 0:
+        qty = 0.0
+    await conn.execute(
+        """INSERT INTO floor_material_balance (material_type_id, total_quantity_kg, updated_at)
+           VALUES ($1, $2, NOW()) ON CONFLICT (material_type_id)
+           DO UPDATE SET total_quantity_kg = EXCLUDED.total_quantity_kg, updated_at = NOW()""",
+        pid, qty)
     await sync_machine_assignments(conn, pid)
 
 
@@ -691,15 +751,17 @@ async def apply_movement_effect(conn, movement: dict, multiplier: int = 1):
         raise ValueError("movement_type is required")
     if mt == "CONSUMPTION":
         raise ValueError("Production consumption entries must be edited from production history")
-    raw_delta = (qty if direction == "IN" else -qty) * multiplier
-    await adjust_raw_total(conn, pid, raw_delta)
     if mt == "FLOOR_TRANSFER":
+        # Issuing to the floor moves material within the plant; it does not change
+        # how much the plant holds, so the total stays put and only the mirrors
+        # are refreshed. Production consumption is what actually reduces stock.
         mt_id = await resolve_material_type_id(conn, pid, mat_name)
         if not mt_id:
             raise ValueError("Unable to resolve floor material")
-        floor_delta = (qty if direction == "OUT" else -qty) * multiplier
-        # adjust_floor_balance re-derives the machine assignments itself.
-        await adjust_floor_balance(conn, mt_id, floor_delta)
+        await mirror_floor_from_raw(conn, mt_id, pid)
+        return
+    raw_delta = (qty if direction == "IN" else -qty) * multiplier
+    await adjust_raw_total(conn, pid, raw_delta)
 
 
 async def master_id_for_type(conn, material_type_id) -> int:
@@ -1004,6 +1066,9 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
         raise HTTPException(400, "Invalid input")
     if not user.get("id"):
         raise HTTPException(401, "User not authenticated properly")
+    # Stock is often keyed in after the lorry has gone, so the operator can name
+    # the day it actually arrived. Absent or today -> the column default stands.
+    entry_ts = parse_entry_timestamp(body)
     async with pool.acquire() as c:
         async with c.transaction():
             mat_id = await get_or_create_material(c, mat_name)
@@ -1013,9 +1078,12 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
                    DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2, updated_at = NOW()
                    RETURNING total_quantity_kg, updated_at""",
                 mat_id, qty)
+            await mirror_floor_for_master(c, mat_id)
             await c.execute(
-                "INSERT INTO raw_material_batches (material_id, material_name, quantity_kg, created_by, note, thickness) VALUES ($1, $2, $3, $4, $5, $6)",
-                mat_id, mat_name, qty, user["id"], note or None, thickness)
+                """INSERT INTO raw_material_batches
+                       (material_id, material_name, quantity_kg, created_by, note, thickness, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))""",
+                mat_id, mat_name, qty, user["id"], note or None, thickness, entry_ts)
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "raw_add", "mat": mat_name})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
@@ -1045,10 +1113,14 @@ async def issue_from_raw(request: Request, user=Depends(get_user)):
         async with c.transaction():
             mat_id = await get_or_create_material(c, mat_name)
             mt_id = await get_or_create_material_type(c, mat_name)
-            # One code path for every stock move: locks the row, checks availability,
-            # then re-derives the machine assignments from the new floor balance.
-            await adjust_raw_total(c, mat_id, -qty)
-            await adjust_floor_balance(c, mt_id, qty)
+            # Issuing to the floor is a location change, not a stock change: the
+            # kilograms are still in the plant. Stock only falls when production
+            # consumes it, so this just refreshes the floor/machine mirrors.
+            available = to_num(await c.fetchval(
+                "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1", mat_id))
+            if available < qty:
+                raise HTTPException(400, f"Not enough {mat_name} in stock. Available: {available:.3f} kg")
+            await mirror_floor_from_raw(c, mt_id, mat_id)
             machine_count = await c.fetchval("SELECT COUNT(*) FROM machines")
             await c.execute(
                 "INSERT INTO material_movements (material_id, quantity_kg, direction, movement_type, reference_id, note, created_by) VALUES ($1, $2, 'OUT', 'FLOOR_TRANSFER', $3, $4, $5)",
@@ -1106,16 +1178,21 @@ async def move_material(request: Request, user=Depends(get_user)):
                 if not bal:
                     raise HTTPException(400, "Material not found in stock")
                 if to_num(bal["total_quantity_kg"]) < qty:
-                    raise HTTPException(400, f"Insufficient stock. Available: {to_num(bal['total_quantity_kg'])} kg")
-                await c.execute("UPDATE raw_material_totals SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW() WHERE material_id = $2", qty, mat_id)
+                    raise HTTPException(400, f"Not enough {mat_name} in stock. Available: {to_num(bal['total_quantity_kg'])} kg")
                 if resolved_mt == "FLOOR_TRANSFER":
+                    # Location change only — the plant still holds the material, so
+                    # the total is untouched and the floor mirror is re-derived.
                     mt_row = await c.fetchrow("SELECT id FROM material_types WHERE LOWER(name) = LOWER($1) LIMIT 1", mat_name)
                     mt_id = mt_row["id"] if mt_row else (await c.fetchrow("INSERT INTO material_types (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", mat_name))["id"]
-                    await c.execute("INSERT INTO floor_material_balance (material_type_id, total_quantity_kg) VALUES ($1, $2) ON CONFLICT (material_type_id) DO UPDATE SET total_quantity_kg = floor_material_balance.total_quantity_kg + $2", mt_id, qty)
+                    await mirror_floor_from_raw(c, mt_id, mat_id)
+                else:
+                    await c.execute("UPDATE raw_material_totals SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW() WHERE material_id = $2", qty, mat_id)
+                    await mirror_floor_for_master(c, mat_id)
             else:
                 await c.execute(
                     "INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (material_id) DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2, updated_at = NOW()",
                     mat_id, qty)
+                await mirror_floor_for_master(c, mat_id)
             mv = await c.fetchrow(
                 "INSERT INTO material_movements (material_id, quantity_kg, direction, movement_type, reference_id, note, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
                 mat_id, qty, direction, resolved_mt, body.get("reference_id"), body.get("note"), user.get("id"))

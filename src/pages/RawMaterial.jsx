@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import useSSE from '../hooks/useSSE'
 import DataTable from '../components/DataTable'
 import InputWithCamera from '../components/InputWithCamera'
-import TolerancePanel from '../components/TolerancePanel'
+import Pictogram from '../components/Pictogram'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
+import { formatDate, formatTime, todayIST } from '../utils/datetime'
 
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
@@ -19,20 +20,38 @@ function formatKg(kg) {
 }
 
 const columns = [
-  { key: 'material_name', label: 'Material Name' },
-  { key: 'total_quantity_kg', label: 'Total Quantity (kg)', render: (value) => toNumber(value).toFixed(2) },
+  { key: 'material_name', label: 'Material', icon: 'material' },
+  {
+    key: 'total_quantity_kg',
+    label: 'In Stock',
+    icon: 'stock',
+    render: (value) => (
+      <span className="font-mono tabular-nums">{toNumber(value).toFixed(2)} kg</span>
+    ),
+  },
 ]
 
 const batchColumns = [
-  { 
-    key: 'created_at', 
-    label: 'Date', 
-    render: (val) => new Date(val).toLocaleString() 
+  { key: 'created_at', label: 'Date', icon: 'date', render: (val) => formatDate(val) },
+  {
+    key: 'created_at_time',
+    label: 'Time',
+    icon: 'clock',
+    render: (_val, row) => (
+      <span className="text-text-secondary">{formatTime(row.created_at)}</span>
+    ),
   },
-  { key: 'material_name', label: 'Material Name' },
-  { key: 'quantity_kg', label: 'Quantity (kg)', render: (value) => toNumber(value).toFixed(2) },
-  { key: 'created_by_name', label: 'Added By' },
-  { key: 'note', label: 'Note' },
+  { key: 'material_name', label: 'Material', icon: 'material' },
+  {
+    key: 'quantity_kg',
+    label: 'Quantity',
+    icon: 'weight',
+    render: (value) => (
+      <span className="font-mono tabular-nums">{toNumber(value).toFixed(2)} kg</span>
+    ),
+  },
+  { key: 'created_by_name', label: 'Added By', icon: 'person' },
+  { key: 'note', label: 'Note', icon: 'note' },
 ]
 
 export default function RawMaterial({ user }) {
@@ -45,7 +64,6 @@ export default function RawMaterial({ user }) {
   const [materialOptions, setMaterialOptions] = useState([])
   const [loadingMaterialOptions, setLoadingMaterialOptions] = useState(true)
   const [materialOptionsError, setMaterialOptionsError] = useState('')
-  const [lastTolerance, setLastTolerance] = useState(null)
 
   const [exporting, setExporting] = useState(false)
   const [showAddMaterial, setShowAddMaterial] = useState(false)
@@ -85,13 +103,13 @@ export default function RawMaterial({ user }) {
       const response = await api.post('/materials', {
         name: newMaterialName.trim(),
       })
-      
+
       // Response: { id: 1, name: "Material Name" }
       const newMaterial = response.data
-      
+
       // Refresh dropdown so new material appears
       await refreshMaterialOptions()
-      
+
       // Auto-select the newly added material by name
       setAddForm((previous) => ({ ...previous, material_name: newMaterial.name }))
       setNewMaterialName('')
@@ -167,10 +185,15 @@ export default function RawMaterial({ user }) {
   const [addForm, setAddForm] = usePersistentState('vp_raw_material_add_form', {
     material_name: '',
     quantity: '',
-    expectedQuantity: '',
+    date: '',
     quantityUnit: 'kg',
     note: '',
   })
+
+  // A stock entry is often keyed in a day or two after the lorry arrived, so the
+  // date is part of the entry rather than whenever someone got to the computer.
+  // Empty means today, which is the common case.
+  const entryDate = addForm.date || todayIST()
 
   const [batches, setBatches] = useState([])
   const [loadingBatches, setLoadingBatches] = useState(true)
@@ -253,44 +276,23 @@ export default function RawMaterial({ user }) {
     }
 
     const qtyInKg = addForm.quantityUnit === 'tons' ? qty * 1000 : qty
-    const expectedQty = toNumber(addForm.expectedQuantity)
-    const expectedQtyInKg = expectedQty > 0
-      ? (addForm.quantityUnit === 'tons' ? expectedQty * 1000 : expectedQty)
-      : undefined
 
     setSubmittingAdd(true)
     try {
       console.info('[RawMaterial] calling POST /raw-material/add')
-      const { data } = await api.post('/raw-material/add', {
+      await api.post('/raw-material/add', {
         material_name: addForm.material_name.trim(),
         quantity_kg: qtyInKg,
-        expected_quantity_kg: expectedQtyInKg,
+        date: entryDate,
         note: addForm.note?.trim() || '',
       })
 
-      setLastTolerance(data?.tolerance ? {
-        ...data.tolerance,
-        expected: expectedQtyInKg || qtyInKg,
-        actual: qtyInKg,
-      } : null)
       await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
-      if (data?.tolerance?.tolerance_status === 'BREACH') {
-        toast.warning('Raw material added with tolerance breach')
-      } else {
-        toast.success('Raw material added')
-      }
-      setAddForm((previous) => ({ ...previous, quantity: '', expectedQuantity: '', note: '' }))
+      toast.success(`Added ${qtyInKg.toFixed(2)} kg of ${addForm.material_name.trim()} on ${formatDate(entryDate)}`)
+      setAddForm((previous) => ({ ...previous, quantity: '', note: '' }))
     } catch (error) {
       console.error('Failed to add raw material', error)
-      const strictDetails = error?.response?.data?.details
-      if (strictDetails) {
-        setLastTolerance({
-          ...strictDetails,
-          expected: expectedQtyInKg || qtyInKg,
-          actual: qtyInKg,
-        })
-      }
-      toast.error(error?.response?.data?.error || 'Failed to add raw material')
+      toast.error(error?.response?.data?.error || error?.response?.data?.detail || 'Failed to add raw material')
     } finally {
       setSubmittingAdd(false)
     }
@@ -311,57 +313,66 @@ export default function RawMaterial({ user }) {
   }))
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold text-text-primary tracking-tight">Raw Material</h2>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight text-text-primary">
+          <Pictogram name="material" size={20} className="text-accent-gold" />
+          Raw Material
+        </h2>
+        {!isWorker && (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-border-default bg-bg-card px-3 py-1.5">
+              <Pictogram name="material" size={14} className="text-text-secondary/70" />
+              <span className="text-text-secondary">Items</span>
+              <span className="font-semibold text-text-primary tabular-nums">{totalTypes}</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-border-default bg-bg-card px-3 py-1.5">
+              <Pictogram name="stock" size={14} className="text-text-secondary/70" />
+              <span className="text-text-secondary">In Stock</span>
+              <span className="font-semibold text-accent-gold tabular-nums">{formatKg(totalQtyKg)}</span>
+            </span>
+          </div>
+        )}
       </div>
 
       {totalsError && (
-        <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
           {totalsError}
         </div>
       )}
 
       {materialOptionsError && (
-        <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
           {materialOptionsError}
         </div>
       )}
 
-      {!isWorker && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
-            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
-            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Material Types</p>
-            <p className="text-3xl font-semibold text-text-primary">{totalTypes}</p>
-          </div>
-          <div className="relative overflow-hidden rounded-xl border border-border-default bg-bg-card p-5 shadow-lg shadow-black/30">
-            <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent-gold/80 via-accent-gold/40 to-transparent" />
-            <p className="text-xs font-medium tracking-widest uppercase text-text-secondary/70 mb-1">Total Raw Material</p>
-            <p className="text-3xl font-semibold text-accent-gold">{formatKg(totalQtyKg)}</p>
-          </div>
-        </div>
-      )}
-
-      <div className="bg-bg-card rounded-xl border border-border-default shadow-lg shadow-black/30 p-5">
-        <h3 className="text-sm font-medium text-text-secondary/70 tracking-widest uppercase mb-6">Add / Update Raw Material</h3>
-        <form onSubmit={handleSubmitAdd} className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-2">
+      <div className="bg-bg-card rounded-lg border border-border-default p-4">
+        <h3 className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+          <Pictogram name="add" size={14} />
+          Add Raw Material
+        </h3>
+        <form onSubmit={handleSubmitAdd} className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <div className="space-y-1.5 md:col-span-2">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Material Name</label>
+              <label className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
+                <Pictogram name="material" size={13} className="text-text-secondary/70" />
+                Material
+              </label>
               <button
                 type="button"
                 onClick={() => setShowAddMaterial(true)}
-                className="text-xs font-semibold text-accent-gold hover:text-accent-gold-hover transition-colors"
+                className="inline-flex items-center gap-1 text-xs font-semibold text-accent-gold transition-colors hover:text-accent-gold-hover"
               >
-                + Add Item
+                <Pictogram name="add" size={12} />
+                New
               </button>
             </div>
             <select
               name="material_name"
               value={addForm.material_name}
               onChange={handleAddChange}
-              className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold w-full"
+              className="w-full rounded-lg border border-gray-700 bg-bg-input px-3 py-2 text-sm text-text-primary transition-colors duration-200 focus:border-accent-gold"
               disabled={submittingAdd || loadingMaterialOptions || materialOptions.length === 0}
               required
             >
@@ -376,21 +387,27 @@ export default function RawMaterial({ user }) {
             </select>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Note (Optional)</label>
+          <div className="space-y-1.5">
+            <label className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
+              <Pictogram name="date" size={13} className="text-text-secondary/70" />
+              Date
+            </label>
             <input
-              type="text"
-              name="note"
-              value={addForm.note}
+              type="date"
+              name="date"
+              value={entryDate}
+              max={todayIST()}
               onChange={handleAddChange}
-              placeholder="E.g., Batch #1234 or Supplier ABC"
-              className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold w-full"
+              className="w-full rounded-lg border border-gray-700 bg-bg-input px-3 py-2 text-sm text-text-primary transition-colors duration-200 focus:border-accent-gold"
               disabled={submittingAdd}
             />
           </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Quantity</label>
+          <div className="space-y-1.5">
+            <label className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
+              <Pictogram name="weight" size={13} className="text-text-secondary/70" />
+              Quantity
+            </label>
             <div className="flex gap-2">
               <InputWithCamera
                 type="text"
@@ -416,68 +433,69 @@ export default function RawMaterial({ user }) {
             </div>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Expected Quantity</label>
-            <InputWithCamera
+          <div className="space-y-1.5 md:col-span-3">
+            <label className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
+              <Pictogram name="note" size={13} className="text-text-secondary/70" />
+              Note (Optional)
+            </label>
+            <input
               type="text"
-              inputMode="decimal"
-              name="expectedQuantity"
-              value={addForm.expectedQuantity}
+              name="note"
+              value={addForm.note}
               onChange={handleAddChange}
-              placeholder="Optional"
-              className="w-full"
+              placeholder="E.g., Batch #1234 or Supplier ABC"
+              className="w-full rounded-lg border border-gray-700 bg-bg-input px-3 py-2 text-sm text-text-primary transition-colors duration-200 focus:border-accent-gold"
               disabled={submittingAdd}
             />
           </div>
 
-          <div className="flex items-end md:col-span-2">
+          <div className="flex items-end">
             <button
               type="submit"
               disabled={submittingAdd || loadingMaterialOptions || materialOptions.length === 0}
-              className="w-full bg-accent-gold text-black font-semibold py-2.5 rounded-lg text-sm transition-all duration-200 hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50"
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-accent-gold py-2 text-sm font-semibold text-black transition-all duration-200 hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50"
             >
-              {submittingAdd ? 'Submitting...' : 'Add Raw Material'}
+              <Pictogram name="add" size={15} />
+              {submittingAdd ? 'Saving...' : 'Add'}
             </button>
           </div>
         </form>
-        <div className="mt-5">
-          <TolerancePanel
-            tolerance={lastTolerance}
-            title="Raw Material Tolerance"
-            context={addForm.material_name || 'Last raw material entry'}
-          />
-        </div>
       </div>
 
       <DataTable
+        title="Stock On Hand"
+        titleIcon="stock"
         columns={columns}
         data={tableData}
         emptyMessage={loadingTotals ? 'Loading raw material totals...' : 'No raw materials yet.'}
         onEdit={openEditTotal}
       />
 
-      <div className="pt-6 border-t border-border-default space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <h3 className="text-xl font-semibold text-text-primary tracking-tight">Batch History</h3>
-          <button
-            type="button"
-            onClick={handleExport}
-            disabled={exporting || batches.length === 0}
-            className="rounded-lg bg-accent-gold px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-accent-gold/90 disabled:opacity-50"
-          >
-            {exporting ? 'Exporting...' : 'Export Logs'}
-          </button>
-        </div>
+      <div className="space-y-2">
         {batchesError && (
-          <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
             {batchesError}
           </div>
         )}
         <DataTable
+          title="Entries By Date"
+          titleIcon="date"
           columns={batchColumns}
           data={batches}
-          emptyMessage={loadingBatches ? 'Loading batches...' : 'No raw material batches found.'}
+          groupByDate="created_at"
+          emptyMessage={loadingBatches ? 'Loading entries...' : 'No raw material entries found.'}
           onDelete={promptDelete}
+          rightAction={(
+            <button
+              type="button"
+              onClick={handleExport}
+              disabled={exporting || batches.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border-default px-2.5 py-1 text-xs font-semibold text-text-secondary transition-colors hover:text-accent-gold disabled:opacity-50"
+            >
+              <Pictogram name="export" size={13} />
+              {exporting ? 'Exporting...' : 'Export'}
+            </button>
+          )}
         />
       </div>
 

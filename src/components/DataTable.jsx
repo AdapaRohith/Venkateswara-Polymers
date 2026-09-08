@@ -1,3 +1,26 @@
+import Pictogram from './Pictogram'
+import { formatDayHeading } from '../utils/datetime'
+
+/**
+ * `groupByDate` names the row field holding the timestamp. Rows are then broken
+ * into day sections under a heading, which is what makes a long log readable at
+ * a glance instead of one undifferentiated wall of rows.
+ */
+function groupRowsByDay(data, field) {
+    if (!field) return [{ key: 'all', heading: null, rows: data }]
+    const groups = []
+    let current = null
+    for (const row of data) {
+        const heading = formatDayHeading(row[field])
+        if (!current || current.heading !== heading) {
+            current = { key: `${heading}-${groups.length}`, heading, rows: [] }
+            groups.push(current)
+        }
+        current.rows.push(row)
+    }
+    return groups
+}
+
 export default function DataTable({
     columns,
     data,
@@ -5,15 +28,19 @@ export default function DataTable({
     onDelete,
     onEdit,
     title,
+    titleIcon,
     rightAction,
     selectedIds = [],
     onSelectedIdsChange,
     isRowSelectable,
+    groupByDate,
 }) {
     const selectable = typeof onSelectedIdsChange === 'function'
     const rowIsSelectable = (row) => (typeof isRowSelectable === 'function' ? isRowSelectable(row) : true)
     const selectableRows = data.filter((row) => rowIsSelectable(row))
     const allSelected = selectableRows.length > 0 && selectableRows.every((row) => selectedIds.includes(row.id))
+    const groups = groupRowsByDay(data, groupByDate)
+    const columnSpan = columns.length + (selectable ? 1 : 0) + ((onDelete || onEdit) ? 1 : 0)
 
     const toggleAll = () => {
         if (!selectable) return
@@ -32,9 +59,12 @@ export default function DataTable({
     return (
         <div className="bg-bg-card rounded-lg border border-border-default overflow-hidden">
             {(title || rightAction) && (
-                <div className="px-5 py-3.5 flex items-center justify-between border-b border-border-default bg-bg-primary/60">
+                <div className="px-3 py-2 flex items-center justify-between border-b border-border-default bg-bg-primary/60">
                     {title ? (
-                        <h3 className="text-xs font-semibold tracking-widest uppercase text-text-secondary">{title}</h3>
+                        <h3 className="flex items-center gap-1.5 text-xs font-semibold tracking-wide uppercase text-text-secondary">
+                            {titleIcon && <Pictogram name={titleIcon} size={14} />}
+                            {title}
+                        </h3>
                     ) : <div />}
                     {rightAction && <div>{rightAction}</div>}
                 </div>
@@ -46,7 +76,7 @@ export default function DataTable({
                     <thead>
                         <tr className="border-b border-border-default bg-bg-primary/40">
                             {selectable && (
-                                <th className="px-4 py-3 w-12">
+                                <th className="px-2 py-2 w-10">
                                     <input
                                         type="checkbox"
                                         checked={allSelected}
@@ -59,13 +89,16 @@ export default function DataTable({
                             {columns.map((col) => (
                                 <th
                                     key={col.key}
-                                    className="text-left px-5 py-3 text-[11px] font-semibold tracking-wider uppercase text-text-secondary"
+                                    className="text-left px-3 py-2 text-[11px] font-semibold tracking-wide uppercase text-text-secondary whitespace-nowrap"
                                 >
-                                    {col.label}
+                                    <span className="inline-flex items-center gap-1.5">
+                                        {col.icon && <Pictogram name={col.icon} size={13} className="text-text-secondary/60" />}
+                                        {col.label}
+                                    </span>
                                 </th>
                             ))}
                             {(onDelete || onEdit) && (
-                                <th className="text-left px-5 py-3 text-[11px] font-semibold tracking-wider uppercase text-text-secondary w-28">
+                                <th className="text-left px-3 py-2 text-[11px] font-semibold tracking-wide uppercase text-text-secondary w-20">
                                     Actions
                                 </th>
                             )}
@@ -74,10 +107,7 @@ export default function DataTable({
                     <tbody className="divide-y divide-border-subtle">
                         {data.length === 0 ? (
                             <tr>
-                                <td
-                                    colSpan={columns.length + (selectable ? 1 : 0) + ((onDelete || onEdit) ? 1 : 0)}
-                                    className="text-center py-16 text-text-secondary/60 text-sm"
-                                >
+                                <td colSpan={columnSpan} className="text-center py-8 text-text-secondary/60 text-sm">
                                     <div className="flex flex-col items-center gap-2">
                                         <svg className="w-8 h-8 text-text-secondary/30" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                                             <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
@@ -87,9 +117,25 @@ export default function DataTable({
                                 </td>
                             </tr>
                         ) : (
-                            data.map((row, idx) => (
+                            groups.flatMap((group, gi) => [
+                                ...(group.heading ? [(
+                                    <tr key={`head-${group.key}`} className="bg-bg-primary/70">
+                                        <td colSpan={columnSpan} className="px-3 py-1.5">
+                                            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+                                                <Pictogram name="date" size={13} />
+                                                {group.heading}
+                                                <span className="font-normal normal-case text-text-secondary/50">
+                                                    &middot; {group.rows.length} {group.rows.length === 1 ? 'entry' : 'entries'}
+                                                </span>
+                                            </span>
+                                        </td>
+                                    </tr>
+                                )] : []),
+                                ...group.rows.map((row, ri) => {
+                                    const idx = gi + ri
+                                    return (
                                 <tr
-                                    key={row.id || idx}
+                                    key={row.id || `${group.key}-${ri}`}
                                     style={{
                                         backgroundColor: idx % 2 !== 0 ? 'var(--bg-row-alt)' : 'transparent',
                                     }}
@@ -98,7 +144,7 @@ export default function DataTable({
                                     onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = idx % 2 !== 0 ? 'var(--bg-row-alt)' : 'transparent' }}
                                 >
                                     {selectable && (
-                                        <td className="px-4 py-3 align-middle">
+                                        <td className="px-2 py-1.5 align-middle">
                                             {rowIsSelectable(row) ? (
                                                 <input
                                                     type="checkbox"
@@ -111,20 +157,21 @@ export default function DataTable({
                                         </td>
                                     )}
                                     {columns.map((col) => (
-                                        <td key={col.key} className="px-5 py-3 text-text-primary font-normal text-sm">
+                                        <td key={col.key} className="px-3 py-1.5 text-text-primary font-normal text-sm whitespace-nowrap">
                                             {col.render ? col.render(row[col.key], row) : row[col.key]}
                                         </td>
                                     ))}
                                     {(onDelete || onEdit) && (
-                                        <td className="px-5 py-3">
-                                            <div className="flex items-center gap-2">
+                                        <td className="px-3 py-1.5">
+                                            <div className="flex items-center gap-1">
                                                 {onEdit && (
                                                     <button
                                                         onClick={() => onEdit(row)}
-                                                        className="inline-flex items-center gap-1 text-xs font-medium text-accent-gold hover:text-accent-gold-hover transition-colors px-2 py-1 rounded hover:bg-accent-gold-muted"
+                                                        className="inline-flex items-center p-1.5 text-text-secondary/60 hover:text-accent-gold transition-colors rounded hover:bg-accent-gold-muted"
                                                         title="Edit entry"
+                                                        aria-label="Edit entry"
                                                     >
-                                                        Edit
+                                                        <Pictogram name="edit" size={15} />
                                                     </button>
                                                 )}
                                                 {onDelete && (
@@ -142,7 +189,9 @@ export default function DataTable({
                                         </td>
                                     )}
                                 </tr>
-                            ))
+                                    )
+                                }),
+                            ])
                         )}
                     </tbody>
                 </table>
@@ -151,7 +200,7 @@ export default function DataTable({
             {/* Mobile card layout */}
             <div className="md:hidden">
                 {data.length === 0 ? (
-                    <div className="flex flex-col items-center gap-2 py-16 text-text-secondary/60 text-sm">
+                    <div className="flex flex-col items-center gap-2 py-10 text-text-secondary/60 text-sm">
                         <svg className="w-8 h-8 text-text-secondary/30" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
                         </svg>
@@ -159,8 +208,15 @@ export default function DataTable({
                     </div>
                 ) : (
                     <div className="divide-y divide-border-subtle">
-                        {data.map((row, idx) => (
-                            <div key={row.id || idx} className="p-4 space-y-3">
+                        {groups.flatMap((group) => [
+                            ...(group.heading ? [(
+                                <div key={`mhead-${group.key}`} className="flex items-center gap-1.5 bg-bg-primary/70 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+                                    <Pictogram name="date" size={13} />
+                                    {group.heading}
+                                </div>
+                            )] : []),
+                            ...group.rows.map((row, ri) => (
+                            <div key={row.id || `${group.key}-m-${ri}`} className="px-3 py-2.5 space-y-2">
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-3">
                                         {selectable && rowIsSelectable(row) && (
@@ -173,17 +229,18 @@ export default function DataTable({
                                             />
                                         )}
                                         <span className="text-xs font-semibold text-text-secondary bg-bg-primary px-2 py-0.5 rounded">
-                                            #{row.sno || idx + 1}
+                                            #{row.sno || ri + 1}
                                         </span>
                                     </div>
                                     <div className="flex items-center gap-2">
                                         {onEdit && (
                                             <button
                                                 onClick={() => onEdit(row)}
-                                                className="text-xs font-medium text-accent-gold hover:text-accent-gold-hover transition-colors px-2 py-1 rounded hover:bg-accent-gold-muted"
+                                                className="p-1.5 text-text-secondary/60 hover:text-accent-gold transition-colors rounded hover:bg-accent-gold-muted"
                                                 title="Edit entry"
+                                                aria-label="Edit entry"
                                             >
-                                                Edit
+                                                <Pictogram name="edit" size={15} />
                                             </button>
                                         )}
                                         {onDelete && (
@@ -199,10 +256,13 @@ export default function DataTable({
                                         )}
                                     </div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
                                     {columns.filter(c => c.key !== 'sno').map((col) => (
                                         <div key={col.key} className="flex flex-col gap-0.5">
-                                            <span className="text-[10px] font-semibold tracking-wider uppercase text-text-secondary/60">{col.label}</span>
+                                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold tracking-wide uppercase text-text-secondary/60">
+                                                {col.icon && <Pictogram name={col.icon} size={11} />}
+                                                {col.label}
+                                            </span>
                                             <span className="text-sm text-text-primary truncate">
                                                 {col.render ? col.render(row[col.key], row) : (row[col.key] ?? '—')}
                                             </span>
@@ -210,7 +270,8 @@ export default function DataTable({
                                     ))}
                                 </div>
                             </div>
-                        ))}
+                            )),
+                        ])}
                     </div>
                 )}
             </div>
