@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useToast } from '../components/Toast'
 import { TrendLineChart } from '../components/Charts'
 import api from '../utils/api'
+import { formatDateTime as formatDateTimeIST } from '../utils/datetime'
 
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
@@ -17,16 +18,7 @@ function formatKg(kg) {
 function formatDateTime(value) {
   if (!value) return '—'
 
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return String(value)
-
-  return parsed.toLocaleString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatDateTimeIST(value, String(value))
 }
 
 export default function ProductionSession() {
@@ -38,7 +30,7 @@ export default function ProductionSession() {
   const [tareWeight, setTareWeight] = useState("")
   const [floorStock, setFloorStock] = useState([])
   const [loading, setLoading] = useState(false)
-  
+
   // Keep logs to not break UI logic existing
   const [logs, setLogs] = useState([])
 
@@ -122,7 +114,7 @@ export default function ProductionSession() {
       toast.error('Please select a machine')
       return
     }
-    
+
     setLoading(true)
     try {
       const { data } = await api.post('/production/start-v2', { machine_id: Number(machineId) })
@@ -217,9 +209,9 @@ export default function ProductionSession() {
             <div className="flex flex-col gap-3 md:flex-row md:items-end">
               <div className="space-y-2">
                 <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-secondary/70">Machine</label>
-                <select 
-                  value={machineId} 
-                  onChange={(e) => setMachineId(e.target.value)} 
+                <select
+                  value={machineId}
+                  onChange={(e) => setMachineId(e.target.value)}
                   className={inputClass}
                   style={{ minWidth: '150px' }}
                 >

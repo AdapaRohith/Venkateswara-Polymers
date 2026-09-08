@@ -4,6 +4,7 @@ import useFlashRows from '../hooks/useFlashRows'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { exportSingleSheet } from '../utils/exportToExcel'
+import { formatDate as formatDateIST, todayIST } from '../utils/datetime'
 
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -38,10 +39,7 @@ function extractRows(payload) {
 }
 
 function formatDate(value) {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+  return formatDateIST(value, '-')
 }
 
 function normalizeWastageRow(row = {}, index = 0) {
@@ -68,7 +66,7 @@ export default function Wastage({ user }) {
   const [deletingId, setDeletingId] = useState(null)
 
   const [form, setForm] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: todayIST(),
     weight: '',
   })
 
@@ -157,7 +155,7 @@ export default function Wastage({ user }) {
     }))
 
     exportSingleSheet({
-      filename: `Wastage_${new Date().toISOString().slice(0, 10)}`,
+      filename: `Wastage_${todayIST()}`,
       rows,
       columns: [
         { key: 'sno', label: 'S.No' },

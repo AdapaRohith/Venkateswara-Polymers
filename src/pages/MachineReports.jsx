@@ -9,6 +9,7 @@ import {
   deleteProductionLog,
   updateProductionLog,
 } from '../utils/logActions'
+import { formatDate as formatDateIST, formatDateTime as formatDateTimeIST, todayIST, daysAgoIST } from '../utils/datetime'
 
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -17,16 +18,11 @@ const ExcelIcon = () => (
 )
 
 function formatDate(iso) {
-  if (!iso) return '-'
-  return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+  return formatDateIST(iso, '-')
 }
 
 function formatDateTime(iso) {
-  if (!iso) return '-'
-  return new Date(iso).toLocaleString('en-IN', {
-    day: '2-digit', month: 'short',
-    hour: '2-digit', minute: '2-digit',
-  })
+  return formatDateTimeIST(iso, '-')
 }
 
 function toNumber(value, fallback = 0) {
@@ -40,8 +36,8 @@ export default function MachineReports() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [filters, setFilters] = useState({
-    date_from: new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0],
-    date_to: new Date().toISOString().split('T')[0],
+    date_from: daysAgoIST(7),
+    date_to: todayIST(),
     machine_id: '',
   })
   const [applied, setApplied] = useState(null)
@@ -228,7 +224,7 @@ export default function MachineReports() {
       tare_kg: toNumber(row.total_tare_weight_kg).toFixed(3),
     }))
     exportSingleSheet({
-      filename: `Machine_Breakdown_${new Date().toISOString().slice(0, 10)}`,
+      filename: `Machine_Breakdown_${todayIST()}`,
       rows,
       columns: [
         { key: 'machine', label: 'Machine' },
@@ -273,7 +269,7 @@ export default function MachineReports() {
     const totNet = matchingLogs.reduce((sum, e) => sum + toNumber(e.net_weight, Math.max(toNumber(e.gross_weight) - toNumber(e.tare_weight), 0)), 0)
 
     exportSingleSheet({
-      filename: `Size_Report_${onlySelected ? 'Selected_' : ''}${new Date().toISOString().slice(0, 10)}`,
+      filename: `Size_Report_${onlySelected ? 'Selected_' : ''}${todayIST()}`,
       rows,
       columns: [
         { key: 'time', label: 'Time' },
@@ -312,7 +308,7 @@ export default function MachineReports() {
       net: toNumber(entry.net_weight, Math.max(toNumber(entry.gross_weight) - toNumber(entry.tare_weight), 0)).toFixed(2),
     }))
     exportSingleSheet({
-      filename: `Production_History_${onlySelected ? 'Selected_' : ''}${new Date().toISOString().slice(0, 10)}`,
+      filename: `Production_History_${onlySelected ? 'Selected_' : ''}${todayIST()}`,
       rows,
       columns: [
         { key: 'time', label: 'Time' },
@@ -347,7 +343,7 @@ export default function MachineReports() {
       net: toNumber(entry.net_weight, Math.max(toNumber(entry.gross_weight) - toNumber(entry.tare_weight), 0)).toFixed(2),
     }))
     exportMultiSheet({
-      filename: `Machine_Full_Report_${new Date().toISOString().slice(0, 10)}`,
+      filename: `Machine_Full_Report_${todayIST()}`,
       sheets: [
         { sheetName: 'Machine Breakdown', rows: machineRows, columns: [{ key: 'machine', label: 'Machine' }, { key: 'entries', label: 'Entries' }, { key: 'net_kg', label: 'Net Output (kg)' }, { key: 'gross_kg', label: 'Gross (kg)' }, { key: 'tare_kg', label: 'Tare (kg)' }], totalRow: { machine: 'TOTAL', entries: totalEntries, net_kg: totalNet.toFixed(3), gross_kg: totalGross.toFixed(3), tare_kg: '' } },
         { sheetName: 'Size Totals', rows: sizeRows, columns: [{ key: 'size', label: 'Size' }, { key: 'machines', label: 'Machine(s)' }, { key: 'entries', label: 'Total Entries' }, { key: 'net_kg', label: 'Total Net (kg)' }, { key: 'gross_kg', label: 'Total Gross (kg)' }, { key: 'tare_kg', label: 'Total Tare (kg)' }] },

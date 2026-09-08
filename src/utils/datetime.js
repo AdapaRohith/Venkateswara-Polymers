@@ -97,6 +97,13 @@ export function todayIST() {
   return parts // en-CA already yields yyyy-mm-dd
 }
 
+/** N days before today in IST, as yyyy-mm-dd — for default report ranges. */
+export function daysAgoIST(days) {
+  const d = new Date(`${todayIST()}T00:00:00`)
+  d.setDate(d.getDate() - days)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
 /** Now in IST, as the naive string the API accepts. */
 export function nowIST() {
   const d = todayIST()

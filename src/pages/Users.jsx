@@ -5,6 +5,7 @@ import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api, { fetchPendingUsers as fetchPendingUsersRequest } from '../utils/api'
 import ChangePasswordForm from '../components/ChangePasswordForm'
+import { formatDate as formatDateIST } from '../utils/datetime'
 
 export default function Users() {
     const toast = useToast()
@@ -98,14 +99,14 @@ export default function Users() {
     const columns = [
         { key: 'name', label: 'Name' },
         { key: 'email', label: 'Email' },
-        { 
+        {
             key: 'role', label: 'Role', render: (v) => (
                 <span className={`px-2 py-0.5 rounded text-xs font-medium ${String(v).toLowerCase() === 'owner' ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'}`}>
                     {v}
                 </span>
-            ) 
+            )
         },
-        { key: 'created_at', label: 'Created At', render: (v) => v ? new Date(v).toLocaleDateString() : '-' }
+        { key: 'created_at', label: 'Created At', render: (v) => formatDateIST(v, '-') }
     ]
 
     const inputClass = "w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2 text-sm transition-colors focus:border-accent-gold"

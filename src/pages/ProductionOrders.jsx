@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useToast } from '../components/Toast'
 import { exportSingleSheet } from '../utils/exportToExcel'
 import { createOrder, getOrders } from '../utils/orders'
+import { formatDate as formatDateIST, todayIST } from '../utils/datetime'
 
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -10,11 +11,10 @@ const ExcelIcon = () => (
 )
 
 function formatDate(iso) {
-  if (!iso) return '-'
-  return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+  return formatDateIST(iso, '-')
 }
 
-const getTodayDate = () => new Date().toISOString().split('T')[0]
+const getTodayDate = () => todayIST()
 
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
@@ -335,7 +335,7 @@ export default function ProductionOrders() {
   const handleExportPOs = (list, label) => {
     const rows = flattenPOs(list)
     if (rows.length === 0) return
-    exportSingleSheet({ filename: `PO_${label}_${new Date().toISOString().slice(0, 10)}`, rows, columns: exportPOColumns, sheetName: label })
+    exportSingleSheet({ filename: `PO_${label}_${todayIST()}`, rows, columns: exportPOColumns, sheetName: label })
   }
 
   return (

@@ -15,6 +15,7 @@ import {
   deleteFloorTransaction,
   updateFloorTransaction,
 } from '../utils/logActions'
+import { formatDateTime as formatDateTimeIST, todayIST } from '../utils/datetime'
 
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
@@ -24,16 +25,7 @@ function toNumber(value, fallback = 0) {
 function formatDateTime(value) {
   if (!value) return '—'
 
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return String(value)
-
-  return parsed.toLocaleString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatDateTimeIST(value, String(value))
 }
 
 export default function LogHistory() {
@@ -63,7 +55,7 @@ export default function LogHistory() {
       time: formatDateTime(row.created_at || row.createdAt),
     }))
     exportSingleSheet({
-      filename: `Log_History_${date || 'all'}_${new Date().toISOString().slice(0, 10)}`,
+      filename: `Log_History_${date || 'all'}_${todayIST()}`,
       rows,
       columns: [
         { key: 'material', label: 'Material' },

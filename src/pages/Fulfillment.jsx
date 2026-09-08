@@ -3,6 +3,7 @@ import useSSE from '../hooks/useSSE'
 import { useToast } from '../components/Toast'
 import { exportMultiSheet, exportSingleSheet } from '../utils/exportToExcel'
 import { getOrders, recordFulfillment } from '../utils/orders'
+import { todayIST } from '../utils/datetime'
 
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
@@ -215,7 +216,7 @@ export default function Fulfillment() {
     }
     const rows = flattenOrdersForExport(selectedOrders)
     exportSingleSheet({
-      filename: `Fulfillment_Selected_${new Date().toISOString().slice(0, 10)}`,
+      filename: `Fulfillment_Selected_${todayIST()}`,
       rows,
       columns: exportColumns,
       sheetName: 'Selected Orders',
@@ -241,7 +242,7 @@ export default function Fulfillment() {
     }
 
     exportMultiSheet({
-      filename: `Fulfillment_Report_${new Date().toISOString().slice(0, 10)}`,
+      filename: `Fulfillment_Report_${todayIST()}`,
       sheets,
     })
     toast.success('Exported fulfillment report to Excel')

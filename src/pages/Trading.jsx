@@ -7,6 +7,7 @@ import usePersistentState from '../hooks/usePersistentState'
 import { exportSingleSheet } from '../utils/exportToExcel'
 import api from '../utils/api'
 import { getOrders } from '../utils/orders'
+import { todayIST } from '../utils/datetime'
 
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -14,7 +15,7 @@ const ExcelIcon = () => (
   </svg>
 )
 
-const getTodayDate = () => new Date().toISOString().split('T')[0]
+const getTodayDate = () => todayIST()
 
 const columns = [
     { key: 'sno', label: 'S.No' },
@@ -46,7 +47,7 @@ export default function Trading() {
         netWeight: '',
         type: 'Buy',
     }
-    
+
     const [form, setForm] = usePersistentState('vp_trading_form_v2', initialFormState)
     const [submitting, setSubmitting] = useState(false)
 
@@ -82,7 +83,7 @@ export default function Trading() {
             type: d.type,
         }))
         exportSingleSheet({
-            filename: `Trading_${new Date().toISOString().slice(0, 10)}`,
+            filename: `Trading_${todayIST()}`,
             rows,
             columns: [
                 { key: 'sno', label: 'S.No' },
@@ -173,7 +174,7 @@ export default function Trading() {
         'w-full bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold placeholder:text-text-secondary/30'
 
     // ── Summary calculations ──
-    const today = new Date().toISOString().split('T')[0]
+    const today = todayIST()
     const mappedData = data.map((d, idx) => ({
         ...d,
         sno: idx + 1,
@@ -282,12 +283,12 @@ export default function Trading() {
                 </form>
             </div>
 
-            <DataTable 
+            <DataTable
                title="Trading History"
-               columns={columns} 
-               data={mappedData} 
-               emptyMessage="No trading entries yet." 
-               onDelete={handleDelete} 
+               columns={columns}
+               data={mappedData}
+               emptyMessage="No trading entries yet."
+               onDelete={handleDelete}
                onEdit={handleEdit}
                rightAction={
                    <button

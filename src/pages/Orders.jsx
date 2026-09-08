@@ -3,6 +3,7 @@ import DataTable from '../components/DataTable'
 import { useToast } from '../components/Toast'
 import { exportSingleSheet } from '../utils/exportToExcel'
 import { createOrder, deleteOrder, updateOrderStatus } from '../utils/orders'
+import { todayIST } from '../utils/datetime'
 
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -219,7 +220,7 @@ export default function Orders({ user, orders = [], loading = false, refreshOrde
                 type="button"
                 onClick={() => {
                   const rows = filteredOrders.map((o) => ({ order_number: o.order_number, client_name: o.client_name, status: o.status || 'Active' }))
-                  exportSingleSheet({ filename: `Orders_${statusFilter}_${new Date().toISOString().slice(0, 10)}`, rows, columns: [{ key: 'order_number', label: 'Order Number' }, { key: 'client_name', label: 'Client Name' }, { key: 'status', label: 'Status' }] })
+                  exportSingleSheet({ filename: `Orders_${statusFilter}_${todayIST()}`, rows, columns: [{ key: 'order_number', label: 'Order Number' }, { key: 'client_name', label: 'Client Name' }, { key: 'status', label: 'Status' }] })
                 }}
                 className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all"
               >

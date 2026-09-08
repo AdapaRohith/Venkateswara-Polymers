@@ -12,6 +12,7 @@ import {
   deleteProductionLog,
   updateProductionLog,
 } from '../utils/logActions'
+import { formatDate as formatDateIST, formatDateTime as formatDateTimeIST, todayIST } from '../utils/datetime'
 
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -29,13 +30,7 @@ function formatKg(kg) {
   return n >= 1000 ? `${(n / 1000).toFixed(2)} tons` : `${n.toFixed(2)} kg`
 }
 function formatTime(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return String(iso)
-  return d.toLocaleString('en-IN', {
-    day: '2-digit', month: 'short',
-    hour: '2-digit', minute: '2-digit',
-  })
+  return formatDateTimeIST(iso, '—')
 }
 
 /* ── Persistent worker name & size ───────────────────────────────────────── */
@@ -158,15 +153,12 @@ function MachinePill({ machine, isActive, onClick }) {
 /*  MAIN COMPONENT                                                          */
 /* ══════════════════════════════════════════════════════════════════════════ */
 function getTodayDate() {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return todayIST()
 }
 
 function formatDisplayDate(dateStr) {
   if (!dateStr) return ''
-  const d = new Date(dateStr + 'T00:00:00')
-  if (Number.isNaN(d.getTime())) return dateStr
-  return d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })
+  return formatDateIST(dateStr, dateStr)
 }
 
 export default function Production({ user }) {
@@ -296,7 +288,7 @@ export default function Production({ user }) {
       const { data } = await api.get('/production/logs', {
         params
       })
-      
+
       // Transform API response to history format
       const logs = Array.isArray(data) ? data : []
       const historyItems = logs.map(log => normalizeHistoryEntry({
@@ -311,7 +303,7 @@ export default function Production({ user }) {
         tare: log.tare_weight,
         net: log.net_weight,
       }))
-      
+
       setHistory(historyItems)
     } catch (err) {
       console.error('Failed to load production logs:', err)
@@ -333,7 +325,7 @@ export default function Production({ user }) {
     setGrossWeight('')
     setTareWeight('')
     setDirectNetWeight('')
-    
+
     // Fetch worker name for this machine from backend state
     const machineIdNum = parseInt(machine.id.replace(/\D/g, ''), 10) || 1
     setHistoryMachineFilter(String(machineIdNum))
@@ -353,7 +345,7 @@ export default function Production({ user }) {
       try {
         const machineIdNum = parseInt(activeMachine.id.replace(/\D/g, ''), 10) || 1
         const { data } = await api.get(`/machines/${machineIdNum}/assigned-stock`)
-        
+
         if (data?.assigned_materials) {
           const assignedMaterials = Array.isArray(data.assigned_materials) ? data.assigned_materials : []
           setAssignedStock(assignedMaterials)
@@ -364,7 +356,7 @@ export default function Production({ user }) {
         setAssignedStock([])
       }
     }
-    
+
     loadAssignedStock()
   }, [activeMachine])
 
@@ -519,7 +511,7 @@ export default function Production({ user }) {
         })
       }
       const errorMsg = err?.response?.data?.detail || err?.response?.data?.error || err?.message || 'Failed to log entry'
-      if (errorMsg.includes('Insufficient floor stock')) {
+      if (errorMsg.includes('Insufficient floor stock') || errorMsg.includes('Not enough')) {
         const available = parseAvailableKg(errorMsg) ?? 0
         const selectedAssignedMaterial = assignedStock.find(mat => String(mat.material_type_id) === String(parseInt(materialId, 10)))
         const selectedMaterial = selectedAssignedMaterial || materialsForProduction.find(mat => String(mat.id) === String(parseInt(materialId, 10)))
@@ -629,7 +621,7 @@ export default function Production({ user }) {
       net: toNumber(row.net).toFixed(2),
     }))
     exportSingleSheet({
-      filename: `Production_History_${new Date().toISOString().slice(0, 10)}`,
+      filename: `Production_History_${todayIST()}`,
       rows,
       columns: [
         { key: 'time', label: 'Time' },
@@ -757,7 +749,7 @@ export default function Production({ user }) {
                 <span className="inline-flex items-center gap-1.5 text-xs">
                   <span className="w-2 h-2 rounded-full bg-orange-400"></span>
                   <span className="text-orange-400 font-medium">
-                    Logging for: {new Date(productionDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    Logging for: {formatDateIST(productionDate)}
                   </span>
                 </span>
               )}

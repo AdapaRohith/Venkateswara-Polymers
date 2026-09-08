@@ -2,12 +2,12 @@ import { useCallback, useEffect, useState } from 'react'
 import { CheckCircle2, Edit3, ExternalLink, FileVideo, Image, RefreshCw, Trash2, X } from 'lucide-react'
 import api, { BASE_URL } from '../utils/api'
 import { useToast } from '../components/Toast'
+import { formatDateTime as formatDateTimeIST } from '../utils/datetime'
 
 const AUTH_TOKEN_KEY = 'token'
 
 function formatDate(value) {
-  if (!value) return '-'
-  return new Date(value).toLocaleString()
+  return formatDateTimeIST(value, '-')
 }
 
 function formatSize(bytes) {

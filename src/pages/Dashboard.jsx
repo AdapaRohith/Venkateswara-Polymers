@@ -4,6 +4,7 @@ import useSSE from '../hooks/useSSE'
 import SummaryCard from '../components/SummaryCard'
 import { SectionBarChart, TrendLineChart } from '../components/Charts'
 import api from '../utils/api'
+import { formatDate as formatDateIST, todayIST } from '../utils/datetime'
 
 function toNumber(value, fallback = 0) {
     const numericValue = Number(value)
@@ -32,14 +33,7 @@ function extractRows(payload) {
 }
 
 function formatDate(value) {
-    if (!value) return '-'
-    const date = new Date(value)
-    if (Number.isNaN(date.getTime())) return value
-    return date.toLocaleDateString('en-IN', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-    })
+    return formatDateIST(value, '-')
 }
 
 function getRowDate(row = {}) {
@@ -70,7 +64,7 @@ function normalizeWastageRow(row = {}, index = 0) {
 }
 
 function getCurrentMonth() {
-    return new Date().toISOString().slice(0, 7)
+    return todayIST().slice(0, 7)
 }
 
 function getMonthRange(month) {

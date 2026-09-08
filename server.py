@@ -1194,8 +1194,11 @@ async def move_material(request: Request, user=Depends(get_user)):
                     mat_id, qty)
                 await mirror_floor_for_master(c, mat_id)
             mv = await c.fetchrow(
-                "INSERT INTO material_movements (material_id, quantity_kg, direction, movement_type, reference_id, note, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
-                mat_id, qty, direction, resolved_mt, body.get("reference_id"), body.get("note"), user.get("id"))
+                """INSERT INTO material_movements
+                       (material_id, quantity_kg, direction, movement_type, reference_id, note, created_by, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW())) RETURNING *""",
+                mat_id, qty, direction, resolved_mt, body.get("reference_id"), body.get("note"),
+                user.get("id"), parse_entry_timestamp(body))
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "material_move"})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
