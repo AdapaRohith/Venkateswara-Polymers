@@ -3,7 +3,7 @@ import useSSE from '../hooks/useSSE'
 import useFlashRows from '../hooks/useFlashRows'
 import EditEntryModal from '../components/EditEntryModal'
 import StockOverflowDialog, { parseAvailableKg } from '../components/StockOverflowDialog'
-import TolerancePanel from '../components/TolerancePanel'
+import Pictogram from '../components/Pictogram'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { exportSingleSheet } from '../utils/exportToExcel'
@@ -12,7 +12,7 @@ import {
   deleteProductionLog,
   updateProductionLog,
 } from '../utils/logActions'
-import { formatDate as formatDateIST, formatDateTime as formatDateTimeIST, todayIST } from '../utils/datetime'
+import { formatDate as formatDateIST, formatTime as formatTimeIST, formatDateTime as formatDateTimeIST, todayIST } from '../utils/datetime'
 
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -190,7 +190,6 @@ export default function Production({ user }) {
   })
   const [savingHistoryEdit, setSavingHistoryEdit] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [lastTolerance, setLastTolerance] = useState(null)
   const [stockOverflow, setStockOverflow] = useState(null) // { materialName, attempted, available, materialName }
   const [topUpLoading, setTopUpLoading] = useState(false)
   const [loadingWorker, setLoadingWorker] = useState(false)
@@ -441,12 +440,6 @@ export default function Production({ user }) {
         production_date: productionDate || getTodayDate(),
       })
 
-      setLastTolerance(data?.tolerance ? {
-        ...data.tolerance,
-        expected: net,
-        actual: net,
-      } : null)
-
       // Find material name from assigned stock or floor stock for history display
       const selectedAssignedMaterial = assignedStock.find(mat => String(mat.material_type_id) === String(materialIdNum))
       let selectedMaterial = selectedAssignedMaterial
@@ -502,14 +495,6 @@ export default function Production({ user }) {
       setDirectNetWeight('')
       setTimeout(() => grossRef.current?.focus(), 50)
     } catch (err) {
-      const strictDetails = err?.response?.data?.details
-      if (strictDetails) {
-        setLastTolerance({
-          ...strictDetails,
-          expected: net,
-          actual: net,
-        })
-      }
       const errorMsg = err?.response?.data?.detail || err?.response?.data?.error || err?.message || 'Failed to log entry'
       if (errorMsg.includes('Insufficient floor stock') || errorMsg.includes('Not enough')) {
         const available = parseAvailableKg(errorMsg) ?? 0
@@ -638,33 +623,29 @@ export default function Production({ user }) {
   }, [history, totalGross, totalTare, totalNet])
 
   const inputClass =
-    'w-full rounded-xl border border-border-default bg-bg-input px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:border-accent-gold focus:ring-2 focus:ring-accent-gold/20 disabled:cursor-not-allowed disabled:opacity-60'
+    'w-full rounded-lg border border-border-default bg-bg-input px-3 py-2 text-sm text-text-primary transition-colors duration-200 focus:border-accent-gold disabled:cursor-not-allowed disabled:opacity-60'
+  const labelClass =
+    'mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-secondary/80'
 
   /* ══════════════════════════════════════════════════════════════════════════ */
   /*  RENDER                                                                  */
   /* ══════════════════════════════════════════════════════════════════════════ */
   return (
-    <div className="space-y-6">
-      {/* ── Page Header ──────────────────────────────────────────────────── */}
-      <div>
-        <h1 className="text-2xl font-bold text-text-primary tracking-tight">Production</h1>
-        <p className="text-sm text-text-secondary mt-1">Select a machine to start logging production data</p>
-      </div>
+    <div className="space-y-4">
+      <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight text-text-primary">
+        <Pictogram name="production" size={20} className="text-accent-gold" />
+        Production
+      </h1>
 
       {/* ── Dual Machine Selectors ───────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {/* Production Machines */}
-        <div className="rounded-[28px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/10 transition-shadow hover:shadow-xl">
-          <div className="flex items-center gap-3 mb-5">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-accent-gold/10 text-accent-gold">
-              <MachineIcon />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-text-primary">Production Machines</h2>
-              <p className="text-[11px] text-text-secondary/60 mt-0.5">Extrusion & molding lines</p>
-            </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="rounded-lg border border-border-default bg-bg-card p-4">
+          <h2 className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-primary">
+            <Pictogram name="machine" size={15} className="text-accent-gold" />
+            Production Machines
+          </h2>
+          <div className="grid grid-cols-2 gap-2">
             {PRODUCTION_MACHINES.map(m => (
               <MachinePill
                 key={m.id}
@@ -676,13 +657,13 @@ export default function Production({ user }) {
           </div>
 
           {/* ── Select Material & Production Date (outside machines) ────── */}
-          <div className="mt-5 pt-5 border-t border-border-default">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="mt-3 border-t border-border-default pt-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {/* Select Material */}
-              <div className="space-y-2">
-                <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
-                  Select Material
-                  <span className="ml-2 text-accent-gold/60 normal-case tracking-normal">(applies to all machines)</span>
+              <div>
+                <label className={labelClass}>
+                  <Pictogram name="material" size={13} className="text-text-secondary/70" />
+                  Material
                 </label>
                 <select
                   value={materialId}
@@ -706,12 +687,10 @@ export default function Production({ user }) {
               </div>
 
               {/* Production Date */}
-              <div className="space-y-2">
-                <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
-                  Production Date
-                  {isBackdated && (
-                    <span className="ml-2 text-orange-400 normal-case tracking-normal">(backdated)</span>
-                  )}
+              <div>
+                <label className={labelClass}>
+                  <Pictogram name="date" size={13} className="text-text-secondary/70" />
+                  Date
                 </label>
                 <div className="relative flex items-center">
                   <input
@@ -734,41 +713,22 @@ export default function Production({ user }) {
               </div>
             </div>
 
-            {/* Status indicators */}
-            <div className="flex flex-wrap items-center gap-4 mt-3">
-              {materialId && (() => {
-                const mat = materialsForProduction.find(m => String(m.id) === String(materialId))
-                return mat ? (
-                  <span className="inline-flex items-center gap-1.5 text-xs">
-                    <span className="w-2 h-2 rounded-full bg-purple-400"></span>
-                    <span className="text-purple-400 font-medium">{mat.material_name}</span>
-                  </span>
-                ) : null
-              })()}
-              {isBackdated && (
-                <span className="inline-flex items-center gap-1.5 text-xs">
-                  <span className="w-2 h-2 rounded-full bg-orange-400"></span>
-                  <span className="text-orange-400 font-medium">
-                    Logging for: {formatDateIST(productionDate)}
-                  </span>
-                </span>
-              )}
-            </div>
+            {isBackdated && (
+              <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-orange-400">
+                <Pictogram name="warning" size={13} />
+                Logging for {formatDateIST(productionDate)}
+              </p>
+            )}
           </div>
         </div>
 
         {/* Cutting Machines */}
-        <div className="rounded-[28px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/10 transition-shadow hover:shadow-xl">
-          <div className="flex items-center gap-3 mb-5">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400">
-              <CutIcon />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-text-primary">Cutting Machines</h2>
-              <p className="text-[11px] text-text-secondary/60 mt-0.5">Bag cutting & sealing lines</p>
-            </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="rounded-lg border border-border-default bg-bg-card p-4">
+          <h2 className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-primary">
+            <Pictogram name="wastage" size={15} className="text-emerald-400" />
+            Cutting Machines
+          </h2>
+          <div className="grid grid-cols-2 gap-2">
             {CUTTING_MACHINES.map(m => (
               <MachinePill
                 key={m.id}
@@ -783,32 +743,21 @@ export default function Production({ user }) {
 
       {/* ── Active Machine — Full-Width Data Entry ───────────────────────── */}
       {activeMachine && (
-        <section className="rounded-[28px] border border-border-default bg-bg-card shadow-xl shadow-black/15 overflow-hidden animate-slide-up">
+        <section className="overflow-hidden rounded-lg border border-border-default bg-bg-card animate-slide-up">
           {/* Header bar */}
-          <div className={`
-            px-6 py-5 md:px-8 flex items-center justify-between
-            ${activeMachine.type === 'cutting'
-              ? 'bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.18),_transparent_50%)]'
-              : 'bg-[radial-gradient(circle_at_top_left,_rgba(167,139,250,0.18),_transparent_50%)]'}
-          `}>
-            <div className="flex items-center gap-4">
-              <div className={`
-                flex items-center justify-center w-12 h-12 rounded-2xl
-                ${activeMachine.type === 'cutting' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-accent-gold/15 text-accent-gold'}
-              `}>
-                {activeMachine.type === 'cutting' ? <CutIcon /> : <MachineIcon />}
-              </div>
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-secondary/60">
-                  {activeMachine.type === 'cutting' ? 'Cutting Machine' : 'Production Machine'}
-                </p>
-                <h2 className="text-2xl font-bold text-text-primary mt-0.5">{activeMachine.label}</h2>
-              </div>
+          <div className="flex items-center justify-between border-b border-border-default bg-bg-primary/60 px-4 py-2.5">
+            <div className="flex items-center gap-2">
+              <Pictogram
+                name={activeMachine.type === 'cutting' ? 'wastage' : 'machine'}
+                size={18}
+                className={activeMachine.type === 'cutting' ? 'text-emerald-400' : 'text-accent-gold'}
+              />
+              <h2 className="text-base font-semibold text-text-primary">{activeMachine.label}</h2>
             </div>
             <button
               type="button"
               onClick={deselectMachine}
-              className="p-2 rounded-xl text-text-secondary hover:text-red-400 hover:bg-red-500/10 transition-all"
+              className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-red-500/10 hover:text-red-400"
               title="Deselect machine"
             >
               <CloseIcon />
@@ -816,44 +765,31 @@ export default function Production({ user }) {
           </div>
 
           {/* Form */}
-          <form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-6 border-t border-border-default">
+          <form onSubmit={handleSubmit} className="space-y-3 p-4">
             {/* Assigned stock table */}
             {assignedStock.length > 0 && (
-              <div className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-5">
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-blue-300/70 mb-3">
-                  Assigned Materials for {activeMachine.label}
-                </p>
-                <div className="overflow-x-auto rounded-xl border border-blue-500/40">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b-2 border-blue-500/40 bg-blue-500/15">
-                        <th className="px-4 py-2 text-left text-[10px] font-bold uppercase tracking-widest text-blue-300/80 border-r border-blue-500/30">Material</th>
-                        <th className="px-4 py-2 text-right text-[10px] font-bold uppercase tracking-widest text-blue-300/80 border-r border-blue-500/30">Linked (kg)</th>
-                        <th className="px-4 py-2 text-right text-[10px] font-bold uppercase tracking-widest text-blue-300/80">Available (kg)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {assignedStock.map(mat => (
-                        <tr
-                          key={`${mat.machine_id}-${mat.material_type_id}`}
-                          className="border-b border-blue-500/25 last:border-0 hover:bg-blue-500/10 transition-colors"
-                        >
-                          <td className="px-4 py-2.5 font-semibold text-blue-200">{mat.material_name}</td>
-                          <td className="px-4 py-2.5 text-right font-mono text-blue-300/80">{toNumber(mat.quantity_kg).toFixed(1)}</td>
-                          <td className="px-4 py-2.5 text-right font-mono font-bold text-blue-200">{getAssignedAvailableKg(mat).toFixed(1)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+              <div className="flex flex-wrap gap-1.5">
+                {assignedStock.map(mat => (
+                  <span
+                    key={`${mat.machine_id}-${mat.material_type_id}`}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border-default bg-bg-primary/50 px-2.5 py-1 text-xs"
+                  >
+                    <Pictogram name="material" size={13} className="text-text-secondary/70" />
+                    <span className="font-medium text-text-primary">{mat.material_name}</span>
+                    <span className="font-mono font-semibold tabular-nums text-accent-gold">
+                      {getAssignedAvailableKg(mat).toFixed(1)} kg
+                    </span>
+                  </span>
+                ))}
               </div>
             )}
 
             {/* Row 1: Size + Worker */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
 
-              <div className="space-y-2">
-                <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
+              <div>
+                <label className={labelClass}>
+                  <Pictogram name="order" size={13} className="text-text-secondary/70" />
                   Size
                 </label>
                 <input
@@ -865,10 +801,10 @@ export default function Production({ user }) {
                 />
               </div>
 
-              <div className="space-y-2">
-                <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
-                  Worker Name
-                  <span className="ml-2 text-accent-gold/60 normal-case tracking-normal">(persists)</span>
+              <div>
+                <label className={labelClass}>
+                  <Pictogram name="person" size={13} className="text-text-secondary/70" />
+                  Worker
                 </label>
                 <input
                   type="text"
@@ -883,8 +819,9 @@ export default function Production({ user }) {
             {/* Row 2: Weight inputs — different for production vs cutting */}
             {isCuttingMachine ? (
               /* Cutting machines: single Net Weight input */
-              <div className="space-y-2">
-                <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
+              <div>
+                <label className={labelClass}>
+                  <Pictogram name="weight" size={13} className="text-text-secondary/70" />
                   Net Weight (kg)
                 </label>
                 <input
@@ -901,12 +838,12 @@ export default function Production({ user }) {
                 {/* Net Weight Display for cutting */}
                 {directNetWeight && (
                   <div className={`
-                    rounded-2xl p-4 text-center border transition-all duration-300 mt-3
+                    mt-2 rounded-lg border p-2 text-center transition-colors
                     ${toNumber(directNetWeight) > 0
                       ? 'bg-emerald-500/10 border-emerald-500/30'
                       : 'bg-bg-primary border-border-subtle'}
                   `}>
-                    <p className={`text-4xl font-bold font-mono ${
+                    <p className={`font-mono text-2xl font-bold tabular-nums ${
                       toNumber(directNetWeight) > 0 ? 'text-emerald-400' : 'text-text-secondary/30'
                     }`}>
                       {toNumber(directNetWeight).toFixed(2)} kg
@@ -917,10 +854,11 @@ export default function Production({ user }) {
             ) : (
               /* Production machines: Gross + Tare with auto-calc */
               <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  <div className="space-y-2">
-                    <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
-                      Gross Weight (kg)
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={labelClass}>
+                      <Pictogram name="bag" size={13} className="text-text-secondary/70" />
+                      Gross (kg)
                     </label>
                     <input
                       ref={grossRef}
@@ -934,9 +872,10 @@ export default function Production({ user }) {
                       disabled={submitting}
                     />
                   </div>
-                  <div className="space-y-2">
-                    <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
-                      Tare Weight (kg)
+                  <div>
+                    <label className={labelClass}>
+                      <Pictogram name="remove" size={13} className="text-text-secondary/70" />
+                      Tare (kg)
                     </label>
                     <input
                       type="number"
@@ -953,41 +892,38 @@ export default function Production({ user }) {
 
                 {/* Net Weight Display */}
                 <div className={`
-                  rounded-2xl p-5 text-center border transition-all duration-300
+                  flex items-center justify-center gap-2 rounded-lg border p-2 transition-colors
                   ${isValid
                     ? 'bg-accent-gold/10 border-accent-gold/30'
                     : isInvalid
                     ? 'bg-red-500/10 border-red-500/30'
                     : 'bg-bg-primary border-border-subtle'}
                 `}>
-                  <p className={`text-[10px] font-bold uppercase tracking-[0.2em] mb-2 ${
-                    isValid ? 'text-accent-gold/80' : isInvalid ? 'text-red-400/80' : 'text-text-secondary/50'
-                  }`}>
-                    Net Weight (Auto-calculated)
-                  </p>
-                  <p className={`text-4xl font-bold font-mono ${
+                  <Pictogram
+                    name="weight"
+                    size={16}
+                    className={isValid ? 'text-accent-gold' : isInvalid ? 'text-red-400' : 'text-text-secondary/40'}
+                  />
+                  <p className={`font-mono text-2xl font-bold tabular-nums ${
                     isValid ? 'text-accent-gold' : isInvalid ? 'text-red-400' : 'text-text-secondary/30'
                   }`}>
                     {netWeight !== null ? `${netWeight.toFixed(2)} kg` : '— kg'}
                   </p>
-                  {isInvalid && (
-                    <p className="text-xs text-red-400 mt-2">Gross weight must be greater than tare weight</p>
-                  )}
                 </div>
+                {isInvalid && (
+                  <p className="inline-flex items-center gap-1.5 text-xs text-red-400">
+                    <Pictogram name="warning" size={13} />
+                    Gross must be more than tare
+                  </p>
+                )}
               </>
             )}
-
-            <TolerancePanel
-              tolerance={lastTolerance}
-              title="Production Tolerance"
-              context={activeMachine.label}
-            />
 
             {/* Submit */}
             <button
               type="submit"
               disabled={!isValid || submitting}
-              className="w-full rounded-2xl bg-accent-gold px-6 py-4 text-sm font-bold text-white transition-all duration-200 hover:bg-accent-gold-hover hover:shadow-lg hover:shadow-accent-gold/20 disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.98]"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-accent-gold px-4 py-2.5 text-sm font-semibold text-black transition-all duration-200 hover:bg-accent-gold-hover disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.98]"
             >
               {submitting ? (
                 <span className="flex items-center justify-center gap-2">
@@ -998,48 +934,34 @@ export default function Production({ user }) {
                   Saving...
                 </span>
               ) : (
-                `Add Entry to ${activeMachine.label}`
+                <>
+                  <Pictogram name="check" size={16} />
+                  {`Add to ${activeMachine.label}`}
+                </>
               )}
             </button>
-
-            {/* Keyboard hint */}
-            <div className="flex items-center justify-center gap-2 text-xs text-text-secondary/40">
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
-              </svg>
-              Press <kbd className="px-1.5 py-0.5 bg-bg-card border border-border-default rounded text-[10px] font-mono mx-1">Ctrl + Enter</kbd> to submit
-            </div>
           </form>
         </section>
       )}
 
       {/* ── Production History Log ───────────────────────────────────────── */}
-      <section className="rounded-[28px] border border-border-default bg-bg-card p-6 shadow-lg shadow-black/10 md:p-8">
-        <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-blue-500/10 text-blue-400">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
-            <div>
-              <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-text-primary">Production History</h2>
-              <p className="text-[11px] text-text-secondary/60 mt-0.5">
-                {history.length} {history.length === 1 ? 'entry' : 'entries'} in current filter
-                {totalNet > 0 && ` · Total: ${formatKg(totalNet)}`}
-              </p>
-            </div>
-          </div>
+      <section className="rounded-lg border border-border-default bg-bg-card p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-primary">
+            <Pictogram name="clock" size={15} className="text-text-secondary" />
+            History
+            <span className="font-normal normal-case tracking-normal text-text-secondary/60">
+              {history.length} {history.length === 1 ? 'entry' : 'entries'}
+              {totalNet > 0 && ` \u00b7 ${formatKg(totalNet)}`}
+            </span>
+          </h2>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="space-y-1">
-              <label className="block text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
-                Filter Machine
-              </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <div>
               <select
                 value={historyMachineFilter}
                 onChange={(event) => setHistoryMachineFilter(event.target.value)}
-                className="rounded-xl border border-border-default bg-bg-input px-4 py-2.5 text-sm text-text-primary transition-all duration-200 focus:border-accent-gold focus:ring-2 focus:ring-accent-gold/20"
+                className="rounded-lg border border-border-default bg-bg-input px-3 py-1.5 text-sm text-text-primary transition-colors focus:border-accent-gold"
               >
                 <option value="">All machines</option>
                 {PRODUCTION_MACHINES.map((machine) => (
@@ -1058,48 +980,46 @@ export default function Production({ user }) {
             {history.length > 0 && (
               <button
                 type="button"
-                onClick={() => setHistory([])}
-                className="px-4 py-2 text-xs font-semibold text-text-secondary border border-border-default rounded-xl hover:border-red-500/30 hover:text-red-400 hover:bg-red-500/5 transition-all"
-              >
-                Clear History
-              </button>
-            )}
-            {history.length > 0 && (
-              <button
-                type="button"
                 onClick={handleExportHistory}
-                className="flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-all"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-semibold text-emerald-400 transition-colors hover:bg-emerald-500/20"
               >
-                <ExcelIcon /> Export Excel
+                <ExcelIcon /> Export
               </button>
             )}
           </div>
         </div>
 
-        <div className="overflow-x-auto rounded-2xl border border-white/20 bg-bg-input/15">
+        <div className="overflow-x-auto rounded-lg border border-border-default bg-bg-input/15">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b-2 border-white/20 bg-bg-primary/50">
-                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Time</th>
-                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Machine</th>
-                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Material</th>
-                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Size</th>
-                <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Worker</th>
-                <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Gross</th>
-                <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/70 border-r border-white/10">Tare</th>
-                <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-text-secondary/70">Net (kg)</th>
+              <tr className="border-b border-border-default bg-bg-primary/50">
+                {[
+                  { label: 'Date', icon: 'date' },
+                  { label: 'Time', icon: 'clock' },
+                  { label: 'Machine', icon: 'machine' },
+                  { label: 'Material', icon: 'material' },
+                  { label: 'Size', icon: 'order' },
+                  { label: 'Worker', icon: 'person' },
+                ].map(col => (
+                  <th key={col.label} className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-text-secondary/70">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Pictogram name={col.icon} size={13} className="text-text-secondary/60" />
+                      {col.label}
+                    </span>
+                  </th>
+                ))}
+                <th className="px-3 py-2 text-right text-[11px] font-semibold uppercase tracking-wide text-text-secondary/70">Gross</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold uppercase tracking-wide text-text-secondary/70">Tare</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold uppercase tracking-wide text-text-secondary/70">Net (kg)</th>
               </tr>
             </thead>
             <tbody>
               {history.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-14 text-center">
-                    <div className="flex flex-col items-center gap-3 text-text-secondary/40">
-                      <svg className="w-10 h-10 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-                      </svg>
-                      <p className="text-sm">No entries logged yet</p>
-                      <p className="text-xs">Select a machine above and start logging production data</p>
+                  <td colSpan={9} className="px-4 py-8 text-center">
+                    <div className="flex flex-col items-center gap-2 text-text-secondary/40">
+                      <Pictogram name="production" size={28} className="opacity-40" />
+                      <p className="text-sm">No entries yet</p>
                     </div>
                   </td>
                 </tr>
@@ -1113,10 +1033,11 @@ export default function Production({ user }) {
                       ${idx === 0 ? 'bg-accent-gold/[0.03]' : idx % 2 === 0 ? '' : 'bg-white/[0.015]'}
                     `}
                   >
-                    <td className="px-4 py-3 text-text-primary/80 whitespace-nowrap">{formatTime(row.time)}</td>
-                    <td className="px-4 py-3 whitespace-nowrap">
+                    <td className="whitespace-nowrap px-3 py-1.5 text-text-primary/80">{formatDateIST(row.time)}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-text-secondary">{formatTimeIST(row.time)}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5">
                       <span className={`
-                        inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold
+                        inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-semibold
                         ${row.machineType === 'cutting'
                           ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                           : 'bg-accent-gold/10 text-accent-gold border border-accent-gold/20'}
@@ -1124,29 +1045,29 @@ export default function Production({ user }) {
                         {row.machine}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-text-primary/80">{row.material}</td>
-                    <td className="px-4 py-3 text-text-primary/80">{row.size}</td>
-                    <td className="px-4 py-3 text-text-primary/80 font-medium">{row.worker}</td>
-                    <td className="px-4 py-3 text-right font-mono text-text-secondary/80">{toNumber(row.gross).toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right font-mono text-text-secondary/60">{toNumber(row.tare).toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right font-mono font-bold text-accent-gold">{toNumber(row.net).toFixed(2)}</td>
+                    <td className="px-3 py-1.5 text-text-primary/80">{row.material}</td>
+                    <td className="px-3 py-1.5 text-text-primary/80">{row.size}</td>
+                    <td className="px-3 py-1.5 font-medium text-text-primary/80">{row.worker}</td>
+                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-text-secondary/80">{toNumber(row.gross).toFixed(2)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-text-secondary/60">{toNumber(row.tare).toFixed(2)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono font-bold tabular-nums text-accent-gold">{toNumber(row.net).toFixed(2)}</td>
                   </tr>
                 ))
               )}
             </tbody>
             {history.length > 0 && (
               <tfoot>
-                <tr className="border-t-2 border-white/20 bg-bg-primary/50">
-                  <td colSpan={5} className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-text-secondary/50">
-                    Session Total
+                <tr className="border-t border-border-default bg-bg-primary/50">
+                  <td colSpan={6} className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary/60">
+                    Total
                   </td>
-                  <td className="px-4 py-3 text-right font-mono font-bold text-text-secondary/80">
+                  <td className="px-3 py-2 text-right font-mono font-bold tabular-nums text-text-secondary/80">
                     {totalGross.toFixed(2)}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono font-bold text-text-secondary/60">
+                  <td className="px-3 py-2 text-right font-mono font-bold tabular-nums text-text-secondary/60">
                     {totalTare.toFixed(2)}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono font-bold text-accent-gold text-base">
+                  <td className="px-3 py-2 text-right font-mono font-bold tabular-nums text-accent-gold">
                     {totalNet.toFixed(2)}
                   </td>
                 </tr>

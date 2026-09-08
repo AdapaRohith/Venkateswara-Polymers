@@ -8,5 +8,11 @@ module.exports = {
     autorestart: true,
     watch: false,
     max_memory_restart: '512M',
+    // The plant runs on IST and the columns are timestamps without a zone, so
+    // the process clock has to match the one the floor reads.
+    env: {
+      TZ: 'Asia/Kolkata',
+      APP_TIMEZONE: 'Asia/Kolkata',
+    },
   }]
 }
