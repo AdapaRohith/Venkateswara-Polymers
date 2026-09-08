@@ -13,6 +13,8 @@ module.exports = {
     env: {
       TZ: 'Asia/Kolkata',
       APP_TIMEZONE: 'Asia/Kolkata',
+      // Clock time stamped on entries filed for a past date.
+      BACKDATED_ENTRY_TIME: '09:00:00',
     },
   }]
 }
