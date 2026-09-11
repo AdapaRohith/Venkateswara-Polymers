@@ -1399,6 +1399,10 @@ async def create_production_log(request: Request, user=Depends(get_user)):
                         raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
                     logs.append({**dict(log_row), "tolerance": tol})
                     tolerances.append(tol)
+                # Every entry was skipped for a missing machine_id. Reporting 200 here
+                # let the floor believe a shift was logged when nothing was written.
+                if not logs:
+                    raise HTTPException(400, "No production entries logged: every machine entry was missing machine_id")
                 batch_id = f"BATCH_{int(time.time() * 1000)}"
                 result = {"message": f"Batch logged: {len(logs)} production entries", "batch_id": batch_id,
                           "inserted": len(logs), "data": logs, "tolerance": tolerances}
