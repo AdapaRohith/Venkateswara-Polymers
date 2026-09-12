@@ -92,17 +92,20 @@ function getAssignedAvailableKg(material) {
 }
 
 /* ── Machine definitions ─────────────────────────────────────────────────── */
-const PRODUCTION_MACHINES = [
-  { id: 'M1', label: 'Machine 1' },
-  { id: 'M2', label: 'Machine 2' },
-  { id: 'M3', label: 'Machine 3' },
-  { id: 'M4', label: 'Machine 4' },
-  { id: 'M5', label: 'Machine 5' },
-]
-const CUTTING_MACHINES = [
-  { id: 'C1', label: 'Cutting 1' },
-  { id: 'C2', label: 'Cutting 2' },
-  { id: 'C3', label: 'Cutting 3' },
+/* `id` is the machines table primary key, which production_logs.machine_id is a foreign
+   key to — so it is the only id the API will accept. Cutting machines are ids 6-8. The
+   page used to invent ids like 'C1' and strip them to digits, which filed every cutting
+   entry against Machine 1. Machines are loaded from /machines; this list is the fallback
+   so the floor still gets a usable panel if that call fails. */
+const FALLBACK_MACHINES = [
+  { id: 1, label: 'Machine 1', type: 'production' },
+  { id: 2, label: 'Machine 2', type: 'production' },
+  { id: 3, label: 'Machine 3', type: 'production' },
+  { id: 4, label: 'Machine 4', type: 'production' },
+  { id: 5, label: 'Machine 5', type: 'production' },
+  { id: 6, label: 'Cutting Machine 1', type: 'cutting' },
+  { id: 7, label: 'Cutting Machine 2', type: 'cutting' },
+  { id: 8, label: 'Cutting Machine 3', type: 'cutting' },
 ]
 
 /* ── Icons ────────────────────────────────────────────────────────────────── */
@@ -165,6 +168,7 @@ export default function Production({ user }) {
   const toast = useToast()
 
   /* ── State ──────────────────────────────────────────────────────────────── */
+  const [machines, setMachines] = useState(FALLBACK_MACHINES)
   const [activeMachine, setActiveMachine] = useState(null)     // { id, label, type: 'production' | 'cutting' }
   const [floorStock, setFloorStock] = useState([])            // Issued (floor) materials with quantities
   const [assignedStock, setAssignedStock] = useState([])      // Materials assigned to active machine
@@ -262,6 +266,35 @@ export default function Production({ user }) {
     }
   }, [hasLoadedMaterialsOnce, loadingMaterials, materialId, selectedMaterialAvailable])
 
+  /* ── Load the machine list (ids must match the machines table) ───────────── */
+  useEffect(() => {
+    let cancelled = false
+    api.get('/machines')
+      .then(({ data }) => {
+        if (cancelled || !Array.isArray(data) || data.length === 0) return
+        setMachines(data.map((m) => ({
+          id: m.id,
+          label: m.name || `Machine ${m.id}`,
+          type: m.type === 'cutting' ? 'cutting' : 'production',
+        })))
+      })
+      .catch((err) => console.debug('Could not load machines, using defaults:', err.message))
+    return () => { cancelled = true }
+  }, [])
+
+  const productionMachines = useMemo(
+    () => machines.filter((m) => m.type === 'production'),
+    [machines],
+  )
+  const cuttingMachines = useMemo(
+    () => machines.filter((m) => m.type === 'cutting'),
+    [machines],
+  )
+  const machinesById = useMemo(
+    () => new Map(machines.map((m) => [String(m.id), m])),
+    [machines],
+  )
+
   /* ── Fetch worker name from machine state ────────────────────────────────── */
   const fetchWorkerForMachine = useCallback(async (machineId) => {
     setLoadingWorker(true)
@@ -290,24 +323,28 @@ export default function Production({ user }) {
 
       // Transform API response to history format
       const logs = Array.isArray(data) ? data : []
-      const historyItems = logs.map(log => normalizeHistoryEntry({
-        id: log.id,
-        time: log.created_at,
-        machine: `M${log.machine_id}`,
-        machineType: 'production',
-        material: log.material_name || `Material ${log.material_id}`,
-        size: log.size || '—',
-        worker: log.worker_name || '—',
-        gross: log.gross_weight,
-        tare: log.tare_weight,
-        net: log.net_weight,
-      }))
+      const historyItems = logs.map(log => {
+        const machine = machinesById.get(String(log.machine_id))
+        return normalizeHistoryEntry({
+          id: log.id,
+          time: log.created_at,
+          machine: log.machine_name || machine?.label || `Machine ${log.machine_id}`,
+          machineId: log.machine_id,
+          machineType: machine?.type || 'production',
+          material: log.material_name || `Material ${log.material_id}`,
+          size: log.size || '—',
+          worker: log.worker_name || '—',
+          gross: log.gross_weight,
+          tare: log.tare_weight,
+          net: log.net_weight,
+        })
+      })
 
       setHistory(historyItems)
     } catch (err) {
       console.error('Failed to load production logs:', err)
     }
-  }, [])
+  }, [machinesById])
 
   useEffect(() => {
     const machineId = historyMachineFilter ? Number(historyMachineFilter) : null
@@ -315,20 +352,16 @@ export default function Production({ user }) {
   }, [fetchLogsForMachine, historyMachineFilter])
 
   /* ── Select / deselect machine ──────────────────────────────────────────── */
-  const selectMachine = useCallback((machine, type) => {
-    setActiveMachine(prev => {
-      if (prev && prev.id === machine.id && prev.type === type) return null
-      return { ...machine, type }
-    })
+  const selectMachine = useCallback((machine) => {
+    setActiveMachine(prev => (prev && prev.id === machine.id ? null : machine))
     setAssignedStock([])
     setGrossWeight('')
     setTareWeight('')
     setDirectNetWeight('')
 
     // Fetch worker name for this machine from backend state
-    const machineIdNum = parseInt(machine.id.replace(/\D/g, ''), 10) || 1
-    setHistoryMachineFilter(String(machineIdNum))
-    fetchWorkerForMachine(machineIdNum)
+    setHistoryMachineFilter(String(machine.id))
+    fetchWorkerForMachine(machine.id)
 
     setTimeout(() => grossRef.current?.focus(), 100)
   }, [fetchWorkerForMachine])
@@ -342,8 +375,7 @@ export default function Production({ user }) {
       }
 
       try {
-        const machineIdNum = parseInt(activeMachine.id.replace(/\D/g, ''), 10) || 1
-        const { data } = await api.get(`/machines/${machineIdNum}/assigned-stock`)
+        const { data } = await api.get(`/machines/${activeMachine.id}/assigned-stock`)
 
         if (data?.assigned_materials) {
           const assignedMaterials = Array.isArray(data.assigned_materials) ? data.assigned_materials : []
@@ -371,7 +403,7 @@ export default function Production({ user }) {
     const resolvedMachineId =
       machineIdOverride ||
       (historyMachineFilter ? Number(historyMachineFilter) : null) ||
-      (activeMachine ? parseInt(activeMachine.id.replace(/\D/g, ''), 10) || 1 : null)
+      (activeMachine ? activeMachine.id : null)
 
     const requests = [api.get('/floor/stock')]
     if (resolvedMachineId) {
@@ -410,9 +442,12 @@ export default function Production({ user }) {
     }
 
     const isCutting = activeMachine.type === 'cutting'
-    const gross = isCutting ? 0 : toNumber(grossWeight)
+    // Cutting machines weigh the cut output directly — there is no bag to tare off, so the
+    // form takes a single net weight. The API derives net as gross - tare, so that net goes
+    // over the wire as the gross with a zero tare.
+    const gross = isCutting ? toNumber(directNetWeight) : toNumber(grossWeight)
     const tare = isCutting ? 0 : toNumber(tareWeight)
-    const net = isCutting ? toNumber(directNetWeight) : Math.max(gross - tare, 0)
+    const net = isCutting ? gross : Math.max(gross - tare, 0)
 
     if (net <= 0) {
       toast.error('Net weight must be greater than 0')
@@ -425,7 +460,7 @@ export default function Production({ user }) {
 
     setSubmitting(true)
     try {
-      const machineIdNum = parseInt(activeMachine.id.replace(/\D/g, ''), 10) || 1
+      const machineIdNum = activeMachine.id
       const materialIdNum = parseInt(materialId, 10)
 
       // New API: POST /production/logs
@@ -646,12 +681,12 @@ export default function Production({ user }) {
             Production Machines
           </h2>
           <div className="grid grid-cols-2 gap-2">
-            {PRODUCTION_MACHINES.map(m => (
+            {productionMachines.map(m => (
               <MachinePill
                 key={m.id}
                 machine={m}
-                isActive={activeMachine?.id === m.id && activeMachine?.type === 'production'}
-                onClick={() => selectMachine(m, 'production')}
+                isActive={activeMachine?.id === m.id}
+                onClick={() => selectMachine(m)}
               />
             ))}
           </div>
@@ -729,12 +764,12 @@ export default function Production({ user }) {
             Cutting Machines
           </h2>
           <div className="grid grid-cols-2 gap-2">
-            {CUTTING_MACHINES.map(m => (
+            {cuttingMachines.map(m => (
               <MachinePill
                 key={m.id}
                 machine={m}
-                isActive={activeMachine?.id === m.id && activeMachine?.type === 'cutting'}
-                onClick={() => selectMachine(m, 'cutting')}
+                isActive={activeMachine?.id === m.id}
+                onClick={() => selectMachine(m)}
               />
             ))}
           </div>
@@ -964,13 +999,8 @@ export default function Production({ user }) {
                 className="rounded-lg border border-border-default bg-bg-input px-3 py-1.5 text-sm text-text-primary transition-colors focus:border-accent-gold"
               >
                 <option value="">All machines</option>
-                {PRODUCTION_MACHINES.map((machine) => (
-                  <option key={machine.id} value={machine.id.replace(/\D/g, '')}>
-                    {machine.label}
-                  </option>
-                ))}
-                {CUTTING_MACHINES.map((machine) => (
-                  <option key={machine.id} value={machine.id.replace(/\D/g, '')}>
+                {machines.map((machine) => (
+                  <option key={machine.id} value={machine.id}>
                     {machine.label}
                   </option>
                 ))}
