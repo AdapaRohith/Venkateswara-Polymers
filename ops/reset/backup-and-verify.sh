@@ -43,6 +43,7 @@ if [[ -f "$BACKEND_DIR/.env" ]]; then
 fi
 git -C "$REPO_DIR" bundle create "$BUNDLE_DIR/repository/source.bundle" --all
 git -C "$REPO_DIR" rev-parse HEAD > "$BUNDLE_DIR/repository/commit.txt"
+printf '%s\n' "$DB_OWNER" > "$BUNDLE_DIR/database-owner.txt"
 
 sudo -u postgres createdb --owner="$DB_OWNER" "$STAGING_DB"
 set +o pipefail
@@ -64,8 +65,11 @@ diff -u "$BUNDLE_DIR/production-master-counts.txt" "$BUNDLE_DIR/restored-master-
 
 cat > "$BUNDLE_DIR/RESTORE.txt" <<'EOF'
 1. Stop vp-api.
-2. Drop and recreate the venkateswara_polymers database as postgres.
-3. Run: pg_restore --exit-on-error -d venkateswara_polymers database.dump
+2. Read the recorded role from database-owner.txt and recreate venkateswara_polymers with that owner, for example:
+   DB_OWNER="$(cat database-owner.txt)"
+   sudo -u postgres dropdb --if-exists venkateswara_polymers
+   sudo -u postgres createdb --owner="$DB_OWNER" venkateswara_polymers
+3. Run: sudo -u postgres pg_restore --exit-on-error -d venkateswara_polymers database.dump
 4. Restore backend files (including .env) to /root/backend with root-only permissions.
 5. Clone the Git bundle, check out the commit recorded in repository/commit.txt, and deploy the frontend.
 6. Start vp-api and verify loopback/public HTTP health before reopening writes.
