@@ -647,6 +647,47 @@ async def adjust_raw_total(conn, material_id, delta_kg: float):
     await mirror_floor_for_master(conn, pid)
 
 
+def normalize_stock_adjustment(body) -> tuple[str, str, float, str]:
+    material_name = str(body.get("material_name") or "").strip()
+    operation = str(body.get("operation") or "").strip().lower()
+    quantity_kg = to_num(body.get("quantity_kg"))
+    reason = str(body.get("reason") or "").strip()
+    if not material_name:
+        raise HTTPException(400, "Material name is required")
+    if operation not in {"add", "remove"}:
+        raise HTTPException(400, "Operation must be add or remove")
+    if quantity_kg <= 0:
+        raise HTTPException(400, "Quantity must be greater than zero")
+    if not reason:
+        raise HTTPException(400, "Reason is required")
+    return material_name, operation, quantity_kg, reason
+
+
+async def apply_manual_stock_adjustment(
+    conn, material_id, operation: str, quantity_kg: float, reason: str, created_by: int,
+) -> dict:
+    require_tx(conn)
+    material_id = int(material_id)
+    quantity_kg = to_num(quantity_kg)
+    opening = to_num(await conn.fetchval(
+        "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
+        material_id,
+    ))
+    if operation == "remove" and quantity_kg > opening:
+        raise HTTPException(400, f"Insufficient raw stock. Available: {opening:.3f} kg")
+    delta = quantity_kg if operation == "add" else -quantity_kg
+    closing = opening + delta
+    await adjust_raw_total(conn, material_id, delta)
+    await conn.execute(
+        """INSERT INTO stock_adjustments
+               (material_id, operation, quantity_kg, opening_quantity_kg,
+                closing_quantity_kg, reason, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+        material_id, operation, quantity_kg, opening, closing, reason, created_by,
+    )
+    return {"opening_quantity_kg": opening, "closing_quantity_kg": closing}
+
+
 async def mirror_floor_for_master(conn, master_id):
     """Refresh the floor mirror for whichever material type shares this name.
 
@@ -1111,6 +1152,54 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
     return {"message": "Raw material added successfully",
             "data": {"material_name": mat_name, "total_quantity_kg": upsert["total_quantity_kg"]},
             "tolerance": tol}
+
+
+@app.post("/raw-material/adjust")
+async def adjust_raw_material(request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
+    material_name, operation, quantity_kg, reason = normalize_stock_adjustment(await request.json())
+    created_by = user_id_from_token(user)
+    if not created_by:
+        raise HTTPException(401, "User not authenticated properly")
+    async with pool.acquire() as c:
+        async with c.transaction():
+            material = await c.fetchrow(
+                """SELECT id, name FROM materials_master
+                   WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))
+                   ORDER BY id LIMIT 1 FOR SHARE""",
+                material_name,
+            )
+            if not material:
+                raise HTTPException(404, "Material not found")
+            result = await apply_manual_stock_adjustment(
+                c, material["id"], operation, quantity_kg, reason, created_by,
+            )
+    await broadcast("raw_material")
+    return {
+        "message": "Stock adjusted successfully",
+        "data": {
+            "material_name": material["name"],
+            "operation": operation,
+            "quantity_kg": quantity_kg,
+            **result,
+        },
+    }
+
+
+@app.get("/raw-material/adjustments")
+async def get_raw_material_adjustments(user=Depends(get_user)):
+    require_owner_or_admin(user)
+    async with pool.acquire() as c:
+        return rows(await c.fetch(
+            """SELECT sa.id, mm.name AS material_name, sa.operation, sa.quantity_kg,
+                      sa.opening_quantity_kg, sa.closing_quantity_kg, sa.reason,
+                      sa.created_at, u.name AS created_by_name
+               FROM stock_adjustments sa
+               JOIN materials_master mm ON mm.id = sa.material_id
+               LEFT JOIN users u ON u.id = sa.created_by
+               ORDER BY sa.created_at DESC, sa.id DESC
+               LIMIT 500"""
+        ))
 
 
 # ── Floor stock ──
