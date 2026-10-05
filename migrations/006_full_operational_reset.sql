@@ -17,6 +17,17 @@ CREATE TABLE IF NOT EXISTS stock_adjustments (
 CREATE INDEX IF NOT EXISTS idx_stock_adjustments_material_created
     ON stock_adjustments (material_id, created_at DESC);
 
+DO $$
+DECLARE
+    database_owner name;
+BEGIN
+    SELECT pg_get_userbyid(datdba) INTO database_owner
+    FROM pg_database
+    WHERE datname = current_database();
+    EXECUTE format('GRANT SELECT, INSERT ON stock_adjustments TO %I', database_owner);
+    EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE stock_adjustments_id_seq TO %I', database_owner);
+END $$;
+
 TRUNCATE TABLE
     issue_report_attachments,
     issue_reports,

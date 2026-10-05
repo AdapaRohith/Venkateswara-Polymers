@@ -10,6 +10,11 @@ if [[ "$MODE" != "--verify-only" && "$MODE" != "--create-bundle" ]]; then
 fi
 
 DB_NAME="venkateswara_polymers"
+DB_OWNER="$(sudo -u postgres psql -X -At -d postgres -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='$DB_NAME'")"
+if [[ ! "$DB_OWNER" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+  echo "could not determine a safe database owner for $DB_NAME" >&2
+  exit 1
+fi
 BACKUP_ROOT="/root/backups"
 BACKEND_DIR="/root/backend"
 REPO_DIR="/root/Venkateswara-Polymers"
@@ -39,9 +44,9 @@ fi
 git -C "$REPO_DIR" bundle create "$BUNDLE_DIR/repository/source.bundle" --all
 git -C "$REPO_DIR" rev-parse HEAD > "$BUNDLE_DIR/repository/commit.txt"
 
-sudo -u postgres createdb "$STAGING_DB"
+sudo -u postgres createdb --owner="$DB_OWNER" "$STAGING_DB"
 set +o pipefail
-cat "$BUNDLE_DIR/database.dump" | sudo -u postgres pg_restore --exit-on-error --no-owner --no-privileges -d "$STAGING_DB"
+cat "$BUNDLE_DIR/database.dump" | sudo -u postgres pg_restore --exit-on-error -d "$STAGING_DB"
 restore_pipe=("${PIPESTATUS[@]}")
 set -o pipefail
 if [[ "${restore_pipe[1]}" -ne 0 || ("${restore_pipe[0]}" -ne 0 && "${restore_pipe[0]}" -ne 141) ]]; then
@@ -60,7 +65,7 @@ diff -u "$BUNDLE_DIR/production-master-counts.txt" "$BUNDLE_DIR/restored-master-
 cat > "$BUNDLE_DIR/RESTORE.txt" <<'EOF'
 1. Stop vp-api.
 2. Drop and recreate the venkateswara_polymers database as postgres.
-3. Run: pg_restore --exit-on-error --no-owner --no-privileges -d venkateswara_polymers database.dump
+3. Run: pg_restore --exit-on-error -d venkateswara_polymers database.dump
 4. Restore backend files (including .env) to /root/backend with root-only permissions.
 5. Clone the Git bundle, check out the commit recorded in repository/commit.txt, and deploy the frontend.
 6. Start vp-api and verify loopback/public HTTP health before reopening writes.
