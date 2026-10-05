@@ -7,6 +7,7 @@ import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 import { formatDate, formatTime, todayIST } from '../utils/datetime'
+import { previewStockAdjustment, validateStockAdjustment } from '../utils/stockAdjustment'
 
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
@@ -54,6 +55,23 @@ const batchColumns = [
   { key: 'note', label: 'Note', icon: 'note' },
 ]
 
+const adjustmentColumns = [
+  { key: 'created_at', label: 'Date', icon: 'date', render: (val) => formatDate(val) },
+  { key: 'created_at_time', label: 'Time', icon: 'time', render: (_, row) => formatTime(row.created_at) },
+  { key: 'material_name', label: 'Material', icon: 'material' },
+  {
+    key: 'operation',
+    label: 'Action',
+    icon: 'stock',
+    render: (value) => <span className={value === 'remove' ? 'text-red-400' : 'text-emerald-400'}>{value === 'remove' ? 'Remove' : 'Add'}</span>,
+  },
+  { key: 'quantity_kg', label: 'Quantity', icon: 'weight', render: (value) => `${toNumber(value).toFixed(2)} kg` },
+  { key: 'opening_quantity_kg', label: 'Opening', icon: 'stock', render: (value) => `${toNumber(value).toFixed(2)} kg` },
+  { key: 'closing_quantity_kg', label: 'Closing', icon: 'stock', render: (value) => `${toNumber(value).toFixed(2)} kg` },
+  { key: 'reason', label: 'Reason', icon: 'note' },
+  { key: 'created_by_name', label: 'Adjusted By', icon: 'person' },
+]
+
 export default function RawMaterial({ user }) {
   const toast = useToast()
   const isWorker = user?.role === 'worker'
@@ -72,8 +90,13 @@ export default function RawMaterial({ user }) {
   const [deletingBatchId, setDeletingBatchId] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)  // { id, materialName, quantityKg }
   const [editTotal, setEditTotal] = useState(null)  // { materialName, currentTotal }
+  const [editOperation, setEditOperation] = useState('add')
   const [editQuantity, setEditQuantity] = useState('')
+  const [editReason, setEditReason] = useState('')
   const [submittingEdit, setSubmittingEdit] = useState(false)
+  const [adjustments, setAdjustments] = useState([])
+  const [loadingAdjustments, setLoadingAdjustments] = useState(true)
+  const [adjustmentsError, setAdjustmentsError] = useState('')
 
   const handleExport = async () => {
     try {
@@ -151,24 +174,34 @@ export default function RawMaterial({ user }) {
       materialName: row.material_name,
       currentTotal: toNumber(row.total_quantity_kg),
     })
+    setEditOperation('add')
     setEditQuantity('')
+    setEditReason('')
   }
 
   const handleEditTotal = async () => {
-    const qty = toNumber(editQuantity)
-    if (qty <= 0) {
-      toast.error('Quantity must be greater than zero')
+    const validationError = validateStockAdjustment({
+      current: editTotal.currentTotal,
+      operation: editOperation,
+      quantity: editQuantity,
+      reason: editReason,
+    })
+    if (validationError) {
+      toast.error(validationError)
       return
     }
+    const qty = toNumber(editQuantity)
+    const closingTotal = previewStockAdjustment(editTotal.currentTotal, editOperation, qty)
     setSubmittingEdit(true)
     try {
-      await api.post('/raw-material/add', {
+      await api.post('/raw-material/adjust', {
         material_name: editTotal.materialName,
+        operation: editOperation,
         quantity_kg: qty,
-        note: 'Manual stock adjustment',
+        reason: editReason.trim(),
       })
-      toast.success(`Added ${qty.toFixed(2)} kg to ${editTotal.materialName}. Total is now ${(editTotal.currentTotal + qty).toFixed(2)} kg.`)
-      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
+      toast.success(`${editOperation === 'add' ? 'Added' : 'Removed'} ${qty.toFixed(2)} kg ${editOperation === 'add' ? 'to' : 'from'} ${editTotal.materialName}. Closing stock: ${closingTotal.toFixed(2)} kg.`)
+      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches(), refreshAdjustments()])
       setEditTotal(null)
     } catch (error) {
       console.error('Failed to adjust stock', error)
@@ -245,17 +278,33 @@ export default function RawMaterial({ user }) {
     }
   }, [])
 
+  const refreshAdjustments = useCallback(async (silent = false) => {
+    if (!silent) setLoadingAdjustments(true)
+    setAdjustmentsError('')
+    try {
+      const { data } = await api.get('/raw-material/adjustments')
+      setAdjustments(Array.isArray(data) ? data : data?.data || [])
+    } catch (error) {
+      console.error('Failed to load stock adjustments', error)
+      setAdjustmentsError(error?.response?.data?.error || error?.response?.data?.detail || 'Failed to load adjustments')
+    } finally {
+      if (!silent) setLoadingAdjustments(false)
+    }
+  }, [])
+
   useSSE(['raw_material'], () => {
     refreshRawTotals(true).catch(() => {})
     refreshMaterialOptions(true).catch(() => {})
     refreshBatches(true).catch(() => {})
+    refreshAdjustments(true).catch(() => {})
   })
 
   useEffect(() => {
     refreshRawTotals().catch(() => {})
     refreshMaterialOptions().catch(() => {})
     refreshBatches().catch(() => {})
-  }, [refreshMaterialOptions, refreshRawTotals, refreshBatches])
+    refreshAdjustments().catch(() => {})
+  }, [refreshMaterialOptions, refreshRawTotals, refreshBatches, refreshAdjustments])
 
   const handleAddChange = (event) => {
     const { name, value } = event.target
@@ -480,6 +529,22 @@ export default function RawMaterial({ user }) {
       />
 
       <div className="space-y-2">
+        {adjustmentsError && (
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+            {adjustmentsError}
+          </div>
+        )}
+        <DataTable
+          title="Stock Adjustments"
+          titleIcon="stock"
+          columns={adjustmentColumns}
+          data={adjustments}
+          groupByDate="created_at"
+          emptyMessage={loadingAdjustments ? 'Loading adjustments...' : 'No manual stock adjustments yet.'}
+        />
+      </div>
+
+      <div className="space-y-2">
         {batchesError && (
           <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
             {batchesError}
@@ -605,9 +670,9 @@ export default function RawMaterial({ user }) {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-bg-card rounded-2xl border border-border-default shadow-2xl max-w-md w-full p-6 space-y-4">
             <div>
-              <h3 className="text-lg font-semibold text-text-primary">Edit Stock Total</h3>
+              <h3 className="text-lg font-semibold text-text-primary">Adjust Stock</h3>
               <p className="text-sm text-text-secondary mt-1">
-                Add stock to <strong>{editTotal.materialName}</strong>. This creates a new batch entry — use the delete button on batch entries to reduce stock.
+                Add or remove stock for <strong>{editTotal.materialName}</strong>. Every adjustment records its opening and closing balance.
               </p>
             </div>
 
@@ -616,8 +681,21 @@ export default function RawMaterial({ user }) {
                 <span className="text-text-secondary">Current Total</span>
                 <span className="text-text-primary font-semibold">{editTotal.currentTotal.toFixed(2)} kg</span>
               </div>
+              <div className="grid grid-cols-2 gap-2">
+                {['add', 'remove'].map((operation) => (
+                  <button
+                    key={operation}
+                    type="button"
+                    onClick={() => setEditOperation(operation)}
+                    disabled={submittingEdit}
+                    className={`rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${editOperation === operation ? 'border-accent-gold bg-accent-gold/10 text-accent-gold' : 'border-gray-700 text-text-secondary hover:text-text-primary'}`}
+                  >
+                    {operation === 'add' ? 'Add Stock' : 'Remove Stock'}
+                  </button>
+                ))}
+              </div>
               <div className="space-y-2">
-                <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Quantity to Add (kg)</label>
+                <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Quantity (kg)</label>
                 <input
                   type="number"
                   inputMode="decimal"
@@ -625,7 +703,7 @@ export default function RawMaterial({ user }) {
                   min="0.01"
                   value={editQuantity}
                   onChange={(e) => setEditQuantity(e.target.value)}
-                  placeholder="Enter quantity to add..."
+                  placeholder="Enter quantity..."
                   className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm w-full transition-colors duration-200 focus:border-accent-gold"
                   disabled={submittingEdit}
                   onKeyDown={(e) => {
@@ -634,11 +712,22 @@ export default function RawMaterial({ user }) {
                   autoFocus
                 />
               </div>
-              {editQuantity && toNumber(editQuantity) > 0 && (
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Reason</label>
+                <input
+                  type="text"
+                  value={editReason}
+                  onChange={(e) => setEditReason(e.target.value)}
+                  placeholder="E.g., physical count correction"
+                  className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm w-full transition-colors duration-200 focus:border-accent-gold"
+                  disabled={submittingEdit}
+                />
+              </div>
+              {previewStockAdjustment(editTotal.currentTotal, editOperation, editQuantity) !== null && (
                 <div className="flex justify-between text-sm pt-1 border-t border-border-subtle">
-                  <span className="text-text-secondary">New Total</span>
-                  <span className="text-accent-gold font-semibold">
-                    {(editTotal.currentTotal + toNumber(editQuantity)).toFixed(2)} kg
+                  <span className="text-text-secondary">Closing Stock</span>
+                  <span className={`${previewStockAdjustment(editTotal.currentTotal, editOperation, editQuantity) < 0 ? 'text-red-400' : 'text-accent-gold'} font-semibold`}>
+                    {previewStockAdjustment(editTotal.currentTotal, editOperation, editQuantity).toFixed(2)} kg
                   </span>
                 </div>
               )}
@@ -647,7 +736,7 @@ export default function RawMaterial({ user }) {
             <div className="flex gap-3 pt-2">
               <button
                 type="button"
-                onClick={() => { setEditTotal(null); setEditQuantity('') }}
+                onClick={() => { setEditTotal(null); setEditQuantity(''); setEditReason(''); setEditOperation('add') }}
                 disabled={submittingEdit}
                 className="flex-1 rounded-lg border border-gray-700 px-4 py-2.5 text-sm font-semibold text-text-primary transition-colors hover:bg-bg-input/50 disabled:opacity-50"
               >
@@ -656,10 +745,10 @@ export default function RawMaterial({ user }) {
               <button
                 type="button"
                 onClick={handleEditTotal}
-                disabled={submittingEdit || toNumber(editQuantity) <= 0}
+                disabled={submittingEdit || Boolean(validateStockAdjustment({ current: editTotal.currentTotal, operation: editOperation, quantity: editQuantity, reason: editReason }))}
                 className="flex-1 rounded-lg bg-accent-gold px-4 py-2.5 text-sm font-semibold text-black transition-all hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50"
               >
-                {submittingEdit ? 'Saving...' : 'Add Stock'}
+                {submittingEdit ? 'Saving...' : 'Save Adjustment'}
               </button>
             </div>
           </div>
