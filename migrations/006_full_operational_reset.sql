@@ -43,6 +43,7 @@ TRUNCATE TABLE
     raw_material_batches,
     raw_material_entries,
     stock_adjustments,
+    stock_activity_log,
     trading_records,
     wastage_data,
     stock_reset_log

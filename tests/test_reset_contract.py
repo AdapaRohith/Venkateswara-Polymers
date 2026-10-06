@@ -18,10 +18,22 @@ OPERATIONAL_TABLES = (
     "raw_material_batches",
     "raw_material_entries",
     "stock_adjustments",
+    "stock_activity_log",
     "stock_reset_log",
     "trading_records",
     "wastage_data",
 )
+
+
+class MigrationSourceContractTest(unittest.TestCase):
+    def test_two_location_migration_is_additive_and_zero_safe(self):
+        with open("migrations/007_two_location_stock_ledger.sql", encoding="utf-8") as source:
+            migration = source.read()
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS stock_activity_log", migration)
+        self.assertNotIn("UPDATE floor_material_balance SET total_quantity_kg = raw", migration)
+        self.assertIn("CHECK (warehouse_closing_kg >= 0)", migration)
+        self.assertIn("CHECK (floor_closing_kg >= 0)", migration)
 
 
 def psql_scalar(database, sql):
