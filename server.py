@@ -765,6 +765,118 @@ async def record_stock_activity(
     return dict(row)
 
 
+async def apply_floor_transfer(
+    conn, *, source_id: int, material_id: int, material_type_id: int,
+    quantity_kg: float, created_by: int, correlation_id, reason: str | None = None,
+) -> dict:
+    quantity = decimal_kg(quantity_kg)
+    if quantity <= 0:
+        raise HTTPException(400, "Quantity must be greater than zero")
+    balances = await apply_location_delta(
+        conn,
+        material_id=material_id,
+        material_type_id=material_type_id,
+        warehouse_delta=-quantity,
+        floor_delta=quantity,
+    )
+    activity = await record_stock_activity(
+        conn,
+        action="CREATE",
+        source_domain="FLOOR_TRANSFER",
+        source_id=source_id,
+        correlation_id=correlation_id,
+        material_id=material_id,
+        material_type_id=material_type_id,
+        quantity_kg=quantity,
+        balances=balances,
+        reason=reason,
+        created_by=created_by,
+    )
+    return {**balances, "activity_id": activity["id"]}
+
+
+async def update_floor_transfer_stock(
+    conn, movement_row: dict, *, new_quantity_kg: float, created_by: int,
+) -> dict:
+    old_quantity = decimal_kg(movement_row.get("quantity_kg"))
+    new_quantity = decimal_kg(new_quantity_kg)
+    if new_quantity <= 0:
+        raise HTTPException(400, "Quantity must be greater than zero")
+    # A smaller transfer returns the difference to Warehouse Stock; a larger one
+    # takes only the additional quantity. The original effect is never replayed.
+    floor_delta = new_quantity - old_quantity
+    balances = await apply_location_delta(
+        conn,
+        material_id=int(movement_row["material_id"]),
+        material_type_id=int(movement_row["material_type_id"]),
+        warehouse_delta=-floor_delta,
+        floor_delta=floor_delta,
+    )
+    activity = await record_stock_activity(
+        conn,
+        action="UPDATE",
+        source_domain="FLOOR_TRANSFER",
+        source_id=int(movement_row["id"]),
+        correlation_id=movement_row.get("correlation_id") or uuid4(),
+        material_id=int(movement_row["material_id"]),
+        material_type_id=int(movement_row["material_type_id"]),
+        quantity_kg=new_quantity,
+        balances=balances,
+        reason=movement_row.get("note"),
+        created_by=created_by,
+        reverses_activity_id=movement_row.get("activity_id"),
+    )
+    return {**balances, "activity_id": activity["id"]}
+
+
+async def reverse_floor_transfer(conn, movement_row: dict, created_by: int) -> dict:
+    quantity = decimal_kg(movement_row.get("quantity_kg"))
+    try:
+        balances = await apply_location_delta(
+            conn,
+            material_id=int(movement_row["material_id"]),
+            material_type_id=int(movement_row["material_type_id"]),
+            warehouse_delta=quantity,
+            floor_delta=-quantity,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 400 and "Floor Stock" in str(exc.detail):
+            match = re.search(r"Available:\s*([0-9.]+)", str(exc.detail))
+            available = float(match.group(1)) if match else 0.0
+            used = max(float(quantity) - available, 0.0)
+            raise HTTPException(400, (
+                f"Cannot delete this transfer: only {available:.3f} kg of its "
+                f"{float(quantity):.3f} kg remains on the floor; {used:.3f} kg "
+                "has already been used."
+            )) from exc
+        raise
+    activity = await record_stock_activity(
+        conn,
+        action="REVERSE",
+        source_domain="FLOOR_TRANSFER",
+        source_id=int(movement_row["id"]),
+        correlation_id=movement_row.get("correlation_id") or uuid4(),
+        material_id=int(movement_row["material_id"]),
+        material_type_id=int(movement_row["material_type_id"]),
+        quantity_kg=quantity,
+        balances=balances,
+        reason=movement_row.get("note"),
+        created_by=created_by,
+        reverses_activity_id=movement_row.get("activity_id"),
+    )
+    return {**balances, "activity_id": activity["id"]}
+
+
+async def latest_activity_link(conn, source_domain: str, source_id: int):
+    return await conn.fetchrow(
+        """SELECT id AS activity_id, correlation_id
+             FROM stock_activity_log
+            WHERE source_domain = $1 AND source_id = $2
+            ORDER BY id DESC LIMIT 1""",
+        source_domain, int(source_id),
+    )
+
+
 def normalize_stock_adjustment(body) -> tuple[str, str, float, str]:
     material_name = str(body.get("material_name") or "").strip()
     operation = str(body.get("operation") or "").strip().lower()
@@ -1340,25 +1452,28 @@ async def issue_from_raw(request: Request, user=Depends(get_user)):
         async with c.transaction():
             mat_id = await get_or_create_material(c, mat_name)
             mt_id = await get_or_create_material_type(c, mat_name)
-            # Issuing to the floor is a location change, not a stock change: the
-            # kilograms are still in the plant. Stock only falls when production
-            # consumes it, so this just refreshes the floor/machine mirrors.
-            available = to_num(await c.fetchval(
-                "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1", mat_id))
-            if available < qty:
-                raise HTTPException(400, f"Not enough {mat_name} in stock. Available: {available:.3f} kg")
-            await mirror_floor_from_raw(c, mt_id, mat_id)
             machine_count = await c.fetchval("SELECT COUNT(*) FROM machines")
-            await c.execute(
-                "INSERT INTO material_movements (material_id, quantity_kg, direction, movement_type, reference_id, note, created_by) VALUES ($1, $2, 'OUT', 'FLOOR_TRANSFER', $3, $4, $5)",
-                mat_id, qty, None, "Issued to floor and auto-assigned to all machines", user.get("id"))
+            movement = await c.fetchrow(
+                """INSERT INTO material_movements
+                       (material_id, material_type_id, quantity_kg, direction,
+                        movement_type, reference_id, note, created_by, created_at)
+                   VALUES ($1, $2, $3, 'OUT', 'FLOOR_TRANSFER', NULL, $4, $5,
+                           COALESCE($6, NOW())) RETURNING *""",
+                mat_id, mt_id, qty, "Issued to floor and auto-assigned to all machines",
+                user.get("id"), parse_entry_timestamp(body))
+            receipt = await apply_floor_transfer(
+                c, source_id=movement["id"], material_id=mat_id,
+                material_type_id=mt_id, quantity_kg=qty, created_by=user.get("id"),
+                correlation_id=uuid4(), reason=movement["note"],
+            )
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "floor_issue", "mat": mat_name})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
     await broadcast("floor_stock")
     return {"message": "Material issued to floor and auto-assigned to all machines",
-            "data": {"material_name": mat_name, "quantity_kg": qty, "material_type_id": mt_id, "machines_assigned": machine_count},
-            "tolerance": tol}
+            "data": {"material_name": mat_name, "quantity_kg": qty, "material_type_id": mt_id,
+                     "machines_assigned": machine_count, "movement_id": movement["id"]},
+            "impact_receipt": receipt, "activity_id": receipt["activity_id"], "tolerance": tol}
 
 
 @app.get("/machines/{machine_id}/assigned-stock")
@@ -1400,37 +1515,53 @@ async def move_material(request: Request, user=Depends(get_user)):
     async with pool.acquire() as c:
         async with c.transaction():
             mat_id = await get_or_create_material(c, mat_name)
-            if direction == "OUT":
+            receipt = None
+            if resolved_mt == "FLOOR_TRANSFER":
+                if direction != "OUT":
+                    raise HTTPException(400, "Floor transfers must move OUT of Warehouse Stock")
+                mt_id = await get_or_create_material_type(c, mat_name)
+                mv = await c.fetchrow(
+                    """INSERT INTO material_movements
+                           (material_id, material_type_id, quantity_kg, direction,
+                            movement_type, reference_id, note, created_by, created_at)
+                       VALUES ($1, $2, $3, 'OUT', 'FLOOR_TRANSFER', $4, $5, $6,
+                               COALESCE($7, NOW())) RETURNING *""",
+                    mat_id, mt_id, qty, body.get("reference_id"), body.get("note"),
+                    user.get("id"), parse_entry_timestamp(body))
+                receipt = await apply_floor_transfer(
+                    c, source_id=mv["id"], material_id=mat_id,
+                    material_type_id=mt_id, quantity_kg=qty,
+                    created_by=user.get("id"), correlation_id=uuid4(),
+                    reason=body.get("note"),
+                )
+            elif direction == "OUT":
                 bal = await c.fetchrow("SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE", mat_id)
                 if not bal:
                     raise HTTPException(400, "Material not found in stock")
                 if to_num(bal["total_quantity_kg"]) < qty:
                     raise HTTPException(400, f"Not enough {mat_name} in stock. Available: {to_num(bal['total_quantity_kg'])} kg")
-                if resolved_mt == "FLOOR_TRANSFER":
-                    # Location change only — the plant still holds the material, so
-                    # the total is untouched and the floor mirror is re-derived.
-                    mt_row = await c.fetchrow("SELECT id FROM material_types WHERE LOWER(name) = LOWER($1) LIMIT 1", mat_name)
-                    mt_id = mt_row["id"] if mt_row else (await c.fetchrow("INSERT INTO material_types (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", mat_name))["id"]
-                    await mirror_floor_from_raw(c, mt_id, mat_id)
-                else:
-                    await c.execute("UPDATE raw_material_totals SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW() WHERE material_id = $2", qty, mat_id)
-                    await mirror_floor_for_master(c, mat_id)
+                await c.execute("UPDATE raw_material_totals SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW() WHERE material_id = $2", qty, mat_id)
             else:
                 await c.execute(
                     "INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (material_id) DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2, updated_at = NOW()",
                     mat_id, qty)
-                await mirror_floor_for_master(c, mat_id)
-            mv = await c.fetchrow(
-                """INSERT INTO material_movements
-                       (material_id, quantity_kg, direction, movement_type, reference_id, note, created_by, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW())) RETURNING *""",
-                mat_id, qty, direction, resolved_mt, body.get("reference_id"), body.get("note"),
-                user.get("id"), parse_entry_timestamp(body))
+            if resolved_mt != "FLOOR_TRANSFER":
+                mv = await c.fetchrow(
+                    """INSERT INTO material_movements
+                           (material_id, quantity_kg, direction, movement_type,
+                            reference_id, note, created_by, created_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+                       RETURNING *""",
+                    mat_id, qty, direction, resolved_mt, body.get("reference_id"),
+                    body.get("note"), user.get("id"), parse_entry_timestamp(body))
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "material_move"})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
     await broadcast("material_movement")
-    return {"success": True, "movement": dict(mv), "tolerance": tol}
+    await broadcast("floor_stock")
+    await broadcast("raw_material")
+    return {"success": True, "movement": dict(mv), "impact_receipt": receipt,
+            "activity_id": receipt["activity_id"] if receipt else None, "tolerance": tol}
 
 
 # ── Floor transactions ──
@@ -1439,10 +1570,28 @@ async def move_material(request: Request, user=Depends(get_user)):
 async def get_floor_transactions(date_from: str = None, date_to: str = None, user=Depends(get_user)):
     async with pool.acquire() as c:
         vals = []
-        where = build_date_where(date_from, date_to, vals, "mm.created_at")
+        conds = ["mm.movement_type = 'FLOOR_TRANSFER'"]
+        if date_from:
+            vals.append(parse_date(date_from))
+            conds.append(f"mm.created_at >= ${len(vals)}::date")
+        if date_to:
+            vals.append(parse_date(date_to))
+            conds.append(f"mm.created_at < (${len(vals)}::date + INTERVAL '1 day')")
+        where = "WHERE " + " AND ".join(conds)
         vals.append(500)
         return rows(await c.fetch(
-            f"SELECT mm.*, m.name AS material_name, u.name AS created_by_name FROM material_movements mm LEFT JOIN materials_master m ON m.id = mm.material_id LEFT JOIN users u ON u.id = mm.created_by {where} ORDER BY mm.created_at DESC LIMIT ${len(vals)}",
+            f"""SELECT mm.*, m.name AS material_name, u.name AS created_by_name,
+                       sal.id AS activity_id, sal.correlation_id,
+                       (mm.material_type_id IS NULL) AS is_legacy
+                  FROM material_movements mm
+                  LEFT JOIN materials_master m ON m.id = mm.material_id
+                  LEFT JOIN users u ON u.id = mm.created_by
+                  LEFT JOIN LATERAL (
+                      SELECT id, correlation_id FROM stock_activity_log
+                       WHERE source_domain = 'FLOOR_TRANSFER' AND source_id = mm.id
+                       ORDER BY id DESC LIMIT 1
+                  ) sal ON TRUE
+                {where} ORDER BY mm.created_at DESC LIMIT ${len(vals)}""",
             *vals))
 
 
@@ -1456,23 +1605,44 @@ async def update_floor_tx(mv_id: int, request: Request, user=Depends(get_user)):
     mat_name = str(body.get("material_name") or "").strip()
     if mv_id <= 0:
         raise HTTPException(400, "Invalid transaction id")
-    if not mat_name or qty <= 0 or direction not in ("IN", "OUT") or not mt:
-        raise HTTPException(400, "material_name, quantity_kg, direction and movement_type are required")
-    if mt == "CONSUMPTION":
-        raise HTTPException(400, "Production consumption entries must be edited from production history")
+    if not mat_name or qty <= 0 or direction != "OUT" or mt != "FLOOR_TRANSFER":
+        raise HTTPException(400, "Floor entries require material_name, positive quantity, OUT and FLOOR_TRANSFER")
     async with pool.acquire() as c:
         async with c.transaction():
             cur = await c.fetchrow("SELECT mm.*, m.name AS material_name FROM material_movements mm LEFT JOIN materials_master m ON m.id = mm.material_id WHERE mm.id = $1 FOR UPDATE OF mm", mv_id)
             if not cur:
                 raise HTTPException(404, "Transaction not found")
-            await apply_movement_effect(c, dict(cur), -1)
+            if normalize_movement_type(cur["movement_type"]) != "FLOOR_TRANSFER":
+                raise HTTPException(400, "Only floor-transfer entries can be edited here")
+            link = await latest_activity_link(c, "FLOOR_TRANSFER", mv_id)
+            current = {**dict(cur), **(dict(link) if link else {})}
+            if not current.get("material_type_id"):
+                raise HTTPException(400, "Legacy floor entries cannot be changed automatically")
             next_mat_id = await get_or_create_material(c, mat_name)
-            await apply_movement_effect(c, {"material_id": next_mat_id, "material_name": mat_name, "quantity_kg": qty, "direction": direction, "movement_type": mt}, 1)
+            next_mt_id = await get_or_create_material_type(c, mat_name)
+            if (int(current["material_id"]) == next_mat_id
+                    and int(current["material_type_id"]) == next_mt_id):
+                receipt = await update_floor_transfer_stock(
+                    c, current, new_quantity_kg=qty, created_by=user.get("id"))
+            else:
+                await reverse_floor_transfer(c, current, user.get("id"))
+                receipt = await apply_floor_transfer(
+                    c, source_id=mv_id, material_id=next_mat_id,
+                    material_type_id=next_mt_id, quantity_kg=qty,
+                    created_by=user.get("id"), correlation_id=uuid4(),
+                    reason=body.get("note"),
+                )
             updated = await c.fetchrow(
-                "UPDATE material_movements SET material_id=$1, quantity_kg=$2, direction=$3, movement_type=$4, note=$5 WHERE id=$6 RETURNING *",
-                next_mat_id, qty, direction, mt, body.get("note"), mv_id)
+                """UPDATE material_movements
+                      SET material_id=$1, material_type_id=$2, quantity_kg=$3,
+                          direction='OUT', movement_type='FLOOR_TRANSFER', note=$4
+                    WHERE id=$5 RETURNING *""",
+                next_mat_id, next_mt_id, qty, body.get("note"), mv_id)
     await broadcast("material_movement")
-    return {"success": True, "data": dict(updated)}
+    await broadcast("floor_stock")
+    await broadcast("raw_material")
+    return {"success": True, "data": dict(updated), "impact_receipt": receipt,
+            "activity_id": receipt["activity_id"]}
 
 
 @app.delete("/floor/transactions/{mv_id}")
@@ -1485,12 +1655,19 @@ async def delete_floor_tx(mv_id: int, user=Depends(get_user)):
             cur = await c.fetchrow("SELECT mm.*, m.name AS material_name FROM material_movements mm LEFT JOIN materials_master m ON m.id = mm.material_id WHERE mm.id = $1 FOR UPDATE OF mm", mv_id)
             if not cur:
                 raise HTTPException(404, "Transaction not found")
-            if normalize_movement_type(cur["movement_type"]) == "CONSUMPTION":
-                raise HTTPException(400, "Production consumption entries must be deleted from production history")
-            await apply_movement_effect(c, dict(cur), -1)
+            if normalize_movement_type(cur["movement_type"]) != "FLOOR_TRANSFER":
+                raise HTTPException(400, "Only floor-transfer entries can be deleted here")
+            link = await latest_activity_link(c, "FLOOR_TRANSFER", mv_id)
+            current = {**dict(cur), **(dict(link) if link else {})}
+            if not current.get("material_type_id"):
+                raise HTTPException(400, "Legacy floor entries cannot be reversed automatically")
+            receipt = await reverse_floor_transfer(c, current, user.get("id"))
             await c.execute("DELETE FROM material_movements WHERE id = $1", mv_id)
     await broadcast("material_movement")
-    return {"success": True}
+    await broadcast("floor_stock")
+    await broadcast("raw_material")
+    return {"success": True, "impact_receipt": receipt,
+            "activity_id": receipt["activity_id"]}
 
 
 @app.post("/floor/transactions/bulk-delete")
@@ -1505,13 +1682,20 @@ async def bulk_delete_floor_tx(request: Request, user=Depends(get_user)):
             rs_ = await c.fetch("SELECT mm.*, m.name AS material_name FROM material_movements mm LEFT JOIN materials_master m ON m.id = mm.material_id WHERE mm.id = ANY($1::int[]) ORDER BY mm.id FOR UPDATE OF mm", ids)
             if len(rs_) != len(ids):
                 raise HTTPException(404, "One or more transactions were not found")
-            if any(normalize_movement_type(r_["movement_type"]) == "CONSUMPTION" for r_ in rs_):
-                raise HTTPException(400, "Production consumption entries must be deleted from production history")
+            if any(normalize_movement_type(r_["movement_type"]) != "FLOOR_TRANSFER" for r_ in rs_):
+                raise HTTPException(400, "Only floor-transfer entries can be deleted here")
+            receipts = []
             for r_ in rs_:
-                await apply_movement_effect(c, dict(r_), -1)
+                link = await latest_activity_link(c, "FLOOR_TRANSFER", r_["id"])
+                current = {**dict(r_), **(dict(link) if link else {})}
+                if not current.get("material_type_id"):
+                    raise HTTPException(400, "Legacy floor entries cannot be reversed automatically")
+                receipts.append(await reverse_floor_transfer(c, current, user.get("id")))
             await c.execute("DELETE FROM material_movements WHERE id = ANY($1::int[])", ids)
     await broadcast("material_movement")
-    return {"success": True, "deleted": len(ids)}
+    await broadcast("floor_stock")
+    await broadcast("raw_material")
+    return {"success": True, "deleted": len(ids), "impact_receipts": receipts}
 
 
 # ── Production logs ──

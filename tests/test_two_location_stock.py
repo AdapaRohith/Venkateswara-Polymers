@@ -8,7 +8,14 @@ os.environ.setdefault("JWT_SECRET", "test-secret-longer-than-sixteen-characters"
 
 from fastapi import HTTPException
 
-from server import apply_location_delta, lock_stock_locations, record_stock_activity
+from server import (
+    apply_floor_transfer,
+    apply_location_delta,
+    lock_stock_locations,
+    record_stock_activity,
+    reverse_floor_transfer,
+    update_floor_transfer_stock,
+)
 
 
 class LedgerFakeConnection:
@@ -158,3 +165,113 @@ async def test_record_stock_activity_propagates_insert_failure():
             reason="Move to line 1",
             created_by=9,
         )
+
+
+@pytest.mark.asyncio
+async def test_floor_transfer_decreases_warehouse_and_increases_floor(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=500, floor=50)
+
+    async def sync_machine(_conn, material_type_id):
+        conn.machine_syncs.append(material_type_id)
+
+    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
+    result = await apply_floor_transfer(
+        conn,
+        source_id=12,
+        material_id=7,
+        material_type_id=3,
+        quantity_kg=100,
+        created_by=9,
+        correlation_id=UUID(int=12),
+    )
+
+    assert conn.warehouse == Decimal("400")
+    assert conn.floor == Decimal("150")
+    assert result["plant_closing_kg"] == 550.0
+    assert result["activity_id"] == 1
+    assert conn.activity_rows[-1]["source_domain"] == "FLOOR_TRANSFER"
+
+
+@pytest.mark.asyncio
+async def test_floor_transfer_update_applies_only_quantity_delta(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=400, floor=150)
+
+    async def sync_machine(_conn, _material_type_id):
+        return None
+
+    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
+    result = await update_floor_transfer_stock(
+        conn,
+        {"id": 12, "material_id": 7, "material_type_id": 3, "quantity_kg": 100, "activity_id": 1},
+        new_quantity_kg=60,
+        created_by=9,
+    )
+
+    assert conn.warehouse == Decimal("440")
+    assert conn.floor == Decimal("110")
+    assert result["warehouse_closing_kg"] == 440.0
+    assert result["floor_closing_kg"] == 110.0
+    assert conn.activity_rows[-1]["action"] == "UPDATE"
+
+
+@pytest.mark.asyncio
+async def test_delete_floor_transfer_restores_exact_original_quantity(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=400, floor=150)
+
+    async def sync_machine(_conn, _material_type_id):
+        return None
+
+    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
+    result = await reverse_floor_transfer(
+        conn,
+        {"id": 12, "material_id": 7, "material_type_id": 3, "quantity_kg": 100, "activity_id": 1},
+        created_by=9,
+    )
+
+    assert conn.warehouse == Decimal("500")
+    assert conn.floor == Decimal("50")
+    assert result["activity_id"] == 1
+    assert conn.activity_rows[-1]["action"] == "REVERSE"
+
+
+@pytest.mark.asyncio
+async def test_delete_floor_transfer_rejects_quantity_already_consumed(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=400, floor=40)
+
+    async def sync_machine(_conn, _material_type_id):
+        return None
+
+    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
+    with pytest.raises(HTTPException) as exc:
+        await reverse_floor_transfer(
+            conn,
+            {"id": 12, "material_id": 7, "material_type_id": 3, "quantity_kg": 100, "activity_id": 1},
+            created_by=9,
+        )
+
+    assert exc.value.status_code == 400
+    assert "only 40.000 kg of its 100.000 kg remains on the floor" in exc.value.detail
+    assert conn.warehouse == Decimal("400")
+    assert conn.floor == Decimal("40")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_floor_transfers_cannot_overdraw_available_stock(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=100, floor=0)
+
+    async def sync_machine(_conn, _material_type_id):
+        return None
+
+    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
+    await apply_floor_transfer(
+        conn, source_id=1, material_id=7, material_type_id=3,
+        quantity_kg=70, created_by=9, correlation_id=UUID(int=1),
+    )
+    with pytest.raises(HTTPException, match="Available: 30.000 kg"):
+        await apply_floor_transfer(
+            conn, source_id=2, material_id=7, material_type_id=3,
+            quantity_kg=70, created_by=9, correlation_id=UUID(int=2),
+        )
+
+    assert conn.warehouse == Decimal("30")
+    assert conn.floor == Decimal("70")
