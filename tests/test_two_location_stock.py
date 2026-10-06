@@ -11,9 +11,11 @@ from fastapi import HTTPException
 from server import (
     apply_floor_transfer,
     apply_location_delta,
+    apply_production_consumption,
     lock_stock_locations,
     record_stock_activity,
     reverse_floor_transfer,
+    reverse_production_consumption,
     update_floor_transfer_stock,
 )
 
@@ -275,3 +277,87 @@ async def test_concurrent_floor_transfers_cannot_overdraw_available_stock(monkey
 
     assert conn.warehouse == Decimal("30")
     assert conn.floor == Decimal("70")
+
+
+@pytest.mark.asyncio
+async def test_production_uses_floor_without_second_warehouse_deduction(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=400, floor=150)
+
+    async def sync_machine(_conn, material_type_id):
+        conn.machine_syncs.append(material_type_id)
+
+    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
+    receipt = await apply_production_consumption(
+        conn, log_id=21, material_id=7, material_type_id=3,
+        net_kg=30, machine_id=1, created_by=9, correlation_id=UUID(int=21),
+    )
+
+    assert conn.warehouse == Decimal("400")
+    assert conn.floor == Decimal("120")
+    assert receipt["plant_opening_kg"] == 550.0
+    assert receipt["plant_closing_kg"] == 520.0
+    assert conn.activity_rows[-1]["source_domain"] == "PRODUCTION"
+
+
+@pytest.mark.asyncio
+async def test_production_rejects_insufficient_floor_stock(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=400, floor=20)
+    monkeypatch.setattr("server.sync_machine_assignments", lambda *_args: None)
+
+    with pytest.raises(HTTPException, match="Available: 20.000 kg"):
+        await apply_production_consumption(
+            conn, log_id=21, material_id=7, material_type_id=3,
+            net_kg=30, machine_id=1, created_by=9, correlation_id=UUID(int=21),
+        )
+
+    assert conn.warehouse == Decimal("400")
+    assert conn.floor == Decimal("20")
+
+
+@pytest.mark.asyncio
+async def test_delete_production_restores_exact_recorded_quantity(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=400, floor=120)
+
+    async def sync_machine(*_args):
+        return None
+
+    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
+
+    receipt = await reverse_production_consumption(
+        conn,
+        {"id": 21, "material_id": 7, "material_type_id": 3,
+         "quantity_kg": 30, "activity_id": 1, "machine_id": 1},
+        created_by=9,
+    )
+
+    assert conn.warehouse == Decimal("400")
+    assert conn.floor == Decimal("150")
+    assert receipt["plant_closing_kg"] == 550.0
+    assert conn.activity_rows[-1]["action"] == "REVERSE"
+
+
+@pytest.mark.asyncio
+async def test_production_material_change_restores_old_before_consuming_new(monkeypatch):
+    calls = []
+
+    async def reverse(_conn, movement, created_by):
+        calls.append(("restore", movement["material_id"], movement["quantity_kg"], created_by))
+        return {"floor_closing_kg": 150.0, "activity_id": 1}
+
+    async def apply(_conn, **kwargs):
+        calls.append(("consume", kwargs["material_id"], kwargs["net_kg"], kwargs["created_by"]))
+        return {"floor_closing_kg": 80.0, "activity_id": 2}
+
+    monkeypatch.setattr("server.reverse_production_consumption", reverse)
+    monkeypatch.setattr("server.apply_production_consumption", apply)
+    from server import update_production_consumption
+
+    await update_production_consumption(
+        object(),
+        {"id": 21, "material_id": 7, "material_type_id": 3,
+         "quantity_kg": 30, "activity_id": 1, "machine_id": 1},
+        new_material_id=8, new_material_type_id=4, new_net_kg=20,
+        new_machine_id=2, created_by=9,
+    )
+
+    assert calls == [("restore", 7, 30, 9), ("consume", 8, 20, 9)]

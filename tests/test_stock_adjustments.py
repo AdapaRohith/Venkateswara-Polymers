@@ -98,7 +98,8 @@ async def test_apply_manual_stock_adjustment_adds_and_records_exact_balances(mon
     assert result == {"opening_quantity_kg": 100.0, "closing_quantity_kg": 112.5}
     assert conn.total == Decimal("112.5")
     assert conn.audit_args == (7, "add", 12.5, 100.0, 112.5, "Count correction", 3)
-    assert conn.mirror_material_ids == [7]
+    # Warehouse adjustments must not overwrite the independent Floor Stock pool.
+    assert conn.mirror_material_ids == []
 
 
 @pytest.mark.asyncio
@@ -114,7 +115,8 @@ async def test_apply_manual_stock_adjustment_removes_and_records_exact_balances(
     assert result == {"opening_quantity_kg": 100.0, "closing_quantity_kg": 70.0}
     assert conn.total == Decimal("70.0")
     assert conn.audit_args == (7, "remove", 30.0, 100.0, 70.0, "Damaged bags", 3)
-    assert conn.mirror_material_ids == [7]
+    # Warehouse adjustments must not overwrite the independent Floor Stock pool.
+    assert conn.mirror_material_ids == []
 
 
 @pytest.mark.asyncio

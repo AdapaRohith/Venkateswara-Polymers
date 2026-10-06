@@ -635,7 +635,6 @@ async def adjust_raw_total(conn, material_id, delta_kg: float):
                VALUES ($1, $2, NOW()) ON CONFLICT (material_id)
                DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2, updated_at = NOW()""",
             pid, delta)
-        await mirror_floor_for_master(conn, pid)
         return
     available = to_num(r["total_quantity_kg"]) if r else 0.0
     required = abs(delta)
@@ -644,7 +643,6 @@ async def adjust_raw_total(conn, material_id, delta_kg: float):
     await conn.execute(
         "UPDATE raw_material_totals SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW() WHERE material_id = $2",
         required, pid)
-    await mirror_floor_for_master(conn, pid)
 
 
 def decimal_kg(value) -> Decimal:
@@ -865,6 +863,92 @@ async def reverse_floor_transfer(conn, movement_row: dict, created_by: int) -> d
         reverses_activity_id=movement_row.get("activity_id"),
     )
     return {**balances, "activity_id": activity["id"]}
+
+
+async def apply_production_consumption(
+    conn, *, log_id: int, material_id: int, material_type_id: int,
+    net_kg: float, machine_id: int, created_by: int, correlation_id,
+    action: str = "CREATE", reverses_activity_id: int | None = None,
+) -> dict:
+    """Consume finished-production weight from Floor Stock only."""
+    quantity = decimal_kg(net_kg)
+    if quantity <= 0:
+        raise HTTPException(400, "Net weight must be greater than zero")
+    balances = await apply_location_delta(
+        conn,
+        material_id=material_id,
+        material_type_id=material_type_id,
+        warehouse_delta=0,
+        floor_delta=-quantity,
+    )
+    activity = await record_stock_activity(
+        conn,
+        action=action,
+        source_domain="PRODUCTION",
+        source_id=log_id,
+        correlation_id=correlation_id,
+        material_id=material_id,
+        material_type_id=material_type_id,
+        quantity_kg=quantity,
+        balances=balances,
+        reason=f"Production on machine {machine_id}",
+        created_by=created_by,
+        reverses_activity_id=reverses_activity_id,
+    )
+    return {**balances, "activity_id": activity["id"]}
+
+
+async def reverse_production_consumption(
+    conn, movement_row: dict, created_by: int,
+) -> dict:
+    """Restore exactly the quantity recorded by the linked consumption movement."""
+    quantity = decimal_kg(movement_row.get("quantity_kg"))
+    if quantity <= 0 or not movement_row.get("material_type_id"):
+        raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
+    balances = await apply_location_delta(
+        conn,
+        material_id=int(movement_row["material_id"]),
+        material_type_id=int(movement_row["material_type_id"]),
+        warehouse_delta=0,
+        floor_delta=quantity,
+    )
+    activity = await record_stock_activity(
+        conn,
+        action="REVERSE",
+        source_domain="PRODUCTION",
+        source_id=int(movement_row["id"]),
+        correlation_id=movement_row.get("correlation_id") or uuid4(),
+        material_id=int(movement_row["material_id"]),
+        material_type_id=int(movement_row["material_type_id"]),
+        quantity_kg=quantity,
+        balances=balances,
+        reason=f"Reverse production on machine {movement_row.get('machine_id')}",
+        created_by=created_by,
+        reverses_activity_id=movement_row.get("activity_id"),
+    )
+    return {**balances, "activity_id": activity["id"]}
+
+
+async def update_production_consumption(
+    conn, movement_row: dict, *, new_material_id: int,
+    new_material_type_id: int, new_net_kg: float, new_machine_id: int,
+    created_by: int,
+) -> dict:
+    """Restore the recorded old effect before applying the edited consumption."""
+    reversal = await reverse_production_consumption(conn, movement_row, created_by)
+    receipt = await apply_production_consumption(
+        conn,
+        log_id=int(movement_row["id"]),
+        material_id=new_material_id,
+        material_type_id=new_material_type_id,
+        net_kg=new_net_kg,
+        machine_id=new_machine_id,
+        created_by=created_by,
+        correlation_id=movement_row.get("correlation_id") or uuid4(),
+        action="UPDATE",
+        reverses_activity_id=reversal["activity_id"],
+    )
+    return {**receipt, "reversal_receipt": reversal}
 
 
 async def latest_activity_link(conn, source_domain: str, source_id: int):
@@ -1369,7 +1453,6 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
                    DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2, updated_at = NOW()
                    RETURNING total_quantity_kg, updated_at""",
                 mat_id, qty)
-            await mirror_floor_for_master(c, mat_id)
             await c.execute(
                 """INSERT INTO raw_material_batches
                        (material_id, material_name, quantity_kg, created_by, note, thickness, created_at)
@@ -1725,28 +1808,38 @@ async def resolve_production_material(c, machine_id, explicit_type_id, explicit_
 
 
 async def insert_production_log(c, *, machine_id, material_type_id, material_master_id,
-                                size, worker_name, gross, tare, created_at, returning="*"):
+                                size, worker_name, gross, tare, created_at, created_by,
+                                returning="*"):
     """Insert one production log and deduct exactly its net weight from the floor pool.
 
     Deduction and insert share one transaction, and the consumption movement written
     here is the receipt the reversal path reads back.
     """
     net = gross - tare
-    await adjust_floor_balance(c, material_type_id, -net)
     log_row = await c.fetchrow(
         f"""INSERT INTO production_logs
                 (machine_id, material_id, material_type_id, size, worker_name,
-                 gross_weight, tare_weight, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+                 gross_weight, tare_weight, created_at, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()), $9)
             RETURNING {returning}""",
         machine_id, material_master_id, material_type_id, size, worker_name,
-        gross, tare, created_at)
+        gross, tare, created_at, created_by)
     await upsert_consumption_movement(c, log_row["id"], {
         "machine_id": machine_id,
         "material_type_id": material_type_id,
         "net_weight": net,
     })
-    return log_row
+    receipt = await apply_production_consumption(
+        c,
+        log_id=log_row["id"],
+        material_id=material_master_id,
+        material_type_id=material_type_id,
+        net_kg=net,
+        machine_id=machine_id,
+        created_by=created_by,
+        correlation_id=uuid4(),
+    )
+    return log_row, receipt
 
 
 @app.post("/production/logs")
@@ -1775,7 +1868,7 @@ async def create_production_log(request: Request, user=Depends(get_user)):
                     if not mt_id or master_id <= 0:
                         raise HTTPException(
                             400, f"Machine {m['machine_id']}: no material selected or assigned")
-                    log_row = await insert_production_log(
+                    log_row, receipt = await insert_production_log(
                         c,
                         machine_id=machine_no, material_type_id=mt_id,
                         material_master_id=master_id, size=m.get("size"),
@@ -1783,12 +1876,15 @@ async def create_production_log(request: Request, user=Depends(get_user)):
                                      else m.get("worker_name")),
                         gross=gw, tare=tw,
                         created_at=parse_entry_timestamp(m) or entry_ts,
+                        created_by=user.get("id"),
                         returning=("id, machine_id, material_id, size, worker_name, "
                                    "gross_weight, tare_weight, created_at"))
                     tol = await eval_qty_tolerance(get_expected_qty(m, net, ["expected_net_weight_kg"]), net, c, {"op": "batch_log", "machine": m["machine_id"]})
                     if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                         raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
-                    logs.append({**dict(log_row), "tolerance": tol})
+                    logs.append({**dict(log_row), "tolerance": tol,
+                                 "stock_receipt": receipt,
+                                 "activity_id": receipt["activity_id"]})
                     tolerances.append(tol)
                 # Every entry was skipped for a missing machine_id. Reporting 200 here
                 # let the floor believe a shift was logged when nothing was written.
@@ -1813,18 +1909,21 @@ async def create_production_log(request: Request, user=Depends(get_user)):
                     c, machine_id, body.get("material_type_id"), body.get("material_id"))
                 if not mt_id or master_id <= 0:
                     raise HTTPException(400, "No material selected or assigned to this machine")
-                log_row = await insert_production_log(
+                log_row, receipt = await insert_production_log(
                     c,
                     machine_id=machine_id, material_type_id=mt_id, material_master_id=master_id,
                     size=body.get("size"), worker_name=body.get("worker_name"),
-                    gross=gw, tare=tw, created_at=entry_ts)
+                    gross=gw, tare=tw, created_at=entry_ts,
+                    created_by=user.get("id"))
                 tol = await eval_qty_tolerance(get_expected_qty(body, net, ["expected_net_weight_kg"]), net, c, {"op": "production_log", "machine": machine_id})
                 if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                     raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
                 if body.get("worker_name"):
                     await c.execute("INSERT INTO machine_state (machine_id, current_worker) VALUES ($1, $2) ON CONFLICT (machine_id) DO UPDATE SET current_worker = EXCLUDED.current_worker, updated_at = NOW()", machine_id, body["worker_name"])
                 result = {"message": "Production logged and pooled floor stock deducted",
-                          "data": dict(log_row), "tolerance": tol}
+                          "data": dict(log_row), "tolerance": tol,
+                          "stock_receipt": receipt,
+                          "activity_id": receipt["activity_id"]}
     # Broadcast only once the transaction has committed, so listeners never refetch
     # state that is about to be rolled back.
     await broadcast("production")
@@ -1887,6 +1986,16 @@ async def update_production_log(log_id: int, request: Request, user=Depends(get_
                 log_id)
             if not cur:
                 raise HTTPException(404, "Production log not found")
+            movement = await consumption_movement_for_log(c, log_id)
+            link = await latest_activity_link(c, "PRODUCTION", log_id)
+            if not movement or not movement["material_type_id"]:
+                raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
+            recorded = {
+                **dict(movement),
+                "id": log_id,
+                "machine_id": cur["machine_id"],
+                **(dict(link) if link else {}),
+            }
             next_mt_id = await resolve_material_type_id(
                 c, body.get("material_type_id") or body.get("material_id"), cur["material_name"])
             if not next_mt_id:
@@ -1894,10 +2003,17 @@ async def update_production_log(log_id: int, request: Request, user=Depends(get_
             next_master_id = await master_id_for_type(c, next_mt_id)
             if next_master_id <= 0:
                 raise HTTPException(400, "Unable to resolve material for this production log")
-            # Give back exactly what the old entry took, then take the new amount.
-            # Both legs are in this transaction, so the balance is never half-applied.
-            await restore_log_floor_stock(c, dict(cur))
-            await adjust_floor_balance(c, next_mt_id, -net)
+            # Give back exactly what the old ledger movement took, then consume
+            # the edited quantity. Both legs share this transaction.
+            receipt = await update_production_consumption(
+                c,
+                recorded,
+                new_material_id=next_master_id,
+                new_material_type_id=next_mt_id,
+                new_net_kg=net,
+                new_machine_id=machine_id_val,
+                created_by=user.get("id"),
+            )
             updated = await c.fetchrow(
                 """UPDATE production_logs
                       SET machine_id=$1, material_id=$2, material_type_id=$3, size=$4,
@@ -1914,7 +2030,8 @@ async def update_production_log(log_id: int, request: Request, user=Depends(get_
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
     await broadcast("production")
-    return {"success": True, "data": dict(updated), "tolerance": tol}
+    return {"success": True, "data": dict(updated), "tolerance": tol,
+            "stock_receipt": receipt, "activity_id": receipt["activity_id"]}
 
 
 @app.delete("/production/logs/{log_id}")
@@ -1926,11 +2043,22 @@ async def delete_production_log(log_id: int, user=Depends(get_user)):
             cur = await c.fetchrow("SELECT pl.*, mat.name AS material_name FROM production_logs pl LEFT JOIN materials_master mat ON mat.id = pl.material_id WHERE pl.id = $1 FOR UPDATE OF pl", log_id)
             if not cur:
                 raise HTTPException(404, "Production log not found")
-            await restore_log_floor_stock(c, dict(cur))
+            movement = await consumption_movement_for_log(c, log_id)
+            link = await latest_activity_link(c, "PRODUCTION", log_id)
+            if not movement or not movement["material_type_id"]:
+                raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
+            recorded = {
+                **dict(movement),
+                "id": log_id,
+                "machine_id": cur["machine_id"],
+                **(dict(link) if link else {}),
+            }
+            receipt = await reverse_production_consumption(c, recorded, user.get("id"))
             await c.execute("DELETE FROM material_movements WHERE movement_type = 'CONSUMPTION' AND reference_id = $1", log_id)
             await c.execute("DELETE FROM production_logs WHERE id = $1", log_id)
     await broadcast("production")
-    return {"success": True}
+    return {"success": True, "stock_receipt": receipt,
+            "activity_id": receipt["activity_id"]}
 
 
 @app.post("/production/logs/bulk-delete")
@@ -1944,12 +2072,24 @@ async def bulk_delete_production_logs(request: Request, user=Depends(get_user)):
             rs_ = await c.fetch("SELECT pl.*, mat.name AS material_name FROM production_logs pl LEFT JOIN materials_master mat ON mat.id = pl.material_id WHERE pl.id = ANY($1::int[]) ORDER BY pl.id FOR UPDATE OF pl", ids)
             if len(rs_) != len(ids):
                 raise HTTPException(404, "One or more production logs were not found")
+            receipts = []
             for r_ in rs_:
-                await restore_log_floor_stock(c, dict(r_))
+                movement = await consumption_movement_for_log(c, r_["id"])
+                link = await latest_activity_link(c, "PRODUCTION", r_["id"])
+                if not movement or not movement["material_type_id"]:
+                    raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
+                recorded = {
+                    **dict(movement),
+                    "id": r_["id"],
+                    "machine_id": r_["machine_id"],
+                    **(dict(link) if link else {}),
+                }
+                receipts.append(await reverse_production_consumption(
+                    c, recorded, user.get("id")))
             await c.execute("DELETE FROM material_movements WHERE movement_type = 'CONSUMPTION' AND reference_id = ANY($1::int[])", ids)
             await c.execute("DELETE FROM production_logs WHERE id = ANY($1::int[])", ids)
     await broadcast("production")
-    return {"success": True, "deleted": len(ids)}
+    return {"success": True, "deleted": len(ids), "stock_receipts": receipts}
 
 
 # ── Reports ──
