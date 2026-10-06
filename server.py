@@ -429,6 +429,88 @@ def require_owner_or_admin(user: dict):
         raise HTTPException(403, "Forbidden")
 
 
+def can_modify_entry(user: dict, created_by: int | None) -> bool:
+    """Owners/admins may correct any entry; workers may correct only their own."""
+    if is_owner_or_admin(user):
+        return True
+    actor_id = user_id_from_token(user)
+    try:
+        return actor_id is not None and int(created_by) == actor_id
+    except (TypeError, ValueError):
+        return False
+
+
+def require_entry_owner(user: dict, created_by: int | None):
+    if not can_modify_entry(user, created_by):
+        raise HTTPException(403, "You can modify only entries you created")
+
+
+def parse_activity_limit(value) -> int:
+    try:
+        return min(max(int(value), 1), 1000)
+    except (TypeError, ValueError):
+        return 200
+
+
+def build_stock_activity_filters(
+    *, date_from=None, date_to=None, material_id=None, source_domain=None,
+    action=None, operator_id=None,
+) -> tuple[str, list]:
+    conditions, values = [], []
+    if date_from:
+        values.append(parse_date(date_from))
+        conditions.append(f"sal.occurred_at >= ${len(values)}::date")
+    if date_to:
+        values.append(parse_date(date_to))
+        conditions.append(f"sal.occurred_at < (${len(values)}::date + INTERVAL '1 day')")
+    if material_id not in (None, ""):
+        try:
+            values.append(int(material_id))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "material_id must be a number") from exc
+        conditions.append(f"sal.material_id = ${len(values)}")
+    if source_domain:
+        values.append(str(source_domain).strip().upper())
+        conditions.append(f"sal.source_domain = ${len(values)}")
+    if action:
+        values.append(str(action).strip().upper())
+        conditions.append(f"sal.action = ${len(values)}")
+    if operator_id not in (None, ""):
+        try:
+            values.append(int(operator_id))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "operator_id must be a number") from exc
+        conditions.append(f"sal.created_by = ${len(values)}")
+    return (f"WHERE {' AND '.join(conditions)}" if conditions else ""), values
+
+
+def normalize_activity_row(row: dict) -> dict:
+    item = dict(row)
+    source = str(item.get("source_domain") or "").upper()
+    action = str(item.get("action") or "").upper()
+    paths = {
+        "RAW_INPUT": "/raw-material",
+        "FLOOR_TRANSFER": "/materials",
+        "PRODUCTION": "/production-log",
+        "WASTAGE": "/wastage",
+        "ADJUSTMENT": "/raw-material",
+    }
+    nouns = {
+        "RAW_INPUT": "Raw material",
+        "FLOOR_TRANSFER": "Floor transfer",
+        "PRODUCTION": "Production",
+        "WASTAGE": "Wastage",
+        "ADJUSTMENT": "Stock adjustment",
+    }
+    verbs = {"CREATE": "recorded", "UPDATE": "updated", "REVERSE": "reversed",
+             "LEGACY": "legacy entry"}
+    item["entry_path"] = paths.get(source)
+    item["action_label"] = f"{nouns.get(source, 'Stock')} {verbs.get(action, action.lower())}"
+    item["is_legacy"] = action == "LEGACY"
+    item.pop("total_count", None)
+    return item
+
+
 def user_id_from_token(user: dict) -> int | None:
     raw = user.get("user_id") or user.get("id") or user.get("userId")
     try:
@@ -1287,6 +1369,42 @@ async def health():
     return "API running"
 
 
+@app.get("/stock/activity")
+async def get_stock_activity(
+    date_from: str = None, date_to: str = None, material_id: str = None,
+    source_domain: str = None, action: str = None, operator_id: str = None,
+    limit: str = "200", offset: str = "0", user=Depends(get_user),
+):
+    """One immutable, filterable explanation of every stock change."""
+    parsed_limit = parse_activity_limit(limit)
+    try:
+        parsed_offset = max(int(offset), 0)
+    except (TypeError, ValueError):
+        parsed_offset = 0
+    where, values = build_stock_activity_filters(
+        date_from=date_from, date_to=date_to, material_id=material_id,
+        source_domain=source_domain, action=action, operator_id=operator_id,
+    )
+    values.extend([parsed_limit, parsed_offset])
+    async with pool.acquire() as c:
+        result = await c.fetch(
+            f"""SELECT sal.*, m.name AS material_name, u.name AS created_by_name,
+                       COUNT(*) OVER()::int AS total_count
+                  FROM stock_activity_log sal
+                  LEFT JOIN materials_master m ON m.id = sal.material_id
+                  LEFT JOIN users u ON u.id = sal.created_by
+                {where}
+                 ORDER BY sal.occurred_at DESC, sal.id DESC
+                 LIMIT ${len(values) - 1} OFFSET ${len(values)}""",
+            *values,
+        )
+    total = int(result[0]["total_count"]) if result else 0
+    return {
+        "items": [normalize_activity_row(dict(row)) for row in result],
+        "pagination": {"limit": parsed_limit, "offset": parsed_offset, "total": total},
+    }
+
+
 # ── Materials ──
 
 @app.get("/materials")
@@ -1680,7 +1798,6 @@ async def get_floor_transactions(date_from: str = None, date_to: str = None, use
 
 @app.put("/floor/transactions/{mv_id}")
 async def update_floor_tx(mv_id: int, request: Request, user=Depends(get_user)):
-    require_owner_or_admin(user)
     body = await request.json()
     qty = to_num(body.get("quantity_kg"))
     direction = str(body.get("direction") or "").upper()
@@ -1695,6 +1812,7 @@ async def update_floor_tx(mv_id: int, request: Request, user=Depends(get_user)):
             cur = await c.fetchrow("SELECT mm.*, m.name AS material_name FROM material_movements mm LEFT JOIN materials_master m ON m.id = mm.material_id WHERE mm.id = $1 FOR UPDATE OF mm", mv_id)
             if not cur:
                 raise HTTPException(404, "Transaction not found")
+            require_entry_owner(user, cur["created_by"])
             if normalize_movement_type(cur["movement_type"]) != "FLOOR_TRANSFER":
                 raise HTTPException(400, "Only floor-transfer entries can be edited here")
             link = await latest_activity_link(c, "FLOOR_TRANSFER", mv_id)
@@ -1730,7 +1848,6 @@ async def update_floor_tx(mv_id: int, request: Request, user=Depends(get_user)):
 
 @app.delete("/floor/transactions/{mv_id}")
 async def delete_floor_tx(mv_id: int, user=Depends(get_user)):
-    require_owner_or_admin(user)
     if mv_id <= 0:
         raise HTTPException(400, "Invalid transaction id")
     async with pool.acquire() as c:
@@ -1738,6 +1855,7 @@ async def delete_floor_tx(mv_id: int, user=Depends(get_user)):
             cur = await c.fetchrow("SELECT mm.*, m.name AS material_name FROM material_movements mm LEFT JOIN materials_master m ON m.id = mm.material_id WHERE mm.id = $1 FOR UPDATE OF mm", mv_id)
             if not cur:
                 raise HTTPException(404, "Transaction not found")
+            require_entry_owner(user, cur["created_by"])
             if normalize_movement_type(cur["movement_type"]) != "FLOOR_TRANSFER":
                 raise HTTPException(400, "Only floor-transfer entries can be deleted here")
             link = await latest_activity_link(c, "FLOOR_TRANSFER", mv_id)
@@ -1755,7 +1873,6 @@ async def delete_floor_tx(mv_id: int, user=Depends(get_user)):
 
 @app.post("/floor/transactions/bulk-delete")
 async def bulk_delete_floor_tx(request: Request, user=Depends(get_user)):
-    require_owner_or_admin(user)
     body = await request.json()
     ids = [int(v) for v in (body.get("ids") or []) if str(v).lstrip("-").isdigit() and int(v) > 0]
     if not ids:
@@ -1765,6 +1882,8 @@ async def bulk_delete_floor_tx(request: Request, user=Depends(get_user)):
             rs_ = await c.fetch("SELECT mm.*, m.name AS material_name FROM material_movements mm LEFT JOIN materials_master m ON m.id = mm.material_id WHERE mm.id = ANY($1::int[]) ORDER BY mm.id FOR UPDATE OF mm", ids)
             if len(rs_) != len(ids):
                 raise HTTPException(404, "One or more transactions were not found")
+            for r_ in rs_:
+                require_entry_owner(user, r_["created_by"])
             if any(normalize_movement_type(r_["movement_type"]) != "FLOOR_TRANSFER" for r_ in rs_):
                 raise HTTPException(400, "Only floor-transfer entries can be deleted here")
             receipts = []
@@ -1949,6 +2068,7 @@ async def get_production_logs(machine_id: str = None, date_from: str = None, dat
         rs_ = await c.fetch(
             f"""SELECT pl.id, pl.machine_id, pl.material_id, pl.material_type_id, pl.size,
                        pl.worker_name, pl.gross_weight, pl.tare_weight, pl.created_at,
+                       pl.created_by,
                        m.name AS machine_name,
                        COALESCE(mt.name, mat.name) AS material_name
                   FROM production_logs pl
@@ -1986,6 +2106,7 @@ async def update_production_log(log_id: int, request: Request, user=Depends(get_
                 log_id)
             if not cur:
                 raise HTTPException(404, "Production log not found")
+            require_entry_owner(user, cur["created_by"])
             movement = await consumption_movement_for_log(c, log_id)
             link = await latest_activity_link(c, "PRODUCTION", log_id)
             if not movement or not movement["material_type_id"]:
@@ -2043,6 +2164,7 @@ async def delete_production_log(log_id: int, user=Depends(get_user)):
             cur = await c.fetchrow("SELECT pl.*, mat.name AS material_name FROM production_logs pl LEFT JOIN materials_master mat ON mat.id = pl.material_id WHERE pl.id = $1 FOR UPDATE OF pl", log_id)
             if not cur:
                 raise HTTPException(404, "Production log not found")
+            require_entry_owner(user, cur["created_by"])
             movement = await consumption_movement_for_log(c, log_id)
             link = await latest_activity_link(c, "PRODUCTION", log_id)
             if not movement or not movement["material_type_id"]:
@@ -2072,6 +2194,8 @@ async def bulk_delete_production_logs(request: Request, user=Depends(get_user)):
             rs_ = await c.fetch("SELECT pl.*, mat.name AS material_name FROM production_logs pl LEFT JOIN materials_master mat ON mat.id = pl.material_id WHERE pl.id = ANY($1::int[]) ORDER BY pl.id FOR UPDATE OF pl", ids)
             if len(rs_) != len(ids):
                 raise HTTPException(404, "One or more production logs were not found")
+            for r_ in rs_:
+                require_entry_owner(user, r_["created_by"])
             receipts = []
             for r_ in rs_:
                 movement = await consumption_movement_for_log(c, r_["id"])
@@ -2487,8 +2611,8 @@ async def create_wastage(request: Request, user=Depends(get_user)):
             await c.execute("LOCK TABLE wastage_data IN EXCLUSIVE MODE")
             seq = await c.fetchrow("SELECT COALESCE(MAX(id), 0) + 1 AS next_id, COALESCE(MAX(sno), 0) + 1 AS next_sno FROM wastage_data")
             r_ = await c.fetchrow(
-                "INSERT INTO wastage_data (id, sno, date, weight) VALUES ($1, $2, $3, $4) RETURNING id, sno, date, weight",
-                seq["next_id"], seq["next_sno"], waste_date, float(weight))
+                "INSERT INTO wastage_data (id, sno, date, weight, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id, sno, date, weight, created_by",
+                seq["next_id"], seq["next_sno"], waste_date, float(weight), user_id_from_token(user))
     await broadcast("wastage")
     return AppResponse(status_code=201, content={"message": "Wastage recorded", "data": dict(r_)})
 
@@ -2499,18 +2623,22 @@ async def get_wastage(date_from: str = None, date_to: str = None, user=Depends(g
         vals = []
         where = build_date_where(date_from, date_to, vals, "date")
         vals.append(500)
-        return rows(await c.fetch(f"SELECT id, sno, date, weight FROM wastage_data {where} ORDER BY sno DESC LIMIT ${len(vals)}", *vals))
+        return rows(await c.fetch(f"SELECT id, sno, date, weight, created_by FROM wastage_data {where} ORDER BY sno DESC LIMIT ${len(vals)}", *vals))
 
 
 @app.delete("/wastage/{wastage_id}")
 async def delete_wastage(wastage_id: int, user=Depends(get_user)):
-    require_owner_or_admin(user)
     if wastage_id <= 0:
         raise HTTPException(400, "Invalid id")
     async with pool.acquire() as c:
-        r_ = await c.fetchrow("DELETE FROM wastage_data WHERE id = $1 RETURNING id, sno", wastage_id)
-        if not r_:
-            raise HTTPException(404, "Wastage entry not found")
+        async with c.transaction():
+            current = await c.fetchrow(
+                "SELECT id, sno, created_by FROM wastage_data WHERE id = $1 FOR UPDATE",
+                wastage_id)
+            if not current:
+                raise HTTPException(404, "Wastage entry not found")
+            require_entry_owner(user, current["created_by"])
+            r_ = await c.fetchrow("DELETE FROM wastage_data WHERE id = $1 RETURNING id, sno", wastage_id)
     await broadcast("wastage")
     return {"message": "Wastage entry deleted", "deleted": dict(r_)}
 
