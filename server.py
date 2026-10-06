@@ -647,6 +647,124 @@ async def adjust_raw_total(conn, material_id, delta_kg: float):
     await mirror_floor_for_master(conn, pid)
 
 
+def decimal_kg(value) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value or 0))
+
+
+async def lock_stock_locations(conn, material_id: int, material_type_id: int) -> dict:
+    """Lock warehouse then floor rows in one stable order for every stock writer."""
+    require_tx(conn)
+    material_id = int(material_id)
+    material_type_id = int(material_type_id)
+    warehouse = await conn.fetchrow(
+        "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
+        material_id,
+    )
+    if not warehouse:
+        raise HTTPException(400, "Warehouse Stock record was not found for this material")
+    await conn.execute(
+        """INSERT INTO floor_material_balance (material_type_id, total_quantity_kg, updated_at)
+           VALUES ($1, 0, NOW()) ON CONFLICT (material_type_id) DO NOTHING""",
+        material_type_id,
+    )
+    floor = await conn.fetchrow(
+        "SELECT total_quantity_kg FROM floor_material_balance WHERE material_type_id = $1 FOR UPDATE",
+        material_type_id,
+    )
+    return {
+        "warehouse_kg": decimal_kg(warehouse["total_quantity_kg"]),
+        "floor_kg": decimal_kg(floor["total_quantity_kg"] if floor else 0),
+    }
+
+
+async def apply_location_delta(
+    conn, *, material_id: int, material_type_id: int,
+    warehouse_delta: float, floor_delta: float,
+) -> dict:
+    """Apply one atomic two-location change and return authoritative balances."""
+    opening = await lock_stock_locations(conn, material_id, material_type_id)
+    warehouse_opening = opening["warehouse_kg"]
+    floor_opening = opening["floor_kg"]
+    warehouse_closing = warehouse_opening + decimal_kg(warehouse_delta)
+    floor_closing = floor_opening + decimal_kg(floor_delta)
+    if warehouse_closing < 0:
+        raise HTTPException(
+            400,
+            f"Insufficient Warehouse Stock. Available: {float(warehouse_opening):.3f} kg",
+        )
+    if floor_closing < 0:
+        raise HTTPException(
+            400,
+            f"Insufficient Floor Stock. Available: {float(floor_opening):.3f} kg",
+        )
+    await conn.execute(
+        "UPDATE raw_material_totals SET total_quantity_kg = $1, updated_at = NOW() WHERE material_id = $2",
+        warehouse_closing, int(material_id),
+    )
+    await conn.execute(
+        "UPDATE floor_material_balance SET total_quantity_kg = $1, updated_at = NOW() WHERE material_type_id = $2",
+        floor_closing, int(material_type_id),
+    )
+    await sync_machine_assignments(conn, int(material_type_id))
+    plant_opening = warehouse_opening + floor_opening
+    plant_closing = warehouse_closing + floor_closing
+    return {
+        "warehouse_opening_kg": float(warehouse_opening),
+        "warehouse_closing_kg": float(warehouse_closing),
+        "floor_opening_kg": float(floor_opening),
+        "floor_closing_kg": float(floor_closing),
+        "plant_opening_kg": float(plant_opening),
+        "plant_closing_kg": float(plant_closing),
+    }
+
+
+async def record_stock_activity(
+    conn, *, action: str, source_domain: str, source_id: int | None,
+    correlation_id, material_id: int, material_type_id: int | None,
+    quantity_kg: float, balances: dict, reason: str | None,
+    created_by: int, reverses_activity_id: int | None = None,
+) -> dict:
+    """Append the audit receipt; failures propagate so the stock transaction rolls back."""
+    require_tx(conn)
+    warehouse_opening = balances.get("warehouse_opening_kg")
+    warehouse_closing = balances.get("warehouse_closing_kg")
+    floor_opening = balances.get("floor_opening_kg")
+    floor_closing = balances.get("floor_closing_kg")
+    plant_opening = balances.get("plant_opening_kg")
+    plant_closing = balances.get("plant_closing_kg")
+    row = await conn.fetchrow(
+        """INSERT INTO stock_activity_log (
+               action, source_domain, source_id, correlation_id, material_id,
+               material_type_id, quantity_kg,
+               warehouse_opening_kg, warehouse_delta_kg, warehouse_closing_kg,
+               floor_opening_kg, floor_delta_kg, floor_closing_kg,
+               plant_opening_kg, plant_delta_kg, plant_closing_kg,
+               reason, created_by, reverses_activity_id
+           ) VALUES (
+               $1, $2, $3, $4, $5, $6, $7,
+               $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+           ) RETURNING *""",
+        action, source_domain, source_id, correlation_id, int(material_id),
+        int(material_type_id) if material_type_id else None, decimal_kg(quantity_kg),
+        warehouse_opening,
+        (warehouse_closing - warehouse_opening)
+        if warehouse_opening is not None and warehouse_closing is not None else None,
+        warehouse_closing,
+        floor_opening,
+        (floor_closing - floor_opening)
+        if floor_opening is not None and floor_closing is not None else None,
+        floor_closing,
+        plant_opening,
+        (plant_closing - plant_opening)
+        if plant_opening is not None and plant_closing is not None else None,
+        plant_closing,
+        reason, int(created_by) if created_by else None, reverses_activity_id,
+    )
+    return dict(row)
+
+
 def normalize_stock_adjustment(body) -> tuple[str, str, float, str]:
     material_name = str(body.get("material_name") or "").strip()
     operation = str(body.get("operation") or "").strip().lower()
