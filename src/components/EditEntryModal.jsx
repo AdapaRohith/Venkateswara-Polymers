@@ -6,6 +6,7 @@ export default function EditEntryModal({
   onChange,
   onClose,
   onSubmit,
+  impactSummary,
   submitting = false,
 }) {
   if (!open) return null
@@ -71,6 +72,15 @@ export default function EditEntryModal({
               )}
             </div>
           ))}
+
+          {impactSummary && (
+            <div className="rounded-xl border border-accent-gold/30 bg-accent-gold/[0.08] p-3 text-sm leading-6 text-text-primary">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-accent-gold">
+                Stock impact
+              </span>
+              {impactSummary}
+            </div>
+          )}
 
           <div className="flex gap-3 pt-2">
             <button
