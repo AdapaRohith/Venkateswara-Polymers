@@ -361,3 +361,52 @@ async def test_production_material_change_restores_old_before_consuming_new(monk
     )
 
     assert calls == [("restore", 7, 30, 9), ("consume", 8, 20, 9)]
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_transfer_consume_and_exact_reversals(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=500, floor=50)
+
+    async def sync_machine(_conn, _material_type_id):
+        return None
+
+    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
+    states = []
+
+    transfer = await apply_floor_transfer(
+        conn, source_id=12, material_id=7, material_type_id=3,
+        quantity_kg=100, created_by=9, correlation_id=UUID(int=12),
+    )
+    states.append((int(conn.warehouse), int(conn.floor), int(conn.warehouse + conn.floor)))
+
+    production = await apply_production_consumption(
+        conn, log_id=21, material_id=7, material_type_id=3,
+        net_kg=30, machine_id=1, created_by=9, correlation_id=UUID(int=21),
+    )
+    states.append((int(conn.warehouse), int(conn.floor), int(conn.warehouse + conn.floor)))
+
+    await reverse_production_consumption(
+        conn,
+        {"id": 21, "material_id": 7, "material_type_id": 3,
+         "quantity_kg": 30, "activity_id": production["activity_id"], "machine_id": 1},
+        created_by=9,
+    )
+    states.append((int(conn.warehouse), int(conn.floor), int(conn.warehouse + conn.floor)))
+
+    await reverse_floor_transfer(
+        conn,
+        {"id": 12, "material_id": 7, "material_type_id": 3,
+         "quantity_kg": 100, "activity_id": transfer["activity_id"]},
+        created_by=9,
+    )
+    states.append((int(conn.warehouse), int(conn.floor), int(conn.warehouse + conn.floor)))
+
+    assert states == [
+        (400, 150, 550),
+        (400, 120, 520),
+        (400, 150, 550),
+        (500, 50, 550),
+    ]
+    assert [row["action"] for row in conn.activity_rows] == [
+        "CREATE", "CREATE", "REVERSE", "REVERSE",
+    ]
