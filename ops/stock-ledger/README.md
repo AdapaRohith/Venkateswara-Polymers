@@ -33,7 +33,7 @@ Do not continue unless PM2 `vp-api` runs `/root/backend/server.py` and the stage
 ## 2. Capture the read-only baseline
 
 ```bash
-sudo -u "$DB_OWNER" psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" <<'SQL'
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" <<'SQL'
 SELECT 'warehouse' location, COUNT(*) rows, COALESCE(SUM(total_quantity_kg),0) total_kg FROM raw_material_totals
 UNION ALL SELECT 'floor', COUNT(*), COALESCE(SUM(total_quantity_kg),0) FROM floor_material_balance
 UNION ALL SELECT 'machine', COUNT(*), COALESCE(SUM(quantity_kg),0) FROM machine_stock_assignments;
@@ -43,13 +43,13 @@ SELECT to_regclass('public.stock_activity_log') activity_table;
 SQL
 ```
 
-Save this output with the backup. Any negative balance or unexplained mismatch between floor and machine totals is a stop condition.
+Save this output with the backup. Any negative balance or drift between an individual machine assignment and its corresponding floor balance is a stop condition. The sum of all machine rows is not a plant total because the same pooled floor balance is mirrored to each assigned machine.
 
 ## 3. Create one root-only rollback bundle
 
 ```bash
 install -d -m 0700 "$BACKUP_DIR"
-sudo -u "$DB_OWNER" pg_dump -Fc -d "$DB_NAME" > "$BACKUP_DIR/database.dump"
+sudo -u postgres pg_dump -Fc -d "$DB_NAME" > "$BACKUP_DIR/database.dump"
 cp -a "$APP_DIR" "$BACKUP_DIR/backend"
 pm2 save
 cp -a /root/.pm2/dump.pm2 "$BACKUP_DIR/pm2.dump"
@@ -66,12 +66,15 @@ Confirm the bundle is root-owned, mode `0700`, and has its SHA-256 manifest. Nev
 
 ```bash
 sudo -u postgres createdb -O "$DB_OWNER" "$RESTORE_DB"
-sudo -u "$DB_OWNER" pg_restore --exit-on-error --no-owner -d "$RESTORE_DB" < "$BACKUP_DIR/database.dump"
-sudo -u "$DB_OWNER" psql -X -v ON_ERROR_STOP=1 -d "$RESTORE_DB" < "$RELEASE_DIR/migrations/007_two_location_stock_ledger.sql"
-sudo -u "$DB_OWNER" psql -X -v ON_ERROR_STOP=1 -d "$RESTORE_DB" < "$RELEASE_DIR/ops/stock-ledger/verify.sql"
+install -o postgres -g postgres -m 0600 "$BACKUP_DIR/database.dump" "/tmp/$RESTORE_DB.dump"
+sudo -u postgres pg_restore --exit-on-error --no-owner --role="$DB_OWNER" -d "$RESTORE_DB" "/tmp/$RESTORE_DB.dump"
+{ printf 'SET ROLE %s;\n' "$DB_OWNER"; cat "$RELEASE_DIR/migrations/007_two_location_stock_ledger.sql"; } \
+  | sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$RESTORE_DB"
+{ printf 'SET ROLE %s;\n' "$DB_OWNER"; cat "$RELEASE_DIR/ops/stock-ledger/verify.sql"; } \
+  | sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$RESTORE_DB"
 ```
 
-Start the staged API on an unused loopback port with `DATABASE_URL` pointing at the restore database. Confirm `/`, authentication, `/stock/activity`, and `/stock/activity/export` respond before stopping that temporary process.
+Start the staged API on an unused loopback port with its `DB_NAME` pointing at the restore database. Confirm `/`, authentication, and `/stock/activity` respond before stopping that temporary process. The **Export visible activity** button exports the already-authorized activity response in the browser; it is not a separate API route.
 
 Run the accounting matrix against a disposable material in the restore database:
 
@@ -89,11 +92,13 @@ The ledger actions must be `CREATE, CREATE, REVERSE, REVERSE`. A failed restore,
 
 ```bash
 pm2 stop "$SERVICE"
-sudo -u "$DB_OWNER" psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" < "$RELEASE_DIR/migrations/007_two_location_stock_ledger.sql"
+{ printf 'SET ROLE %s;\n' "$DB_OWNER"; cat "$RELEASE_DIR/migrations/007_two_location_stock_ledger.sql"; } \
+  | sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME"
 install -o root -g root -m 0644 "$RELEASE_DIR/server.py" "$APP_DIR/server.py"
 pm2 start "$SERVICE"
 pm2 save
-sudo -u "$DB_OWNER" psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" < "$RELEASE_DIR/ops/stock-ledger/verify.sql"
+{ printf 'SET ROLE %s;\n' "$DB_OWNER"; cat "$RELEASE_DIR/ops/stock-ledger/verify.sql"; } \
+  | sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME"
 ```
 
 Migration 007 is transactional and idempotent. Keep the write outage in place if either `psql` command fails.
@@ -111,7 +116,7 @@ Build only from the reviewed commit, then atomically switch the web root using t
 Verify all of the following:
 
 - loopback API root and authenticated stock endpoints;
-- public API and public frontend over HTTPS;
+- public API at `https://vp-api.avlokai.com/` and public frontend at `https://vp.avlokai.com/` over HTTPS;
 - SSE refresh after a stock-changing operation;
 - owner flow: receive, transfer, production, edit/delete via reversal, unified activity filters and export;
 - worker flow: permitted create actions and read-only unified activity, with no owner-only controls;
@@ -129,7 +134,8 @@ test -d "$BACKUP_DIR/backend"
 sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB_NAME' AND pid <> pg_backend_pid();"
 sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c "ALTER DATABASE $DB_NAME RENAME TO ${DB_NAME}_failed_$STAMP;"
 sudo -u postgres createdb -O "$DB_OWNER" "$DB_NAME"
-sudo -u "$DB_OWNER" pg_restore --exit-on-error --no-owner -d "$DB_NAME" < "$BACKUP_DIR/database.dump"
+install -o postgres -g postgres -m 0600 "$BACKUP_DIR/database.dump" "/tmp/${DB_NAME}-rollback-$STAMP.dump"
+sudo -u postgres pg_restore --exit-on-error --no-owner --role="$DB_OWNER" -d "$DB_NAME" "/tmp/${DB_NAME}-rollback-$STAMP.dump"
 mv "$APP_DIR" "${APP_DIR}.failed.$STAMP"
 cp -a "$BACKUP_DIR/backend" "$APP_DIR"
 cp -a "$BACKUP_DIR/pm2.dump" /root/.pm2/dump.pm2
