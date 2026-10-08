@@ -16,6 +16,7 @@ import Fulfillment from './pages/Fulfillment'
 import MachineReports from './pages/MachineReports'
 import Trading from './pages/Trading'
 import IssueReports from './pages/IssueReports'
+import StockActivity from './pages/StockActivity'
 import { getOrders } from './utils/orders'
 
 const AUTH_TOKEN_KEY = 'token'
@@ -106,6 +107,16 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
                       user={user}
                       allowedRoles={['owner', 'worker']}
                       element={<Wastage user={user} />}
+                    />
+                  }
+                />
+                <Route
+                  path="/stock-activity"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner', 'worker']}
+                      element={<StockActivity />}
                     />
                   }
                 />

@@ -103,3 +103,42 @@ export function getRecordBadge(kind) {
   }
   return { label: 'Editable entry', tone: 'gold' }
 }
+
+export function activityActionLabel(sourceDomain, action) {
+  const source = String(sourceDomain || '').toUpperCase()
+  const verb = String(action || '').toUpperCase()
+  if (verb === 'LEGACY') return 'Legacy'
+  if (verb === 'REVERSE') return 'Reversed'
+  if (verb === 'UPDATE') return 'Corrected'
+  return {
+    RAW_INPUT: 'Received',
+    FLOOR_TRANSFER: 'Moved to Floor',
+    PRODUCTION: 'Used in Production',
+    WASTAGE: 'Wastage Reported',
+    MANUAL_ADJUSTMENT: 'Corrected',
+  }[source] || 'Recorded'
+}
+
+export function activityRowActions({ entryPath, sourceId }) {
+  if (!entryPath || !sourceId) return []
+  return [{ label: 'View Entry', path: entryPath, sourceId }]
+}
+
+export function serializeActivityFilters(filters = {}) {
+  const names = {
+    dateFrom: 'date_from',
+    dateTo: 'date_to',
+    materialId: 'material_id',
+    sourceDomain: 'source_domain',
+    action: 'action',
+    operatorId: 'operator_id',
+    limit: 'limit',
+    offset: 'offset',
+  }
+  const params = new URLSearchParams()
+  Object.entries(names).forEach(([key, param]) => {
+    const value = filters[key]
+    if (value !== undefined && value !== null && value !== '') params.set(param, value)
+  })
+  return params.toString()
+}

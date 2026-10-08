@@ -96,6 +96,7 @@ const ownerNavGroups = [
     label: 'Analytics',
     items: [
       { name: 'Machine Reports', path: '/reports', icon: Icon.reports },
+      { name: 'Stock Activity', path: '/stock-activity', icon: Icon.reports },
     ],
   },
   {
@@ -112,6 +113,7 @@ const workerNavGroups = [
     items: [
       { name: 'Production Log', path: '/production-log', icon: Icon.production },
       { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
+      { name: 'Stock Activity', path: '/stock-activity', icon: Icon.reports },
     ],
   },
 ]
@@ -122,7 +124,9 @@ const flatWorker = workerNavGroups.flatMap(g => g.items)
 export default function Sidebar({ user, onLogout }) {
   const [open, setOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
-  const [isDarkMode, setIsDarkMode] = useState(true)
+  const [isDarkMode, setIsDarkMode] = useState(() => (
+    typeof document === 'undefined' || document.documentElement.classList.contains('dark')
+  ))
   const location = useLocation()
   const isWorker = String(user?.role || '').toLowerCase() === 'worker'
 
@@ -139,11 +143,8 @@ export default function Sidebar({ user, onLogout }) {
     .find(i => i.path === '/' ? location.pathname === '/' : location.pathname.startsWith(i.path))
 
   useEffect(() => {
-    setIsDarkMode(document.documentElement.classList.contains('dark'))
-  }, [])
-
-  useEffect(() => {
-    setOpen(false)
+    const frame = window.requestAnimationFrame(() => setOpen(false))
+    return () => window.cancelAnimationFrame(frame)
   }, [location.pathname])
 
   const toggleTheme = () => {

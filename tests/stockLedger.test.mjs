@@ -2,11 +2,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  activityActionLabel,
+  activityRowActions,
   describeEntryReversal,
   getRecordBadge,
   normalizeImpactReceipt,
   previewFloorTransfer,
   previewProductionUsage,
+  serializeActivityFilters,
 } from '../src/utils/stockLedger.js'
 
 
@@ -84,4 +87,29 @@ test('entry and activity badges are visibly distinct', () => {
   assert.notDeepEqual(getRecordBadge('entry'), getRecordBadge('activity'))
   assert.equal(getRecordBadge('entry').label, 'Editable entry')
   assert.equal(getRecordBadge('activity').label, 'Read-only activity')
+})
+
+
+test('activity actions never expose destructive controls', () => {
+  const actions = activityRowActions({ entryPath: '/production-log', sourceId: 21 })
+  assert.deepEqual(actions.map((action) => action.label), ['View Entry'])
+  assert.deepEqual(activityRowActions({ entryPath: null, sourceId: null }), [])
+})
+
+
+test('activity filters serialize only populated values', () => {
+  assert.equal(
+    serializeActivityFilters({ dateFrom: '2026-10-01', dateTo: '', sourceDomain: 'PRODUCTION', action: 'CREATE' }),
+    'date_from=2026-10-01&source_domain=PRODUCTION&action=CREATE',
+  )
+})
+
+
+test('activity labels explain stock meaning in plain language', () => {
+  assert.equal(activityActionLabel('RAW_INPUT', 'CREATE'), 'Received')
+  assert.equal(activityActionLabel('FLOOR_TRANSFER', 'CREATE'), 'Moved to Floor')
+  assert.equal(activityActionLabel('PRODUCTION', 'CREATE'), 'Used in Production')
+  assert.equal(activityActionLabel('MANUAL_ADJUSTMENT', 'CREATE'), 'Corrected')
+  assert.equal(activityActionLabel('PRODUCTION', 'REVERSE'), 'Reversed')
+  assert.equal(activityActionLabel('RAW_INPUT', 'LEGACY'), 'Legacy')
 })
