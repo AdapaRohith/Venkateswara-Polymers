@@ -47,7 +47,7 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
     <div className="flex min-h-screen bg-bg-primary">
       <Sidebar user={user} onLogout={handleLogout} />
 
-      <main className="flex-1 ml-0 lg:ml-64 pt-14 lg:pt-0 min-h-screen">
+      <main className="min-w-0 flex-1 ml-0 lg:ml-64 pt-14 lg:pt-0 min-h-screen">
         <div className="max-w-[1600px] mx-auto px-4 pb-28 pt-4 sm:px-6 sm:pt-6 lg:px-8 lg:pb-10 lg:pt-8">
           <AnimatePresence mode="wait">
             <motion.div
