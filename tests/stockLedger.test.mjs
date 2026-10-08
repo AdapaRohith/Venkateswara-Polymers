@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 import {
   describeEntryReversal,
+  getRecordBadge,
+  normalizeImpactReceipt,
   previewFloorTransfer,
   previewProductionUsage,
 } from '../src/utils/stockLedger.js'
@@ -67,4 +69,19 @@ test('floor transfer delete copy explains both locations', () => {
     describeEntryReversal({ sourceDomain: 'FLOOR_TRANSFER', materialName: 'OPALENE', quantityKg: 10 }),
     'Delete this floor transfer? 10.00 kg of OPALENE will move from Floor Stock back to Warehouse Stock. The reversal will remain visible in Stock Activity.',
   )
+})
+
+
+test('receipt normalization preserves authoritative closing balances', () => {
+  assert.deepEqual(
+    normalizeImpactReceipt({ warehouse_closing_kg: 400, floor_closing_kg: 150 }),
+    { warehouseClosingKg: 400, floorClosingKg: 150 },
+  )
+})
+
+
+test('entry and activity badges are visibly distinct', () => {
+  assert.notDeepEqual(getRecordBadge('entry'), getRecordBadge('activity'))
+  assert.equal(getRecordBadge('entry').label, 'Editable entry')
+  assert.equal(getRecordBadge('activity').label, 'Read-only activity')
 })

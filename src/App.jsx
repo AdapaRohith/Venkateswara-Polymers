@@ -95,7 +95,7 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['owner', 'worker']}
-                      element={<MaterialMovement />}
+                      element={<MaterialMovement user={user} />}
                     />
                   }
                 />

@@ -27,6 +27,8 @@ export default function DataTable({
     emptyMessage = 'No entries yet.',
     onDelete,
     onEdit,
+    canDeleteRow,
+    canEditRow,
     title,
     titleIcon,
     rightAction,
@@ -37,6 +39,8 @@ export default function DataTable({
 }) {
     const selectable = typeof onSelectedIdsChange === 'function'
     const rowIsSelectable = (row) => (typeof isRowSelectable === 'function' ? isRowSelectable(row) : true)
+    const rowCanEdit = (row) => Boolean(onEdit) && (typeof canEditRow !== 'function' || canEditRow(row))
+    const rowCanDelete = (row) => Boolean(onDelete) && (typeof canDeleteRow !== 'function' || canDeleteRow(row))
     const selectableRows = data.filter((row) => rowIsSelectable(row))
     const allSelected = selectableRows.length > 0 && selectableRows.every((row) => selectedIds.includes(row.id))
     const groups = groupRowsByDay(data, groupByDate)
@@ -164,7 +168,7 @@ export default function DataTable({
                                     {(onDelete || onEdit) && (
                                         <td className="px-3 py-1.5">
                                             <div className="flex items-center gap-1">
-                                                {onEdit && (
+                                                {rowCanEdit(row) && (
                                                     <button
                                                         onClick={() => onEdit(row)}
                                                         className="inline-flex items-center p-1.5 text-text-secondary/60 hover:text-accent-gold transition-colors rounded hover:bg-accent-gold-muted"
@@ -174,7 +178,7 @@ export default function DataTable({
                                                         <Pictogram name="edit" size={15} />
                                                     </button>
                                                 )}
-                                                {onDelete && (
+                                                {rowCanDelete(row) && (
                                                     <button
                                                         onClick={() => onDelete(row.id)}
                                                         className="inline-flex items-center p-1.5 text-text-secondary/50 hover:text-red-500 transition-colors rounded hover:bg-red-500/10"
@@ -233,7 +237,7 @@ export default function DataTable({
                                         </span>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        {onEdit && (
+                                        {rowCanEdit(row) && (
                                             <button
                                                 onClick={() => onEdit(row)}
                                                 className="p-1.5 text-text-secondary/60 hover:text-accent-gold transition-colors rounded hover:bg-accent-gold-muted"
@@ -243,7 +247,7 @@ export default function DataTable({
                                                 <Pictogram name="edit" size={15} />
                                             </button>
                                         )}
-                                        {onDelete && (
+                                        {rowCanDelete(row) && (
                                             <button
                                                 onClick={() => onDelete(row.id)}
                                                 className="p-1.5 text-text-secondary/50 hover:text-red-500 transition-colors rounded hover:bg-red-500/10"

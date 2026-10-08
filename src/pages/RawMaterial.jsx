@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import useSSE from '../hooks/useSSE'
 import DataTable from '../components/DataTable'
+import EditEntryModal from '../components/EditEntryModal'
 import InputWithCamera from '../components/InputWithCamera'
 import Pictogram from '../components/Pictogram'
+import StockImpactReceipt from '../components/StockImpactReceipt'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 import { formatDate, formatTime, todayIST } from '../utils/datetime'
 import { previewStockAdjustment, validateStockAdjustment } from '../utils/stockAdjustment'
+import {
+  canModifyLocalEntry,
+  deleteRawMaterialBatch,
+  impactReceiptFromResponse,
+  updateRawMaterialBatch,
+} from '../utils/logActions'
 
 function toNumber(value, fallback = 0) {
   const numericValue = Number(value)
@@ -97,6 +105,9 @@ export default function RawMaterial({ user }) {
   const [adjustments, setAdjustments] = useState([])
   const [loadingAdjustments, setLoadingAdjustments] = useState(true)
   const [adjustmentsError, setAdjustmentsError] = useState('')
+  const [lastReceipt, setLastReceipt] = useState(null)
+  const [editingBatch, setEditingBatch] = useState(null)
+  const [batchEditValues, setBatchEditValues] = useState({})
 
   const handleExport = async () => {
     try {
@@ -149,7 +160,8 @@ export default function RawMaterial({ user }) {
   const handleDeleteBatch = async (batchId) => {
     setDeletingBatchId(batchId)
     try {
-      await api.delete(`/raw-material/batches/${batchId}`)
+      const { data } = await deleteRawMaterialBatch(batchId)
+      setLastReceipt(impactReceiptFromResponse(data))
       toast.success('Raw material batch deleted. Stock total has been consolidated.')
       await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
     } catch (error) {
@@ -158,6 +170,30 @@ export default function RawMaterial({ user }) {
     } finally {
       setDeletingBatchId(null)
       setConfirmDelete(null)
+    }
+  }
+
+  const openEditBatch = (row) => {
+    setEditingBatch(row)
+    setBatchEditValues({
+      material_name: row.material_name || '',
+      quantity_kg: row.quantity_kg || '',
+      note: row.note || '',
+    })
+  }
+
+  const saveBatchEdit = async () => {
+    setSubmittingEdit(true)
+    try {
+      const { data } = await updateRawMaterialBatch(editingBatch.id, batchEditValues)
+      setLastReceipt(impactReceiptFromResponse(data))
+      setEditingBatch(null)
+      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
+      toast.success('Raw material entry updated and Warehouse Stock recalculated.')
+    } catch (error) {
+      toast.error(error?.response?.data?.detail || 'Failed to update raw material entry')
+    } finally {
+      setSubmittingEdit(false)
     }
   }
 
@@ -194,12 +230,13 @@ export default function RawMaterial({ user }) {
     const closingTotal = previewStockAdjustment(editTotal.currentTotal, editOperation, qty)
     setSubmittingEdit(true)
     try {
-      await api.post('/raw-material/adjust', {
+      const { data } = await api.post('/raw-material/adjust', {
         material_name: editTotal.materialName,
         operation: editOperation,
         quantity_kg: qty,
         reason: editReason.trim(),
       })
+      setLastReceipt(impactReceiptFromResponse(data))
       toast.success(`${editOperation === 'add' ? 'Added' : 'Removed'} ${qty.toFixed(2)} kg ${editOperation === 'add' ? 'to' : 'from'} ${editTotal.materialName}. Closing stock: ${closingTotal.toFixed(2)} kg.`)
       await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches(), refreshAdjustments()])
       setEditTotal(null)
@@ -330,12 +367,13 @@ export default function RawMaterial({ user }) {
     setSubmittingAdd(true)
     try {
       console.info('[RawMaterial] calling POST /raw-material/add')
-      await api.post('/raw-material/add', {
+      const { data } = await api.post('/raw-material/add', {
         material_name: addForm.material_name.trim(),
         quantity_kg: qtyInKg,
         date: entryDate,
         note: addForm.note?.trim() || '',
       })
+      setLastReceipt(impactReceiptFromResponse(data))
 
       await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
       toast.success(`Added ${qtyInKg.toFixed(2)} kg of ${addForm.material_name.trim()} on ${formatDate(entryDate)}`)
@@ -528,6 +566,8 @@ export default function RawMaterial({ user }) {
         onEdit={openEditTotal}
       />
 
+      <StockImpactReceipt receipt={lastReceipt} title="Warehouse stock receipt" onDismiss={() => setLastReceipt(null)} />
+
       <div className="space-y-2">
         {adjustmentsError && (
           <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
@@ -551,13 +591,16 @@ export default function RawMaterial({ user }) {
           </div>
         )}
         <DataTable
-          title="Entries By Date"
+          title="Entries — Raw Material Inputs"
           titleIcon="date"
           columns={batchColumns}
           data={batches}
           groupByDate="created_at"
           emptyMessage={loadingBatches ? 'Loading entries...' : 'No raw material entries found.'}
           onDelete={promptDelete}
+          onEdit={openEditBatch}
+          canEditRow={(row) => canModifyLocalEntry(user, row)}
+          canDeleteRow={(row) => canModifyLocalEntry(user, row)}
           rightAction={(
             <button
               type="button"
@@ -754,6 +797,22 @@ export default function RawMaterial({ user }) {
           </div>
         </div>
       )}
+
+      <EditEntryModal
+        open={Boolean(editingBatch)}
+        title="Edit raw material input"
+        fields={[
+          { name: 'material_name', label: 'Material', required: true },
+          { name: 'quantity_kg', label: 'Quantity (kg)', type: 'number', min: '0.001', step: '0.001', required: true },
+          { name: 'note', label: 'Note' },
+        ]}
+        values={batchEditValues}
+        onChange={(name, value) => setBatchEditValues((current) => ({ ...current, [name]: value }))}
+        onClose={() => setEditingBatch(null)}
+        onSubmit={saveBatchEdit}
+        submitting={submittingEdit}
+        impactSummary="The old input is reversed before the edited input is applied. Warehouse Stock will show the resulting balance."
+      />
     </div>
   )
 }

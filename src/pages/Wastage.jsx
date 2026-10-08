@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import useSSE from '../hooks/useSSE'
 import useFlashRows from '../hooks/useFlashRows'
+import EditEntryModal from '../components/EditEntryModal'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { exportSingleSheet } from '../utils/exportToExcel'
 import { formatDate as formatDateIST, todayIST } from '../utils/datetime'
+import { canModifyLocalEntry, deleteWastageEntry, updateWastageEntry } from '../utils/logActions'
 
 const ExcelIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
@@ -64,6 +66,9 @@ export default function Wastage({ user }) {
   const [wastageRows, setWastageRows] = useState([])
   useFlashRows(wastageRows.length)
   const [deletingId, setDeletingId] = useState(null)
+  const [editing, setEditing] = useState(null)
+  const [editValues, setEditValues] = useState({})
+  const [lastAction, setLastAction] = useState('')
 
   const [form, setForm] = useState({
     date: todayIST(),
@@ -100,17 +105,38 @@ export default function Wastage({ user }) {
   }
 
   const handleDelete = async (row) => {
-    if (!window.confirm('Delete this wastage entry?')) return
+    if (!window.confirm('Delete this wastage entry? This changes only the wastage report; Warehouse Stock and Floor Stock will not change.')) return
 
     setDeletingId(row.id)
     try {
-      await api.delete(`/wastage/${row.transactionId || row.id}`)
+      await deleteWastageEntry(row.transactionId || row.id)
       toast.success('Entry deleted')
+      setLastAction('Wastage entry deleted. No warehouse or floor stock change.')
       setWastageRows((prev) => prev.filter((r) => r.id !== row.id))
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to delete entry')
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  const openEdit = (row) => {
+    setEditing(row)
+    setEditValues({ date: row.date || todayIST(), weight: row.actualWeight || '' })
+  }
+
+  const saveEdit = async () => {
+    setSubmitting(true)
+    try {
+      await updateWastageEntry(editing.id, editValues)
+      setEditing(null)
+      await loadWastage(true)
+      setLastAction('Wastage entry updated. No warehouse or floor stock change.')
+      toast.success('Wastage entry updated')
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || 'Failed to update wastage entry')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -131,9 +157,10 @@ export default function Wastage({ user }) {
         wastage_generated: weight,
       })
       toast.success('Wastage logged successfully')
+      setLastAction('Wastage entry recorded. No warehouse or floor stock change.')
       setForm((previous) => ({ ...previous, weight: '' }))
-      if (data) {
-        setWastageRows((prev) => [normalizeWastageRow(data, prev.length), ...prev])
+      if (data?.data) {
+        setWastageRows((prev) => [normalizeWastageRow(data.data, prev.length), ...prev])
       }
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to log wastage')
@@ -238,9 +265,14 @@ export default function Wastage({ user }) {
         </form>
       </div>
 
+      <div className="rounded-xl border border-sky-500/30 bg-sky-500/[0.08] px-4 py-3 text-sm text-sky-200">
+        <strong>Reporting only:</strong> Wastage entries do not deduct Warehouse Stock or Floor Stock.
+        {lastAction && <span className="mt-1 block text-xs text-sky-300">{lastAction}</span>}
+      </div>
+
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm overflow-hidden">
         <div className="px-3 py-2 border-b border-border-subtle flex items-center justify-between">
-          <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Wastage Logs</h2>
+          <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60">Entries — Wastage Reports</h2>
           {totalWastage > 0 && (
             <span className="text-xs font-semibold font-mono text-accent-gold bg-accent-gold/10 border border-accent-gold/20 rounded-lg px-3 py-1">
               Total: {totalWastage.toFixed(2)} kg
@@ -280,14 +312,19 @@ export default function Wastage({ user }) {
                     <td className="px-3 py-1.5 text-right font-mono text-text-secondary/80">{toNumber(row.netWeight).toFixed(2)}</td>
                     <td className="px-3 py-1.5 text-right font-mono font-bold text-accent-gold">{toNumber(row.actualWeight).toFixed(2)}</td>
                     <td className="px-3 py-1.5 text-center">
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(row)}
-                        disabled={deletingId === row.id}
-                        className="text-red-400 hover:text-red-300 disabled:opacity-40 transition-colors text-xs font-semibold px-3 py-1 rounded-lg border border-red-500/20 hover:border-red-400/40 hover:bg-red-500/10"
-                      >
-                        {deletingId === row.id ? 'Deleting...' : 'Delete'}
-                      </button>
+                      {canModifyLocalEntry(user, row) ? (
+                        <span className="inline-flex gap-1">
+                          <button type="button" onClick={() => openEdit(row)} className="rounded-lg border border-accent-gold/20 px-3 py-1 text-xs font-semibold text-accent-gold hover:bg-accent-gold/10">Edit</button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(row)}
+                            disabled={deletingId === row.id}
+                            className="text-red-400 hover:text-red-300 disabled:opacity-40 transition-colors text-xs font-semibold px-3 py-1 rounded-lg border border-red-500/20 hover:border-red-400/40 hover:bg-red-500/10"
+                          >
+                            {deletingId === row.id ? 'Deleting...' : 'Delete'}
+                          </button>
+                        </span>
+                      ) : <span className="text-[10px] text-text-secondary/60">Read only</span>}
                     </td>
                   </tr>
                 ))
@@ -296,6 +333,20 @@ export default function Wastage({ user }) {
           </table>
         </div>
       </div>
+      <EditEntryModal
+        open={Boolean(editing)}
+        title="Edit wastage report entry"
+        fields={[
+          { name: 'date', label: 'Date', type: 'date', required: true },
+          { name: 'weight', label: 'Wastage (kg)', type: 'number', min: '0.01', step: '0.01', required: true },
+        ]}
+        values={editValues}
+        onChange={(name, value) => setEditValues((current) => ({ ...current, [name]: value }))}
+        onClose={() => setEditing(null)}
+        onSubmit={saveEdit}
+        submitting={submitting}
+        impactSummary="No warehouse or floor stock change. This entry updates only the wastage report."
+      />
     </div>
   )
 }

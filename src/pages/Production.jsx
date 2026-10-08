@@ -2,16 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import useSSE from '../hooks/useSSE'
 import useFlashRows from '../hooks/useFlashRows'
 import EditEntryModal from '../components/EditEntryModal'
+import StockImpactReceipt from '../components/StockImpactReceipt'
 import StockOverflowDialog, { parseAvailableKg } from '../components/StockOverflowDialog'
 import Pictogram from '../components/Pictogram'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { exportSingleSheet } from '../utils/exportToExcel'
 import {
-  bulkDeleteProductionLogs,
+  canModifyLocalEntry,
   deleteProductionLog,
+  impactReceiptFromResponse,
   updateProductionLog,
 } from '../utils/logActions'
+import { describeEntryReversal } from '../utils/stockLedger'
 import { formatDate as formatDateIST, formatTime as formatTimeIST, formatDateTime as formatDateTimeIST, todayIST } from '../utils/datetime'
 
 const ExcelIcon = () => (
@@ -77,11 +80,14 @@ function normalizeHistoryEntry(log) {
     machineType: log.machineType,
     material: log.material,
     materialId: log.materialId ?? log.material_id,
+    materialTypeId: log.materialTypeId ?? log.material_type_id ?? log.materialId ?? log.material_id,
     size: log.size || '—',
     worker: log.worker || '—',
     gross,
     tare,
     net,
+    createdBy: log.createdBy ?? log.created_by,
+    isLegacy: Boolean(log.isLegacy ?? log.is_legacy),
   }
 }
 
@@ -159,11 +165,6 @@ function getTodayDate() {
   return todayIST()
 }
 
-function formatDisplayDate(dateStr) {
-  if (!dateStr) return ''
-  return formatDateIST(dateStr, dateStr)
-}
-
 export default function Production({ user }) {
   const toast = useToast()
 
@@ -182,7 +183,6 @@ export default function Production({ user }) {
   const [history, setHistory] = useState([])
   const [historyMachineFilter, setHistoryMachineFilter] = useState('')
   useFlashRows(history.length)
-  const [selectedHistoryIds, setSelectedHistoryIds] = useState([])
   const [editingHistoryRow, setEditingHistoryRow] = useState(null)
   const [editHistoryForm, setEditHistoryForm] = useState({
     machine_id: '',
@@ -196,9 +196,9 @@ export default function Production({ user }) {
   const [submitting, setSubmitting] = useState(false)
   const [stockOverflow, setStockOverflow] = useState(null) // { materialName, attempted, available, materialName }
   const [topUpLoading, setTopUpLoading] = useState(false)
-  const [loadingWorker, setLoadingWorker] = useState(false)
   const [loadingMaterials, setLoadingMaterials] = useState(false)
   const [hasLoadedMaterialsOnce, setHasLoadedMaterialsOnce] = useState(false)
+  const [lastReceipt, setLastReceipt] = useState(null)
   const grossRef = useRef(null)
   const isBackdated = productionDate !== getTodayDate()
 
@@ -214,6 +214,10 @@ export default function Production({ user }) {
 
   const selectedMaterialAvailable = useMemo(
     () => materialsForProduction.some((mat) => String(mat.id) === String(materialId)),
+    [materialId, materialsForProduction],
+  )
+  const selectedFloorMaterial = useMemo(
+    () => materialsForProduction.find((mat) => String(mat.id) === String(materialId)),
     [materialId, materialsForProduction],
   )
 
@@ -297,7 +301,6 @@ export default function Production({ user }) {
 
   /* ── Fetch worker name from machine state ────────────────────────────────── */
   const fetchWorkerForMachine = useCallback(async (machineId) => {
-    setLoadingWorker(true)
     try {
       const { data } = await api.get(`/machines/${machineId}/state`)
       if (data?.current_worker) {
@@ -306,8 +309,6 @@ export default function Production({ user }) {
     } catch (err) {
       // Silently ignore if endpoint doesn't exist
       console.debug('Could not fetch worker state:', err.message)
-    } finally {
-      setLoadingWorker(false)
     }
   }, [])
 
@@ -332,11 +333,15 @@ export default function Production({ user }) {
           machineId: log.machine_id,
           machineType: machine?.type || 'production',
           material: log.material_name || `Material ${log.material_id}`,
+          materialId: log.material_type_id || log.material_id,
+          materialTypeId: log.material_type_id,
           size: log.size || '—',
           worker: log.worker_name || '—',
           gross: log.gross_weight,
           tare: log.tare_weight,
           net: log.net_weight,
+          createdBy: log.created_by,
+          isLegacy: log.is_legacy,
         })
       })
 
@@ -482,19 +487,23 @@ export default function Production({ user }) {
         selectedMaterial = materialsForProduction.find(mat => String(mat.id) === String(materialIdNum))
       }
       const materialName = selectedMaterial?.material_name || `Material ${materialIdNum}`
+      setLastReceipt(impactReceiptFromResponse(data))
 
       // Add to local history
       setHistory(prev => [normalizeHistoryEntry({
-        id: data?.id || Date.now(),
+        id: data?.data?.id || data?.id || Date.now(),
         time: new Date().toISOString(),
         machine: activeMachine.label,
         machineType: activeMachine.type,
         material: materialName,
+        materialId: materialIdNum,
+        materialTypeId: materialIdNum,
         size: size || '—',
         worker: workerName || '—',
         gross,
         tare,
         net,
+        createdBy: user?.id ?? user?.user_id,
       }), ...prev])
 
       setFloorStock((prev) =>
@@ -519,7 +528,7 @@ export default function Production({ user }) {
         }),
       )
 
-      toast.success(`✓ Entry logged for ${activeMachine.label}`)
+      toast.success(`Production logged and ${net.toFixed(2)} kg used from Floor Stock.`)
 
       // Reset form (keep machine, worker, material selection)
       if (data?.tolerance?.tolerance_status === 'BREACH') {
@@ -548,7 +557,7 @@ export default function Production({ user }) {
     } finally {
       setSubmitting(false)
     }
-  }, [activeMachine, assignedStock, grossWeight, tareWeight, directNetWeight, materialId, size, workerName, isValid, materialsForProduction, toast, productionDate])
+  }, [activeMachine, assignedStock, grossWeight, tareWeight, directNetWeight, materialId, size, workerName, isValid, materialsForProduction, toast, productionDate, user])
 
   const openEditHistory = useCallback((row) => {
     setEditingHistoryRow(row)
@@ -563,38 +572,27 @@ export default function Production({ user }) {
   }, [])
 
   const handleDeleteHistory = useCallback(async (rowId) => {
-    if (!window.confirm('Delete this production entry?')) return
+    const row = history.find((entry) => entry.id === rowId)
+    if (!row || !window.confirm(describeEntryReversal({
+      sourceDomain: 'PRODUCTION', materialName: row.material, quantityKg: row.net,
+    }))) return
 
     try {
-      await deleteProductionLog(rowId)
-      setSelectedHistoryIds((previous) => previous.filter((id) => id !== rowId))
+      const { data } = await deleteProductionLog(rowId)
+      setLastReceipt(impactReceiptFromResponse(data))
       await refreshHistoryContext()
       toast.success('Production entry deleted')
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to delete production entry')
     }
-  }, [refreshHistoryContext, toast])
-
-  const handleBulkDeleteHistory = useCallback(async () => {
-    if (selectedHistoryIds.length === 0) return
-    if (!window.confirm(`Delete ${selectedHistoryIds.length} selected production entries?`)) return
-
-    try {
-      await bulkDeleteProductionLogs(selectedHistoryIds)
-      setSelectedHistoryIds([])
-      await refreshHistoryContext()
-      toast.success('Selected production entries deleted')
-    } catch (err) {
-      toast.error(err?.response?.data?.error || 'Failed to delete selected entries')
-    }
-  }, [refreshHistoryContext, selectedHistoryIds, toast])
+  }, [history, refreshHistoryContext, toast])
 
   const handleSaveHistoryEdit = useCallback(async () => {
     if (!editingHistoryRow) return
 
     try {
       setSavingHistoryEdit(true)
-      await updateProductionLog(editingHistoryRow.id, {
+      const { data } = await updateProductionLog(editingHistoryRow.id, {
         machine_id: toNumber(editHistoryForm.machine_id),
         material_type_id: toNumber(editHistoryForm.material_id),
         size: editHistoryForm.size || null,
@@ -602,6 +600,7 @@ export default function Production({ user }) {
         gross_weight: toNumber(editHistoryForm.gross_weight),
         tare_weight: toNumber(editHistoryForm.tare_weight),
       })
+      setLastReceipt(impactReceiptFromResponse(data))
       setEditingHistoryRow(null)
       await refreshHistoryContext(toNumber(editHistoryForm.machine_id))
       toast.success('Production entry updated')
@@ -627,7 +626,6 @@ export default function Production({ user }) {
   const totalGross = useMemo(() => history.reduce((sum, row) => sum + toNumber(row.gross), 0), [history])
   const totalTare = useMemo(() => history.reduce((sum, row) => sum + toNumber(row.tare), 0), [history])
   const totalNet = useMemo(() => history.reduce((sum, row) => sum + toNumber(row.net), 0), [history])
-  const allHistorySelected = history.length > 0 && history.every((row) => selectedHistoryIds.includes(row.id))
 
   const handleExportHistory = useCallback(() => {
     const rows = history.map((row) => ({
@@ -954,6 +952,16 @@ export default function Production({ user }) {
               </>
             )}
 
+            {selectedFloorMaterial && netWeight > 0 && (
+              <div className="rounded-xl border border-border-default bg-bg-primary/50 p-3 text-sm text-text-secondary">
+                <strong className="text-text-primary">Floor Stock:</strong>{' '}
+                {toNumber(selectedFloorMaterial.issued_quantity_kg).toFixed(2)} available - {toNumber(netWeight).toFixed(2)} using now ={' '}
+                <strong className={toNumber(netWeight) > toNumber(selectedFloorMaterial.issued_quantity_kg) ? 'text-red-400' : 'text-emerald-400'}>
+                  {(toNumber(selectedFloorMaterial.issued_quantity_kg) - toNumber(netWeight)).toFixed(2)} kg remaining
+                </strong>
+              </div>
+            )}
+
             {/* Submit */}
             <button
               type="submit"
@@ -971,7 +979,7 @@ export default function Production({ user }) {
               ) : (
                 <>
                   <Pictogram name="check" size={16} />
-                  {`Add to ${activeMachine.label}`}
+                  Log Production &amp; Use Stock
                 </>
               )}
             </button>
@@ -979,12 +987,14 @@ export default function Production({ user }) {
         </section>
       )}
 
+      <StockImpactReceipt receipt={lastReceipt} title="Production stock receipt" onDismiss={() => setLastReceipt(null)} />
+
       {/* ── Production History Log ───────────────────────────────────────── */}
       <section className="rounded-lg border border-border-default bg-bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-primary">
             <Pictogram name="clock" size={15} className="text-text-secondary" />
-            History
+            Entries — Production
             <span className="font-normal normal-case tracking-normal text-text-secondary/60">
               {history.length} {history.length === 1 ? 'entry' : 'entries'}
               {totalNet > 0 && ` \u00b7 ${formatKg(totalNet)}`}
@@ -1041,12 +1051,13 @@ export default function Production({ user }) {
                 <th className="px-3 py-2 text-right text-[11px] font-semibold uppercase tracking-wide text-text-secondary/70">Gross</th>
                 <th className="px-3 py-2 text-right text-[11px] font-semibold uppercase tracking-wide text-text-secondary/70">Tare</th>
                 <th className="px-3 py-2 text-right text-[11px] font-semibold uppercase tracking-wide text-text-secondary/70">Net (kg)</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold uppercase tracking-wide text-text-secondary/70">Actions</th>
               </tr>
             </thead>
             <tbody>
               {history.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center">
+                  <td colSpan={10} className="px-4 py-8 text-center">
                     <div className="flex flex-col items-center gap-2 text-text-secondary/40">
                       <Pictogram name="production" size={28} className="opacity-40" />
                       <p className="text-sm">No entries yet</p>
@@ -1081,6 +1092,16 @@ export default function Production({ user }) {
                     <td className="px-3 py-1.5 text-right font-mono tabular-nums text-text-secondary/80">{toNumber(row.gross).toFixed(2)}</td>
                     <td className="px-3 py-1.5 text-right font-mono tabular-nums text-text-secondary/60">{toNumber(row.tare).toFixed(2)}</td>
                     <td className="px-3 py-1.5 text-right font-mono font-bold tabular-nums text-accent-gold">{toNumber(row.net).toFixed(2)}</td>
+                    <td className="px-3 py-1.5 text-right">
+                      {canModifyLocalEntry(user, row) ? (
+                        <span className="inline-flex gap-1">
+                          <button type="button" onClick={() => openEditHistory(row)} className="rounded px-2 py-1 text-xs font-semibold text-accent-gold hover:bg-accent-gold/10">Edit</button>
+                          <button type="button" onClick={() => handleDeleteHistory(row.id)} className="rounded px-2 py-1 text-xs font-semibold text-red-400 hover:bg-red-500/10">Delete</button>
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-text-secondary/60">{row.isLegacy ? 'Legacy — no reversal' : 'Read only'}</span>
+                      )}
+                    </td>
                   </tr>
                 ))
               )}
@@ -1100,12 +1121,32 @@ export default function Production({ user }) {
                   <td className="px-3 py-2 text-right font-mono font-bold tabular-nums text-accent-gold">
                     {totalNet.toFixed(2)}
                   </td>
+                  <td />
                 </tr>
               </tfoot>
             )}
           </table>
         </div>
       </section>
+
+      <EditEntryModal
+        open={Boolean(editingHistoryRow)}
+        title="Edit production entry"
+        fields={[
+          { name: 'machine_id', label: 'Machine', type: 'select', required: true, options: machines.map((machine) => ({ value: String(machine.id), label: machine.label })) },
+          { name: 'material_id', label: 'Floor material', type: 'select', required: true, options: materialsForProduction.map((material) => ({ value: String(material.id), label: material.material_name })) },
+          { name: 'size', label: 'Size' },
+          { name: 'worker_name', label: 'Worker' },
+          { name: 'gross_weight', label: 'Gross (kg)', type: 'number', min: '0', step: '0.01', required: true },
+          { name: 'tare_weight', label: 'Tare (kg)', type: 'number', min: '0', step: '0.01', required: true },
+        ]}
+        values={editHistoryForm}
+        onChange={(name, value) => setEditHistoryForm((current) => ({ ...current, [name]: value }))}
+        onClose={() => setEditingHistoryRow(null)}
+        onSubmit={handleSaveHistoryEdit}
+        submitting={savingHistoryEdit}
+        impactSummary="The previous floor deduction is restored first; the edited net weight is then used from Floor Stock. Both remain traceable in Stock Activity."
+      />
 
       {stockOverflow && (
         <StockOverflowDialog

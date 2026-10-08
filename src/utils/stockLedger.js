@@ -77,3 +77,29 @@ export function normalizeStockReceipt(receipt) {
     plantClosingKg: read('plantClosingKg', 'plant_closing_kg'),
   }
 }
+
+const RECEIPT_FIELDS = [
+  ['warehouseOpeningKg', 'warehouse_opening_kg'],
+  ['warehouseClosingKg', 'warehouse_closing_kg'],
+  ['floorOpeningKg', 'floor_opening_kg'],
+  ['floorClosingKg', 'floor_closing_kg'],
+  ['plantOpeningKg', 'plant_opening_kg'],
+  ['plantClosingKg', 'plant_closing_kg'],
+]
+
+export function normalizeImpactReceipt(receipt) {
+  if (!receipt) return null
+  return RECEIPT_FIELDS.reduce((normalized, [camel, snake]) => {
+    const raw = receipt[camel] ?? receipt[snake]
+    const value = Number(raw)
+    if (raw !== undefined && raw !== null && Number.isFinite(value)) normalized[camel] = value
+    return normalized
+  }, {})
+}
+
+export function getRecordBadge(kind) {
+  if (kind === 'activity') {
+    return { label: 'Read-only activity', tone: 'slate' }
+  }
+  return { label: 'Editable entry', tone: 'gold' }
+}

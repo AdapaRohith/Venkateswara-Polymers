@@ -493,14 +493,14 @@ def normalize_activity_row(row: dict) -> dict:
         "FLOOR_TRANSFER": "/materials",
         "PRODUCTION": "/production-log",
         "WASTAGE": "/wastage",
-        "ADJUSTMENT": "/raw-material",
+        "MANUAL_ADJUSTMENT": "/raw-material",
     }
     nouns = {
         "RAW_INPUT": "Raw material",
         "FLOOR_TRANSFER": "Floor transfer",
         "PRODUCTION": "Production",
         "WASTAGE": "Wastage",
-        "ADJUSTMENT": "Stock adjustment",
+        "MANUAL_ADJUSTMENT": "Stock adjustment",
     }
     verbs = {"CREATE": "recorded", "UPDATE": "updated", "REVERSE": "reversed",
              "LEGACY": "legacy entry"}
@@ -800,6 +800,29 @@ async def apply_location_delta(
     }
 
 
+async def warehouse_stock_receipt(conn, material_id: int, opening_kg, closing_kg) -> tuple[dict, int | None]:
+    """Build a two-location receipt for a Warehouse-only input change."""
+    floor_row = await conn.fetchrow(
+        """SELECT mt.id AS material_type_id, fmb.total_quantity_kg
+             FROM materials_master mm
+             LEFT JOIN material_types mt ON LOWER(TRIM(mt.name)) = LOWER(TRIM(mm.name))
+             LEFT JOIN floor_material_balance fmb ON fmb.material_type_id = mt.id
+            WHERE mm.id = $1 ORDER BY mt.id LIMIT 1""",
+        int(material_id),
+    )
+    floor = decimal_kg(floor_row["total_quantity_kg"] if floor_row else 0)
+    opening = decimal_kg(opening_kg)
+    closing = decimal_kg(closing_kg)
+    return ({
+        "warehouse_opening_kg": float(opening),
+        "warehouse_closing_kg": float(closing),
+        "floor_opening_kg": float(floor),
+        "floor_closing_kg": float(floor),
+        "plant_opening_kg": float(opening + floor),
+        "plant_closing_kg": float(closing + floor),
+    }, int(floor_row["material_type_id"]) if floor_row and floor_row["material_type_id"] else None)
+
+
 async def record_stock_activity(
     conn, *, action: str, source_domain: str, source_id: int | None,
     correlation_id, material_id: int, material_type_id: int | None,
@@ -826,7 +849,8 @@ async def record_stock_activity(
                $1, $2, $3, $4, $5, $6, $7,
                $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
            ) RETURNING *""",
-        action, source_domain, source_id, correlation_id, int(material_id),
+        action, source_domain, source_id, correlation_id,
+        int(material_id) if material_id is not None else None,
         int(material_type_id) if material_type_id else None, decimal_kg(quantity_kg),
         warehouse_opening,
         (warehouse_closing - warehouse_opening)
@@ -1035,7 +1059,7 @@ async def update_production_consumption(
 
 async def latest_activity_link(conn, source_domain: str, source_id: int):
     return await conn.fetchrow(
-        """SELECT id AS activity_id, correlation_id
+        """SELECT id AS activity_id, correlation_id, action AS activity_action
              FROM stock_activity_log
             WHERE source_domain = $1 AND source_id = $2
             ORDER BY id DESC LIMIT 1""",
@@ -1452,7 +1476,17 @@ async def get_batches(date_from: str = None, date_to: str = None, user=Depends(g
         where = build_date_where(date_from, date_to, vals, "rb.created_at")
         vals.append(500)
         return rows(await c.fetch(
-            f"SELECT rb.*, u.name AS created_by_name FROM raw_material_batches rb LEFT JOIN users u ON u.id = rb.created_by {where} ORDER BY rb.created_at DESC LIMIT ${len(vals)}",
+            f"""SELECT rb.*, u.name AS created_by_name,
+                       sal.id AS activity_id, sal.correlation_id,
+                       (sal.action = 'LEGACY') AS is_legacy
+                  FROM raw_material_batches rb
+                  LEFT JOIN users u ON u.id = rb.created_by
+                  LEFT JOIN LATERAL (
+                      SELECT id, correlation_id, action FROM stock_activity_log
+                       WHERE source_domain = 'RAW_INPUT' AND source_id = rb.id
+                       ORDER BY id DESC LIMIT 1
+                  ) sal ON TRUE
+                {where} ORDER BY rb.created_at DESC LIMIT ${len(vals)}""",
             *vals))
 
 
@@ -1471,16 +1505,53 @@ async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
     async with pool.acquire() as c:
         async with c.transaction():
             cur = await c.fetchrow(
-                "SELECT id, material_id, material_name, quantity_kg, note, thickness FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
+                "SELECT id, material_id, material_name, quantity_kg, note, thickness, created_by FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
             if not cur:
                 raise HTTPException(404, "Batch not found")
+            link = await latest_activity_link(c, "RAW_INPUT", batch_id)
+            if not link or link["activity_action"] == "LEGACY":
+                raise HTTPException(400, "Legacy raw material entries cannot be changed automatically")
             cur_qty = to_num(cur["quantity_kg"])
             next_mat_id = await get_or_create_material(c, next_name)
             if int(cur["material_id"]) == next_mat_id:
+                opening = to_num(await c.fetchval(
+                    "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
+                    next_mat_id))
                 await adjust_raw_total(c, next_mat_id, next_qty - cur_qty)
+                closing = opening + next_qty - cur_qty
+                impact_receipt, material_type_id = await warehouse_stock_receipt(
+                    c, next_mat_id, opening, closing)
+                activity = await record_stock_activity(
+                    c, action="UPDATE", source_domain="RAW_INPUT", source_id=batch_id,
+                    correlation_id=link["correlation_id"], material_id=next_mat_id,
+                    material_type_id=material_type_id, quantity_kg=next_qty,
+                    balances=impact_receipt, reason=next_note, created_by=user.get("id"),
+                    reverses_activity_id=link["activity_id"])
             else:
+                old_opening = to_num(await c.fetchval(
+                    "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
+                    cur["material_id"]))
                 await adjust_raw_total(c, cur["material_id"], -cur_qty)
+                old_receipt, old_type_id = await warehouse_stock_receipt(
+                    c, cur["material_id"], old_opening, old_opening - cur_qty)
+                reversed_activity = await record_stock_activity(
+                    c, action="REVERSE", source_domain="RAW_INPUT", source_id=batch_id,
+                    correlation_id=link["correlation_id"], material_id=cur["material_id"],
+                    material_type_id=old_type_id, quantity_kg=cur_qty,
+                    balances=old_receipt, reason=cur["note"], created_by=user.get("id"),
+                    reverses_activity_id=link["activity_id"])
+                new_opening = to_num(await c.fetchval(
+                    "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
+                    next_mat_id))
                 await adjust_raw_total(c, next_mat_id, next_qty)
+                impact_receipt, material_type_id = await warehouse_stock_receipt(
+                    c, next_mat_id, new_opening, new_opening + next_qty)
+                activity = await record_stock_activity(
+                    c, action="UPDATE", source_domain="RAW_INPUT", source_id=batch_id,
+                    correlation_id=link["correlation_id"], material_id=next_mat_id,
+                    material_type_id=material_type_id, quantity_kg=next_qty,
+                    balances=impact_receipt, reason=next_note, created_by=user.get("id"),
+                    reverses_activity_id=reversed_activity["id"])
             updated = await c.fetchrow(
                 "UPDATE raw_material_batches SET material_id=$1, material_name=$2, quantity_kg=$3, note=$4, thickness=$5 WHERE id=$6 RETURNING *",
                 next_mat_id, next_name, next_qty, next_note, next_thickness, batch_id)
@@ -1489,7 +1560,8 @@ async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
     await broadcast("raw_material")
-    return {"success": True, "data": dict(updated), "tolerance": tol}
+    return {"success": True, "data": dict(updated), "tolerance": tol,
+            "impact_receipt": impact_receipt, "activity_id": activity["id"]}
 
 
 @app.delete("/raw-material/batches/{batch_id}")
@@ -1499,13 +1571,28 @@ async def delete_batch(batch_id: int, user=Depends(get_user)):
         raise HTTPException(400, "Invalid batch id")
     async with pool.acquire() as c:
         async with c.transaction():
-            cur = await c.fetchrow("SELECT id, material_id, quantity_kg FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
+            cur = await c.fetchrow("SELECT id, material_id, quantity_kg, note FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
             if not cur:
                 raise HTTPException(404, "Batch not found")
+            link = await latest_activity_link(c, "RAW_INPUT", batch_id)
+            if not link or link["activity_action"] == "LEGACY":
+                raise HTTPException(400, "Legacy raw material entries cannot be deleted automatically")
+            opening = to_num(await c.fetchval(
+                "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
+                cur["material_id"]))
             await reverse_raw_batch(c, cur)
+            impact_receipt, material_type_id = await warehouse_stock_receipt(
+                c, cur["material_id"], opening, opening - to_num(cur["quantity_kg"]))
+            activity = await record_stock_activity(
+                c, action="REVERSE", source_domain="RAW_INPUT", source_id=batch_id,
+                correlation_id=link["correlation_id"], material_id=cur["material_id"],
+                material_type_id=material_type_id, quantity_kg=cur["quantity_kg"],
+                balances=impact_receipt, reason=cur["note"], created_by=user.get("id"),
+                reverses_activity_id=link["activity_id"])
             await c.execute("DELETE FROM raw_material_batches WHERE id = $1", batch_id)
     await broadcast("raw_material")
-    return {"success": True}
+    return {"success": True, "impact_receipt": impact_receipt,
+            "activity_id": activity["id"]}
 
 
 @app.post("/raw-material/batches/bulk-delete")
@@ -1571,17 +1658,26 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
                    DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2, updated_at = NOW()
                    RETURNING total_quantity_kg, updated_at""",
                 mat_id, qty)
-            await c.execute(
+            batch = await c.fetchrow(
                 """INSERT INTO raw_material_batches
                        (material_id, material_name, quantity_kg, created_by, note, thickness, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))""",
+                   VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW())) RETURNING *""",
                 mat_id, mat_name, qty, user["id"], note or None, thickness, entry_ts)
+            opening = decimal_kg(upsert["total_quantity_kg"]) - decimal_kg(qty)
+            impact_receipt, material_type_id = await warehouse_stock_receipt(
+                c, mat_id, opening, upsert["total_quantity_kg"])
+            activity = await record_stock_activity(
+                c, action="CREATE", source_domain="RAW_INPUT", source_id=batch["id"],
+                correlation_id=uuid4(), material_id=mat_id,
+                material_type_id=material_type_id, quantity_kg=qty,
+                balances=impact_receipt, reason=note, created_by=user["id"])
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "raw_add", "mat": mat_name})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
     await broadcast("raw_material")
     return {"message": "Raw material added successfully",
-            "data": {"material_name": mat_name, "total_quantity_kg": upsert["total_quantity_kg"]},
+            "data": {"id": batch["id"], "material_name": mat_name, "total_quantity_kg": upsert["total_quantity_kg"]},
+            "impact_receipt": impact_receipt, "activity_id": activity["id"],
             "tolerance": tol}
 
 
@@ -1605,6 +1701,13 @@ async def adjust_raw_material(request: Request, user=Depends(get_user)):
             result = await apply_manual_stock_adjustment(
                 c, material["id"], operation, quantity_kg, reason, created_by,
             )
+            impact_receipt, material_type_id = await warehouse_stock_receipt(
+                c, material["id"], result["opening_quantity_kg"], result["closing_quantity_kg"])
+            activity = await record_stock_activity(
+                c, action="CREATE", source_domain="MANUAL_ADJUSTMENT", source_id=None,
+                correlation_id=uuid4(), material_id=material["id"],
+                material_type_id=material_type_id, quantity_kg=quantity_kg,
+                balances=impact_receipt, reason=reason, created_by=created_by)
     await broadcast("raw_material")
     return {
         "message": "Stock adjusted successfully",
@@ -1614,6 +1717,8 @@ async def adjust_raw_material(request: Request, user=Depends(get_user)):
             "quantity_kg": quantity_kg,
             **result,
         },
+        "impact_receipt": impact_receipt,
+        "activity_id": activity["id"],
     }
 
 
@@ -1783,12 +1888,12 @@ async def get_floor_transactions(date_from: str = None, date_to: str = None, use
         return rows(await c.fetch(
             f"""SELECT mm.*, m.name AS material_name, u.name AS created_by_name,
                        sal.id AS activity_id, sal.correlation_id,
-                       (mm.material_type_id IS NULL) AS is_legacy
+                       (sal.action = 'LEGACY' OR sal.id IS NULL OR mm.material_type_id IS NULL) AS is_legacy
                   FROM material_movements mm
                   LEFT JOIN materials_master m ON m.id = mm.material_id
                   LEFT JOIN users u ON u.id = mm.created_by
                   LEFT JOIN LATERAL (
-                      SELECT id, correlation_id FROM stock_activity_log
+                      SELECT id, correlation_id, action FROM stock_activity_log
                        WHERE source_domain = 'FLOOR_TRANSFER' AND source_id = mm.id
                        ORDER BY id DESC LIMIT 1
                   ) sal ON TRUE
@@ -1817,7 +1922,8 @@ async def update_floor_tx(mv_id: int, request: Request, user=Depends(get_user)):
                 raise HTTPException(400, "Only floor-transfer entries can be edited here")
             link = await latest_activity_link(c, "FLOOR_TRANSFER", mv_id)
             current = {**dict(cur), **(dict(link) if link else {})}
-            if not current.get("material_type_id"):
+            if (not current.get("material_type_id")
+                    or current.get("activity_action") == "LEGACY"):
                 raise HTTPException(400, "Legacy floor entries cannot be changed automatically")
             next_mat_id = await get_or_create_material(c, mat_name)
             next_mt_id = await get_or_create_material_type(c, mat_name)
@@ -1860,7 +1966,8 @@ async def delete_floor_tx(mv_id: int, user=Depends(get_user)):
                 raise HTTPException(400, "Only floor-transfer entries can be deleted here")
             link = await latest_activity_link(c, "FLOOR_TRANSFER", mv_id)
             current = {**dict(cur), **(dict(link) if link else {})}
-            if not current.get("material_type_id"):
+            if (not current.get("material_type_id")
+                    or current.get("activity_action") == "LEGACY"):
                 raise HTTPException(400, "Legacy floor entries cannot be reversed automatically")
             receipt = await reverse_floor_transfer(c, current, user.get("id"))
             await c.execute("DELETE FROM material_movements WHERE id = $1", mv_id)
@@ -1890,7 +1997,8 @@ async def bulk_delete_floor_tx(request: Request, user=Depends(get_user)):
             for r_ in rs_:
                 link = await latest_activity_link(c, "FLOOR_TRANSFER", r_["id"])
                 current = {**dict(r_), **(dict(link) if link else {})}
-                if not current.get("material_type_id"):
+                if (not current.get("material_type_id")
+                        or current.get("activity_action") == "LEGACY"):
                     raise HTTPException(400, "Legacy floor entries cannot be reversed automatically")
                 receipts.append(await reverse_floor_transfer(c, current, user.get("id")))
             await c.execute("DELETE FROM material_movements WHERE id = ANY($1::int[])", ids)
@@ -2070,11 +2178,17 @@ async def get_production_logs(machine_id: str = None, date_from: str = None, dat
                        pl.worker_name, pl.gross_weight, pl.tare_weight, pl.created_at,
                        pl.created_by,
                        m.name AS machine_name,
-                       COALESCE(mt.name, mat.name) AS material_name
+                       COALESCE(mt.name, mat.name) AS material_name,
+                       (sal.action = 'LEGACY' OR sal.id IS NULL) AS is_legacy
                   FROM production_logs pl
                   LEFT JOIN machines m ON m.id = pl.machine_id
                   LEFT JOIN material_types mt ON mt.id = pl.material_type_id
                   LEFT JOIN materials_master mat ON mat.id = pl.material_id
+                  LEFT JOIN LATERAL (
+                      SELECT id, action FROM stock_activity_log
+                       WHERE source_domain = 'PRODUCTION' AND source_id = pl.id
+                       ORDER BY id DESC LIMIT 1
+                  ) sal ON TRUE
                 {where} ORDER BY pl.created_at DESC LIMIT ${len(vals)}""",
             *vals)
         return [{**dict(r_), "net_weight": to_num(r_["gross_weight"]) - to_num(r_["tare_weight"])} for r_ in rs_]
@@ -2109,7 +2223,8 @@ async def update_production_log(log_id: int, request: Request, user=Depends(get_
             require_entry_owner(user, cur["created_by"])
             movement = await consumption_movement_for_log(c, log_id)
             link = await latest_activity_link(c, "PRODUCTION", log_id)
-            if not movement or not movement["material_type_id"]:
+            if (not movement or not movement["material_type_id"]
+                    or (link and link["activity_action"] == "LEGACY")):
                 raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
             recorded = {
                 **dict(movement),
@@ -2167,7 +2282,8 @@ async def delete_production_log(log_id: int, user=Depends(get_user)):
             require_entry_owner(user, cur["created_by"])
             movement = await consumption_movement_for_log(c, log_id)
             link = await latest_activity_link(c, "PRODUCTION", log_id)
-            if not movement or not movement["material_type_id"]:
+            if (not movement or not movement["material_type_id"]
+                    or (link and link["activity_action"] == "LEGACY")):
                 raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
             recorded = {
                 **dict(movement),
@@ -2200,7 +2316,8 @@ async def bulk_delete_production_logs(request: Request, user=Depends(get_user)):
             for r_ in rs_:
                 movement = await consumption_movement_for_log(c, r_["id"])
                 link = await latest_activity_link(c, "PRODUCTION", r_["id"])
-                if not movement or not movement["material_type_id"]:
+                if (not movement or not movement["material_type_id"]
+                        or (link and link["activity_action"] == "LEGACY")):
                     raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
                 recorded = {
                     **dict(movement),
@@ -2613,8 +2730,16 @@ async def create_wastage(request: Request, user=Depends(get_user)):
             r_ = await c.fetchrow(
                 "INSERT INTO wastage_data (id, sno, date, weight, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id, sno, date, weight, created_by",
                 seq["next_id"], seq["next_sno"], waste_date, float(weight), user_id_from_token(user))
+            activity = await record_stock_activity(
+                c, action="CREATE", source_domain="WASTAGE", source_id=r_["id"],
+                correlation_id=uuid4(), material_id=None, material_type_id=None,
+                quantity_kg=weight, balances={},
+                reason="Reporting only — no warehouse or floor stock change",
+                created_by=user_id_from_token(user))
     await broadcast("wastage")
-    return AppResponse(status_code=201, content={"message": "Wastage recorded", "data": dict(r_)})
+    return AppResponse(status_code=201, content={"message": "Wastage recorded", "data": dict(r_),
+                                                  "activity_id": activity["id"],
+                                                  "stock_impact": "No warehouse or floor stock change"})
 
 
 @app.get("/wastage")
@@ -2623,7 +2748,41 @@ async def get_wastage(date_from: str = None, date_to: str = None, user=Depends(g
         vals = []
         where = build_date_where(date_from, date_to, vals, "date")
         vals.append(500)
-        return rows(await c.fetch(f"SELECT id, sno, date, weight, created_by FROM wastage_data {where} ORDER BY sno DESC LIMIT ${len(vals)}", *vals))
+        return rows(await c.fetch(f"SELECT id, sno, date, weight, created_by, (created_by IS NULL) AS is_legacy FROM wastage_data {where} ORDER BY sno DESC LIMIT ${len(vals)}", *vals))
+
+
+@app.put("/wastage/{wastage_id}")
+async def update_wastage(wastage_id: int, request: Request, user=Depends(get_user)):
+    body = await request.json()
+    waste_date = parse_required_date(body.get("date"))
+    weight = to_num(body.get("weight"))
+    if wastage_id <= 0 or weight <= 0:
+        raise HTTPException(400, "A valid entry and weight greater than zero are required")
+    async with pool.acquire() as c:
+        async with c.transaction():
+            current = await c.fetchrow(
+                "SELECT id, created_by FROM wastage_data WHERE id = $1 FOR UPDATE",
+                wastage_id)
+            if not current:
+                raise HTTPException(404, "Wastage entry not found")
+            if current["created_by"] is None:
+                raise HTTPException(400, "Legacy wastage entries cannot be changed automatically")
+            require_entry_owner(user, current["created_by"])
+            link = await latest_activity_link(c, "WASTAGE", wastage_id)
+            updated = await c.fetchrow(
+                "UPDATE wastage_data SET date = $1, weight = $2 WHERE id = $3 RETURNING id, sno, date, weight, created_by",
+                waste_date, weight, wastage_id)
+            activity = await record_stock_activity(
+                c, action="UPDATE", source_domain="WASTAGE", source_id=wastage_id,
+                correlation_id=link["correlation_id"] if link else uuid4(),
+                material_id=None, material_type_id=None, quantity_kg=weight,
+                balances={}, reason="Reporting only — no warehouse or floor stock change",
+                created_by=user_id_from_token(user),
+                reverses_activity_id=link["activity_id"] if link else None)
+    await broadcast("wastage")
+    return {"message": "Wastage entry updated", "data": dict(updated),
+            "stock_impact": "No warehouse or floor stock change",
+            "activity_id": activity["id"]}
 
 
 @app.delete("/wastage/{wastage_id}")
@@ -2633,14 +2792,26 @@ async def delete_wastage(wastage_id: int, user=Depends(get_user)):
     async with pool.acquire() as c:
         async with c.transaction():
             current = await c.fetchrow(
-                "SELECT id, sno, created_by FROM wastage_data WHERE id = $1 FOR UPDATE",
+                "SELECT id, sno, weight, created_by FROM wastage_data WHERE id = $1 FOR UPDATE",
                 wastage_id)
             if not current:
                 raise HTTPException(404, "Wastage entry not found")
+            if current["created_by"] is None:
+                raise HTTPException(400, "Legacy wastage entries cannot be deleted automatically")
             require_entry_owner(user, current["created_by"])
+            link = await latest_activity_link(c, "WASTAGE", wastage_id)
+            activity = await record_stock_activity(
+                c, action="REVERSE", source_domain="WASTAGE", source_id=wastage_id,
+                correlation_id=link["correlation_id"] if link else uuid4(),
+                material_id=None, material_type_id=None, quantity_kg=current["weight"],
+                balances={}, reason="Reporting entry deleted — no stock change",
+                created_by=user_id_from_token(user),
+                reverses_activity_id=link["activity_id"] if link else None)
             r_ = await c.fetchrow("DELETE FROM wastage_data WHERE id = $1 RETURNING id, sno", wastage_id)
     await broadcast("wastage")
-    return {"message": "Wastage entry deleted", "deleted": dict(r_)}
+    return {"message": "Wastage entry deleted", "deleted": dict(r_),
+            "activity_id": activity["id"],
+            "stock_impact": "No warehouse or floor stock change"}
 
 
 # ── Trading ──

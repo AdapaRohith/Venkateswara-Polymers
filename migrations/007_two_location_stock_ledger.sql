@@ -116,6 +116,25 @@ WHERE NOT EXISTS (
 );
 
 INSERT INTO stock_activity_log (
+    action, source_domain, source_id, correlation_id, quantity_kg,
+    reason, created_by, occurred_at
+)
+SELECT
+    'LEGACY', 'WASTAGE', wd.id,
+    (substr(md5('WASTAGE:' || wd.id::text), 1, 8) || '-' ||
+     substr(md5('WASTAGE:' || wd.id::text), 9, 4) || '-' ||
+     substr(md5('WASTAGE:' || wd.id::text), 13, 4) || '-' ||
+     substr(md5('WASTAGE:' || wd.id::text), 17, 4) || '-' ||
+     substr(md5('WASTAGE:' || wd.id::text), 21, 12))::uuid,
+    wd.weight, 'Reporting only — no warehouse or floor stock change',
+    wd.created_by, wd.date::timestamp
+FROM wastage_data wd
+WHERE NOT EXISTS (
+    SELECT 1 FROM stock_activity_log sal
+    WHERE sal.source_domain = 'WASTAGE' AND sal.source_id = wd.id
+);
+
+INSERT INTO stock_activity_log (
     action, source_domain, source_id, correlation_id, material_id,
     quantity_kg, reason, created_by, occurred_at
 )
