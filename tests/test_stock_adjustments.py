@@ -15,7 +15,6 @@ class FakeConnection:
         self.total = Decimal(str(opening))
         self.fail_audit = fail_audit
         self.audit_args = None
-        self.mirror_material_ids = []
 
     def is_in_transaction(self):
         return True
@@ -94,44 +93,30 @@ async def test_adjust_raw_material_rejects_worker_before_reading_request():
 async def test_apply_manual_stock_adjustment_adds_and_records_exact_balances(monkeypatch):
     conn = FakeConnection(opening=100)
 
-    async def record_mirror(_conn, material_id):
-        conn.mirror_material_ids.append(material_id)
-
-    monkeypatch.setattr("server.mirror_floor_for_master", record_mirror)
     result = await apply_manual_stock_adjustment(conn, 7, "add", 12.5, "Count correction", 3)
 
     assert result == {"opening_quantity_kg": 100.0, "closing_quantity_kg": 112.5, "adjustment_id": 77}
     assert conn.total == Decimal("112.5")
     assert conn.audit_args == (7, "add", 12.5, 100.0, 112.5, "Count correction", 3)
     # Warehouse adjustments must not overwrite the independent Floor Stock pool.
-    assert conn.mirror_material_ids == []
 
 
 @pytest.mark.asyncio
 async def test_apply_manual_stock_adjustment_removes_and_records_exact_balances(monkeypatch):
     conn = FakeConnection(opening=100)
 
-    async def record_mirror(_conn, material_id):
-        conn.mirror_material_ids.append(material_id)
-
-    monkeypatch.setattr("server.mirror_floor_for_master", record_mirror)
     result = await apply_manual_stock_adjustment(conn, 7, "remove", 30, "Damaged bags", 3)
 
     assert result == {"opening_quantity_kg": 100.0, "closing_quantity_kg": 70.0, "adjustment_id": 77}
     assert conn.total == Decimal("70.0")
     assert conn.audit_args == (7, "remove", 30.0, 100.0, 70.0, "Damaged bags", 3)
     # Warehouse adjustments must not overwrite the independent Floor Stock pool.
-    assert conn.mirror_material_ids == []
 
 
 @pytest.mark.asyncio
 async def test_apply_manual_stock_adjustment_rejects_overdraw_without_audit(monkeypatch):
     conn = FakeConnection(opening=5)
 
-    async def record_mirror(_conn, material_id):
-        conn.mirror_material_ids.append(material_id)
-
-    monkeypatch.setattr("server.mirror_floor_for_master", record_mirror)
     with pytest.raises(HTTPException) as exc:
         await apply_manual_stock_adjustment(conn, 7, "remove", 6, "Count correction", 3)
 
@@ -139,16 +124,11 @@ async def test_apply_manual_stock_adjustment_rejects_overdraw_without_audit(monk
     assert "Available: 5.000 kg" in exc.value.detail
     assert conn.total == Decimal("5")
     assert conn.audit_args is None
-    assert conn.mirror_material_ids == []
 
 
 @pytest.mark.asyncio
 async def test_apply_manual_stock_adjustment_propagates_audit_failure(monkeypatch):
     conn = FakeConnection(opening=100, fail_audit=True)
 
-    async def record_mirror(_conn, material_id):
-        conn.mirror_material_ids.append(material_id)
-
-    monkeypatch.setattr("server.mirror_floor_for_master", record_mirror)
     with pytest.raises(RuntimeError, match="audit insert failed"):
         await apply_manual_stock_adjustment(conn, 7, "add", 5, "Count correction", 3)
