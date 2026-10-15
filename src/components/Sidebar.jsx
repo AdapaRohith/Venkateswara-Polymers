@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { Bug, MessageSquareWarning } from 'lucide-react'
+import {
+  ArrowLeftRight, BarChart3, BookOpenCheck, Boxes, Bug, CalendarCheck2, CalendarClock, Cog, Factory,
+  MessageSquareWarning, Search, Undo2,
+} from 'lucide-react'
 import avlokaiLogo from '../../avlokai_logo.png'
 import IssueReportDialog from './IssueReportDialog'
 
@@ -51,6 +54,16 @@ const Icon = {
     </svg>
   ),
   issues: <MessageSquareWarning className="w-4 h-4" />,
+  stock: <Boxes className="w-4 h-4" />,
+  opening: <CalendarClock className="w-4 h-4" />,
+  closing: <CalendarCheck2 className="w-4 h-4" />,
+  ledger: <BookOpenCheck className="w-4 h-4" />,
+  transfer: <ArrowLeftRight className="w-4 h-4" />,
+  machine: <Cog className="w-4 h-4" />,
+  returns: <Undo2 className="w-4 h-4" />,
+  usage: <BarChart3 className="w-4 h-4" />,
+  search: <Search className="w-4 h-4" />,
+  batches: <Factory className="w-4 h-4" />,
   trading: (
     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.75}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
@@ -63,12 +76,28 @@ const Icon = {
   ),
 }
 
+const stockControlItems = (isOwner) => [
+  { name: 'Stock Overview', path: '/stock', icon: Icon.stock },
+  { name: 'Opening Stock', path: '/stock/ledger?view=opening', icon: Icon.opening },
+  { name: 'Closing Stock', path: '/stock/ledger?view=closing', icon: Icon.closing },
+  { name: 'AM / PM Shift Ledger', path: '/stock/ledger?view=shifts', icon: Icon.ledger },
+  { name: 'Stock Transfers', path: '/stock/transfers', icon: Icon.transfer },
+  { name: 'Machine Stock', path: '/stock/machines', icon: Icon.machine },
+  ...(isOwner ? [{ name: 'Return Stock', path: '/stock/returns', icon: Icon.returns }] : []),
+  { name: 'Day-wise Usage', path: '/stock/usage', icon: Icon.usage },
+  { name: 'Search Stock', path: '/stock/search', icon: Icon.search },
+]
+
 const ownerNavGroups = [
   {
     label: 'Overview',
     items: [
       { name: 'Dashboard', path: '/', icon: Icon.dashboard },
     ],
+  },
+  {
+    label: 'Stock Control',
+    items: stockControlItems(true),
   },
   {
     label: 'Inventory',
@@ -81,6 +110,7 @@ const ownerNavGroups = [
   {
     label: 'Production',
     items: [
+      { name: 'Production Batches', path: '/production-batches', icon: Icon.batches },
       { name: 'Production Log', path: '/production-log', icon: Icon.production },
       { name: 'Production Orders', path: '/production-orders', icon: Icon.orders },
       { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
@@ -111,12 +141,36 @@ const workerNavGroups = [
   {
     label: 'Work',
     items: [
+      { name: 'Production Batches', path: '/production-batches', icon: Icon.batches },
       { name: 'Production Log', path: '/production-log', icon: Icon.production },
       { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
       { name: 'Stock Activity', path: '/stock-activity', icon: Icon.reports },
     ],
   },
+  {
+    label: 'Stock Control',
+    items: stockControlItems(false),
+  },
 ]
+
+// Nav entries can carry a query (?view=opening); match on path and query so
+// "Opening Stock" and "Closing Stock" are highlighted independently.
+function isItemActive(item, location) {
+  const [path, query] = item.path.split('?')
+  if (path === '/' || path === '/stock') {
+    if (location.pathname !== path) return false
+  } else if (!location.pathname.startsWith(path)) {
+    return false
+  }
+  if (!query) return true
+  const want = new URLSearchParams(query)
+  const have = new URLSearchParams(location.search)
+  for (const [key, value] of want) {
+    const current = have.get(key) || (key === 'view' ? 'shifts' : '')
+    if (current !== value) return false
+  }
+  return true
+}
 
 const flatOwner = ownerNavGroups.flatMap(g => g.items)
 const flatWorker = workerNavGroups.flatMap(g => g.items)
@@ -134,13 +188,13 @@ export default function Sidebar({ user, onLogout }) {
   const flatItems = isWorker ? flatWorker : flatOwner
 
   const quickPaths = isWorker
-    ? ['/production-log', '/wastage']
-    : ['/', '/production-log', '/production-orders', '/reports']
+    ? ['/production-batches', '/production-log', '/stock']
+    : ['/', '/stock', '/production-batches', '/stock/ledger?view=closing']
   const quickItems = quickPaths.map(p => flatItems.find(i => i.path === p)).filter(Boolean)
 
   const currentItem = [...flatItems]
     .sort((a, b) => b.path.length - a.path.length)
-    .find(i => i.path === '/' ? location.pathname === '/' : location.pathname.startsWith(i.path))
+    .find(i => isItemActive(i, location))
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setOpen(false))
@@ -193,9 +247,9 @@ export default function Sidebar({ user, onLogout }) {
               key={item.path}
               to={item.path}
               end={item.path === '/'}
-              className={({ isActive }) =>
+              className={() =>
                 `flex-1 flex flex-col items-center gap-1 px-2 py-2 rounded-md text-center transition-colors ${
-                  isActive
+                  isItemActive(item, location)
                     ? 'bg-accent-gold-muted text-accent-gold'
                     : 'text-text-secondary hover:text-text-primary hover:bg-bg-row-hover'
                 }`
@@ -274,22 +328,19 @@ export default function Sidebar({ user, onLogout }) {
                     <NavLink
                       to={item.path}
                       end={item.path === '/'}
-                      className={({ isActive }) =>
+                      aria-current={isItemActive(item, location) ? 'page' : undefined}
+                      className={() =>
                         `flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-md font-medium transition-all duration-150 ${
-                          isActive
+                          isItemActive(item, location)
                             ? 'bg-accent-gold-muted text-accent-gold'
                             : 'text-text-secondary hover:text-text-primary hover:bg-bg-row-hover'
                         }`
                       }
                     >
-                      {({ isActive }) => (
-                        <>
-                          <span className={isActive ? 'text-accent-gold' : 'text-text-secondary/70'}>
-                            {item.icon}
-                          </span>
-                          <span>{item.name}</span>
-                        </>
-                      )}
+                      <span className={isItemActive(item, location) ? 'text-accent-gold' : 'text-text-secondary/70'}>
+                        {item.icon}
+                      </span>
+                      <span>{item.name}</span>
                     </NavLink>
                   </li>
                 ))}

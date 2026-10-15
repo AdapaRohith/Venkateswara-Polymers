@@ -17,6 +17,14 @@ import MachineReports from './pages/MachineReports'
 import Trading from './pages/Trading'
 import IssueReports from './pages/IssueReports'
 import StockActivity from './pages/StockActivity'
+import StockOverview from './pages/StockOverview'
+import StockLedger from './pages/StockLedger'
+import StockTransfers from './pages/StockTransfers'
+import MachineStock from './pages/MachineStock'
+import ProductionBatches from './pages/ProductionBatches'
+import StockReturns from './pages/StockReturns'
+import StockUsage from './pages/StockUsage'
+import StockSearch from './pages/StockSearch'
 import { getOrders } from './utils/orders'
 
 const AUTH_TOKEN_KEY = 'token'
@@ -117,6 +125,88 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
                       user={user}
                       allowedRoles={['owner', 'worker']}
                       element={<StockActivity />}
+                    />
+                  }
+                />
+
+                {/* ─── Stock control (IPMS) ─── */}
+                <Route
+                  path="/stock"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner', 'worker']}
+                      element={<StockOverview user={user} />}
+                    />
+                  }
+                />
+                <Route
+                  path="/stock/ledger"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner', 'worker']}
+                      element={<StockLedger user={user} />}
+                    />
+                  }
+                />
+                <Route
+                  path="/stock/transfers"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner', 'worker']}
+                      element={<StockTransfers user={user} />}
+                    />
+                  }
+                />
+                <Route
+                  path="/stock/machines"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner', 'worker']}
+                      element={<MachineStock />}
+                    />
+                  }
+                />
+                <Route
+                  path="/stock/returns"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner']}
+                      element={<StockReturns user={user} />}
+                    />
+                  }
+                />
+                <Route
+                  path="/stock/usage"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner', 'worker']}
+                      element={<StockUsage />}
+                    />
+                  }
+                />
+                <Route
+                  path="/stock/search"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner', 'worker']}
+                      element={<StockSearch />}
+                    />
+                  }
+                />
+                <Route
+                  path="/production-batches"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner', 'worker']}
+                      element={<ProductionBatches user={user} />}
                     />
                   }
                 />

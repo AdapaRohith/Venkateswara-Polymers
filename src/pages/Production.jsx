@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import useSSE from '../hooks/useSSE'
 import useFlashRows from '../hooks/useFlashRows'
+import useStockMeta from '../hooks/useStockMeta'
+import { ShiftBadge } from '../components/ipms/Kit'
 import EditEntryModal from '../components/EditEntryModal'
 import StockImpactReceipt from '../components/StockImpactReceipt'
 import StockOverflowDialog, { parseAvailableKg } from '../components/StockOverflowDialog'
@@ -88,6 +90,8 @@ function normalizeHistoryEntry(log) {
     net,
     createdBy: log.createdBy ?? log.created_by,
     isLegacy: Boolean(log.isLegacy ?? log.is_legacy),
+    shift: log.shift,
+    batchNo: log.batchNo ?? log.batch_no,
   }
 }
 
@@ -180,6 +184,10 @@ export default function Production({ user }) {
   const [tareWeight, setTareWeight] = useState('')
   const [directNetWeight, setDirectNetWeight] = useState('')
   const [productionDate, setProductionDate] = useState(getTodayDate)
+  // '' = let the live clock decide (night shift after midnight stays on the previous day's PM).
+  const [shift, setShift] = useState('')
+  const stockMeta = useStockMeta()
+  const effectiveShift = shift || (productionDate === getTodayDate() ? stockMeta?.live_shift : 'AM') || 'AM'
   const [history, setHistory] = useState([])
   const [historyMachineFilter, setHistoryMachineFilter] = useState('')
   useFlashRows(history.length)
@@ -342,6 +350,8 @@ export default function Production({ user }) {
           net: log.net_weight,
           createdBy: log.created_by,
           isLegacy: log.is_legacy,
+          shift: log.shift,
+          batch_no: log.batch_no,
         })
       })
 
@@ -478,6 +488,7 @@ export default function Production({ user }) {
         gross_weight: gross,
         tare_weight: tare,
         production_date: productionDate || getTodayDate(),
+        ...(shift ? { shift } : {}),
       })
 
       // Find material name from assigned stock or floor stock for history display
@@ -557,7 +568,7 @@ export default function Production({ user }) {
     } finally {
       setSubmitting(false)
     }
-  }, [activeMachine, assignedStock, grossWeight, tareWeight, directNetWeight, materialId, size, workerName, isValid, materialsForProduction, toast, productionDate, user])
+  }, [activeMachine, assignedStock, grossWeight, tareWeight, directNetWeight, materialId, size, workerName, isValid, materialsForProduction, toast, productionDate, shift, user])
 
   const openEditHistory = useCallback((row) => {
     setEditingHistoryRow(row)
@@ -736,7 +747,7 @@ export default function Production({ user }) {
                   {isBackdated && (
                     <button
                       type="button"
-                      onClick={() => setProductionDate(getTodayDate())}
+                      onClick={() => { setProductionDate(getTodayDate()); setShift('') }}
                       className="absolute right-10 text-[10px] font-bold uppercase tracking-wider text-orange-400 hover:text-orange-300 transition-colors"
                     >
                       Reset
@@ -746,10 +757,29 @@ export default function Production({ user }) {
               </div>
             </div>
 
-            {isBackdated && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary">Shift</span>
+              <div role="radiogroup" aria-label="Shift" className="inline-flex overflow-hidden rounded-lg border border-border-default">
+                {['AM', 'PM'].map((s) => (
+                  <button key={s} type="button" role="radio" aria-checked={effectiveShift === s}
+                    onClick={() => setShift(s)}
+                    className={`px-3 py-1.5 text-xs font-bold transition ${
+                      effectiveShift === s
+                        ? s === 'AM' ? 'bg-amber-500 text-black' : 'bg-violet-600 text-white'
+                        : 'bg-bg-input text-text-secondary hover:text-text-primary'
+                    }`}>
+                    {s === 'AM' ? 'AM · Morning' : 'PM · Night'}
+                  </button>
+                ))}
+              </div>
+              {!shift && <span className="text-[11px] text-text-secondary">auto from clock</span>}
+            </div>
+
+            {(isBackdated || shift) && (
               <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-orange-400">
                 <Pictogram name="warning" size={13} />
-                Logging for {formatDateIST(productionDate)} — saved at 09:00:00 am
+                Logging for {formatDateIST(productionDate)} · <ShiftBadge shift={effectiveShift} /> shift
+                {isBackdated && ` — saved at ${effectiveShift === 'PM' ? '09:00 pm' : '09:00 am'}`}
               </p>
             )}
           </div>
@@ -1075,7 +1105,10 @@ export default function Production({ user }) {
                     `}
                   >
                     <td className="whitespace-nowrap px-3 py-1.5 text-text-primary/80">{formatDateIST(row.time)}</td>
-                    <td className="whitespace-nowrap px-3 py-1.5 text-text-secondary">{formatTimeIST(row.time)}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-text-secondary">
+                      <span className="inline-flex items-center gap-1.5">{formatTimeIST(row.time)} <ShiftBadge shift={row.shift} /></span>
+                      {row.batchNo && <span className="block font-mono text-[10px] text-text-secondary/70">{row.batchNo}</span>}
+                    </td>
                     <td className="whitespace-nowrap px-3 py-1.5">
                       <span className={`
                         inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-semibold

@@ -1,6 +1,8 @@
 import axios from 'axios'
 
-export const BASE_URL = 'https://vp-api.avlokai.com'
+// VITE_API_URL lets a staging build talk to a staging API; production builds
+// leave it unset.
+export const BASE_URL = import.meta.env?.VITE_API_URL || 'https://vp-api.avlokai.com'
 const AUTH_TOKEN_KEY = 'token'
 
 const shouldLogApiCalls = () => {

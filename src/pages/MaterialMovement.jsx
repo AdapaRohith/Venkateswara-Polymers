@@ -9,6 +9,7 @@ import StockOverflowDialog, { parseAvailableKg } from '../components/StockOverfl
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { formatDate, formatTime, todayIST } from '../utils/datetime'
+import { ShiftToggle } from '../components/ipms/Kit'
 import {
   canModifyLocalEntry,
   deleteFloorTransaction,
@@ -75,6 +76,7 @@ export default function MaterialMovement({ user }) {
     movement_type: 'FLOOR_TRANSFER',
     direction: 'OUT',
     note: '',
+    shift: '',
   })
 
   // Empty means today, which is the common case; a transfer written up the next
@@ -131,6 +133,7 @@ export default function MaterialMovement({ user }) {
         material_name: form.material_name,
         quantity_kg: qty,
         date: entryDate,
+        ...(form.shift ? { shift: form.shift } : {}),
         direction: form.direction,
         movement_type: form.movement_type,
         note: form.note || undefined,
@@ -281,6 +284,8 @@ export default function MaterialMovement({ user }) {
                   />
                 </div>
               </div>
+
+              <ShiftToggle value={form.shift} onChange={(shift) => setForm((current) => ({ ...current, shift }))} />
 
               <div>
                 <label className={labelClass}>

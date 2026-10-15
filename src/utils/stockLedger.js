@@ -116,6 +116,8 @@ export function activityActionLabel(sourceDomain, action) {
     PRODUCTION: 'Used in Production',
     WASTAGE: 'Wastage Reported',
     MANUAL_ADJUSTMENT: 'Corrected',
+    STOCK_TRANSFER: 'Moved',
+    STOCK_RETURN: 'Returned',
   }[source] || 'Recorded'
 }
 
@@ -132,6 +134,9 @@ export function serializeActivityFilters(filters = {}) {
     sourceDomain: 'source_domain',
     action: 'action',
     operatorId: 'operator_id',
+    shift: 'shift',
+    location: 'location',
+    includeReturns: 'include_returns',
     limit: 'limit',
     offset: 'offset',
   }

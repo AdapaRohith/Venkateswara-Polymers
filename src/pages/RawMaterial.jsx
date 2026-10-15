@@ -9,6 +9,8 @@ import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
 import { formatDate, formatTime, todayIST } from '../utils/datetime'
+import { ShiftToggle } from '../components/ipms/Kit'
+import { BAG_KG } from '../utils/units'
 import { previewStockAdjustment, validateStockAdjustment } from '../utils/stockAdjustment'
 import {
   canModifyLocalEntry,
@@ -258,6 +260,7 @@ export default function RawMaterial({ user }) {
     date: '',
     quantityUnit: 'kg',
     note: '',
+    shift: '',
   })
 
   // A stock entry is often keyed in a day or two after the lorry arrived, so the
@@ -362,7 +365,7 @@ export default function RawMaterial({ user }) {
       return
     }
 
-    const qtyInKg = addForm.quantityUnit === 'tons' ? qty * 1000 : qty
+    const qtyInKg = addForm.quantityUnit === 'tons' ? qty * 1000 : addForm.quantityUnit === 'bags' ? qty * BAG_KG : qty
 
     setSubmittingAdd(true)
     try {
@@ -371,6 +374,7 @@ export default function RawMaterial({ user }) {
         material_name: addForm.material_name.trim(),
         quantity_kg: qtyInKg,
         date: entryDate,
+        ...(addForm.shift ? { shift: addForm.shift } : {}),
         note: addForm.note?.trim() || '',
       })
       setLastReceipt(impactReceiptFromResponse(data))
@@ -491,6 +495,9 @@ export default function RawMaterial({ user }) {
             />
           </div>
 
+          <ShiftToggle value={addForm.shift || ''} disabled={submittingAdd}
+            onChange={(shift) => setAddForm((current) => ({ ...current, shift }))} />
+
           <div className="space-y-1.5">
             <label className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
               <Pictogram name="weight" size={13} className="text-text-secondary/70" />
@@ -516,6 +523,7 @@ export default function RawMaterial({ user }) {
                 disabled={submittingAdd}
               >
                 <option value="kg">kg</option>
+                <option value="bags">bags (25 kg)</option>
                 <option value="tons">tons</option>
               </select>
             </div>

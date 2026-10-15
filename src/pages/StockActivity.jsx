@@ -7,6 +7,9 @@ import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { formatDateTime as formatDateTimeIST, todayIST } from '../utils/datetime'
 import { exportSingleSheet } from '../utils/exportToExcel'
+import { formatWeight } from '../utils/units'
+import { LOCATIONS, formatBusinessDate } from '../utils/ipms'
+import { ShiftBadge } from '../components/ipms/Kit'
 import {
   activityActionLabel,
   activityRowActions,
@@ -20,6 +23,8 @@ const SOURCE_LABELS = {
   PRODUCTION: 'Production',
   WASTAGE: 'Wastage',
   MANUAL_ADJUSTMENT: 'Adjustment',
+  STOCK_TRANSFER: 'Stock Transfer',
+  STOCK_RETURN: 'Return',
 }
 
 const numberOrNull = (value) => {
@@ -28,14 +33,15 @@ const numberOrNull = (value) => {
   return Number.isFinite(number) ? number : null
 }
 
-const kg = (value) => `${Number(value || 0).toFixed(2)} kg`
+const kg = (value) => formatWeight(value)
 
 function impactText(opening, delta, closing) {
   const start = numberOrNull(opening)
   const change = numberOrNull(delta)
   const end = numberOrNull(closing)
   if (start === null && change === null && end === null) return 'No stock change'
-  return `${kg(start)} → ${change > 0 ? '+' : ''}${kg(change)} → ${kg(end)}`
+  if (!change) return `${kg(end ?? start)} (no change)`
+  return `${kg(start)} → ${formatWeight(change, { signed: true })} → ${kg(end)}`
 }
 
 function ActivityBadge({ row }) {
@@ -44,7 +50,9 @@ function ActivityBadge({ row }) {
     ? 'border-violet-500/30 bg-violet-500/10 text-violet-300'
     : row.action === 'LEGACY'
       ? 'border-slate-500/30 bg-slate-500/10 text-slate-300'
-      : row.source_domain === 'PRODUCTION'
+      : row.source_domain === 'STOCK_RETURN'
+        ? 'border-rose-500/30 bg-rose-500/10 text-rose-400'
+        : row.source_domain === 'PRODUCTION'
         ? 'border-orange-500/30 bg-orange-500/10 text-orange-300'
         : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
   return <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${tone}`}>{label}</span>
@@ -59,6 +67,7 @@ export default function StockActivity() {
   const [pagination, setPagination] = useState({ limit: 100, offset: 0, total: 0 })
   const [filters, setFilters] = useState({
     dateFrom: '', dateTo: '', materialId: '', sourceDomain: '', action: '', operatorId: '',
+    shift: '', location: '', includeReturns: '',
   })
   const [appliedFilters, setAppliedFilters] = useState(filters)
 
@@ -101,6 +110,11 @@ export default function StockActivity() {
     source_label: SOURCE_LABELS[row.source_domain] || row.source_domain,
     warehouse_impact: impactText(row.warehouse_opening_kg, row.warehouse_delta_kg, row.warehouse_closing_kg),
     floor_impact: impactText(row.floor_opening_kg, row.floor_delta_kg, row.floor_closing_kg),
+    first_floor_impact: impactText(row.first_floor_opening_kg, row.first_floor_delta_kg, row.first_floor_closing_kg),
+    machine_impact: row.machine_id
+      ? `${row.machine_name || `Machine ${row.machine_id}`}: ${impactText(row.machine_opening_kg, row.machine_delta_kg, row.machine_closing_kg)}`
+      : 'No machine change',
+    route: [row.from_location, row.to_location].filter(Boolean).map((l) => LOCATIONS[l]?.label || l).join(' → '),
     plant_impact: impactText(row.plant_opening_kg, row.plant_delta_kg, row.plant_closing_kg),
   })), [items])
 
@@ -117,12 +131,24 @@ export default function StockActivity() {
 
   const columns = [
     { key: 'happened_at', label: 'When', icon: 'clock', render: (value) => formatDateTimeIST(value, '—') },
+    {
+      key: 'business_date', label: 'Business Day · Shift', icon: 'date',
+      render: (value, row) => (
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+          {formatBusinessDate(value, { weekday: false })} <ShiftBadge shift={row.shift} />
+        </span>
+      ),
+    },
     { key: 'action', label: 'What Happened', icon: 'stock', render: (_value, row) => <ActivityBadge row={row} /> },
-    { key: 'source_label', label: 'Source', icon: 'note' },
+    { key: 'source_label', label: 'Source', icon: 'note', render: (value, row) => (
+      <span>{value}{row.route && <span className="block text-xs text-text-secondary">{row.route}</span>}</span>
+    ) },
     { key: 'material_name', label: 'Material', icon: 'material', render: (value) => value || 'Not material-specific' },
     { key: 'quantity_kg', label: 'Quantity', icon: 'weight', render: (value) => kg(value) },
     { key: 'warehouse_impact', label: 'Warehouse: Opening → Change → Closing', icon: 'stock' },
-    { key: 'floor_impact', label: 'Floor: Opening → Change → Closing', icon: 'production' },
+    { key: 'floor_impact', label: 'Ground Floor: Opening → Change → Closing', icon: 'production' },
+    { key: 'first_floor_impact', label: 'First Floor: Opening → Change → Closing', icon: 'production' },
+    { key: 'machine_impact', label: 'Machine: Opening → Change → Closing', icon: 'production' },
     { key: 'plant_impact', label: 'Plant Total: Opening → Change → Closing', icon: 'dashboard' },
     { key: 'created_by_name', label: 'Operator', icon: 'person', render: (value) => value || 'System / legacy' },
     { key: 'reverses_activity_id', label: 'Linked Reversal', icon: 'history', render: (value) => value ? `Reverses activity #${value}` : '—' },
@@ -147,6 +173,10 @@ export default function StockActivity() {
         quantity: Number(row.quantity_kg || 0).toFixed(2),
         warehouse: row.warehouse_impact,
         floor: row.floor_impact,
+        first_floor: row.first_floor_impact,
+        machine: row.machine_impact,
+        business_day: row.business_date,
+        shift: row.shift || '',
         plant: row.plant_impact,
         operator: row.created_by_name || 'System / legacy',
         reason: row.reason || '',
@@ -155,7 +185,9 @@ export default function StockActivity() {
         { key: 'when', label: 'When' }, { key: 'action', label: 'What Happened' },
         { key: 'source', label: 'Source' }, { key: 'material', label: 'Material' },
         { key: 'quantity', label: 'Quantity (kg)' }, { key: 'warehouse', label: 'Warehouse Impact' },
-        { key: 'floor', label: 'Floor Impact' }, { key: 'plant', label: 'Plant Total Impact' },
+        { key: 'business_day', label: 'Business Day' }, { key: 'shift', label: 'Shift' },
+        { key: 'floor', label: 'Ground Floor Impact' }, { key: 'first_floor', label: 'First Floor Impact' },
+        { key: 'machine', label: 'Machine Impact' }, { key: 'plant', label: 'Plant Total Impact' },
         { key: 'operator', label: 'Operator' }, { key: 'reason', label: 'Reason' },
       ],
     })
@@ -196,6 +228,17 @@ export default function StockActivity() {
           <option value="">All actions</option>
           <option value="CREATE">Created</option><option value="UPDATE">Corrected</option><option value="REVERSE">Reversed</option><option value="LEGACY">Legacy</option>
         </select>
+        <select value={filters.shift} onChange={(event) => setFilters((current) => ({ ...current, shift: event.target.value }))} className={inputClass} aria-label="Shift">
+          <option value="">Both shifts</option><option value="AM">AM · Morning</option><option value="PM">PM · Night</option>
+        </select>
+        <select value={filters.location} onChange={(event) => setFilters((current) => ({ ...current, location: event.target.value }))} className={inputClass} aria-label="Location">
+          <option value="">All locations</option>
+          {['WAREHOUSE', 'GROUND_FLOOR', 'FIRST_FLOOR', 'MACHINE'].map((loc) => <option key={loc} value={loc}>{LOCATIONS[loc].label}</option>)}
+        </select>
+        <label className="flex items-center gap-2 text-xs text-text-secondary">
+          <input type="checkbox" checked={filters.includeReturns === '1'} onChange={(event) => setFilters((current) => ({ ...current, includeReturns: event.target.checked ? '1' : '' }))} />
+          Include returned stock
+        </label>
         <div className="flex gap-2">
           <input type="number" min="1" value={filters.operatorId} onChange={(event) => setFilters((current) => ({ ...current, operatorId: event.target.value }))} placeholder="Operator ID" className={`${inputClass} min-w-0 flex-1`} />
           <button type="submit" className="rounded-lg bg-accent-gold px-4 py-2 text-sm font-semibold text-black">Apply</button>
