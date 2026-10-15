@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "venkateswarapolymers",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-12",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // Worker runs before assets so every request passes the device gate.
+    "run_worker_first": true
+  },
+  "routes": [{ "pattern": "vp.avlokai.com", "custom_domain": true }],
+  "observability": { "enabled": true }
+}

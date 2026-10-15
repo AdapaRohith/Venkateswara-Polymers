@@ -3,6 +3,17 @@
 
 <head>
   <meta charset="UTF-8" />
+  <script>
+    // Second layer of the Windows-only gate in worker/index.js: catches browsers
+    // that spoof a Windows User-Agent header but still report their real platform.
+    (function () {
+      try {
+        var d = navigator.userAgentData;
+        var bad = d ? (d.mobile || d.platform !== "Windows") : !/^Win/.test(navigator.platform || "");
+        if (bad) location.replace("/__denied");
+      } catch (e) {}
+    })();
+  </script>
   <link rel="icon" type="image/png" href="/avlokai_logo.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Venkateswara Polymers — Inventory & Production Management System" />
