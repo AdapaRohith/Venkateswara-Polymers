@@ -16,6 +16,8 @@ import pytest
 
 BASE = os.getenv("VP_E2E_BASE_URL")
 pytestmark = pytest.mark.skipif(not BASE, reason="VP_E2E_BASE_URL not set")
+if BASE and ("avlokai.com" in BASE or BASE.rstrip("/").endswith(":3000")):
+    raise RuntimeError("Refusing to run the destructive E2E scenario against production")
 
 LOCS = ("WAREHOUSE", "GROUND_FLOOR", "FIRST_FLOOR", "MACHINES", "PLANT")
 STATE: dict = {}
