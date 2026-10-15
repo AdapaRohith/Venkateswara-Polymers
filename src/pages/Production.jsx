@@ -842,6 +842,11 @@ export default function Production({ user }) {
                     <span className="font-mono font-semibold tabular-nums text-accent-gold">
                       {getAssignedAvailableKg(mat).toFixed(1)} kg
                     </span>
+                    {toNumber(mat.quantity_kg) > 0 && (
+                      <span className="text-[10px] font-semibold text-amber-500">
+                        {toNumber(mat.quantity_kg).toFixed(1)} kg on this machine
+                      </span>
+                    )}
                   </span>
                 ))}
               </div>
