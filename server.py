@@ -1972,6 +1972,7 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
     business_date, shift, entry_ts = parse_business_context(body)
     async with pool.acquire() as c:
         async with c.transaction():
+            await guard_closed_day(c, user, business_date)
             mat_id = await get_or_create_material(c, mat_name)
             upsert = await c.fetchrow(
                 """INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at)
@@ -2084,6 +2085,7 @@ async def issue_from_raw(request: Request, user=Depends(get_user)):
             mt_id = await get_or_create_material_type(c, mat_name)
             machine_count = await c.fetchval("SELECT COUNT(*) FROM machines")
             business_date, shift, entry_ts = parse_business_context(body)
+            await guard_closed_day(c, user, business_date)
             movement = await c.fetchrow(
                 """INSERT INTO material_movements
                        (material_id, material_type_id, quantity_kg, direction,
@@ -2154,6 +2156,7 @@ async def move_material(request: Request, user=Depends(get_user)):
                     raise HTTPException(400, "Floor transfers must move OUT of Warehouse Stock")
                 mt_id = await get_or_create_material_type(c, mat_name)
                 business_date, shift, entry_ts = parse_business_context(body)
+                await guard_closed_day(c, user, business_date)
                 mv = await c.fetchrow(
                     """INSERT INTO material_movements
                            (material_id, material_type_id, quantity_kg, direction,
@@ -2248,6 +2251,7 @@ async def update_floor_tx(mv_id: int, request: Request, user=Depends(get_user)):
             if not cur:
                 raise HTTPException(404, "Transaction not found")
             require_entry_owner(user, cur["created_by"])
+            await guard_closed_day(c, user, row_business_context(cur)[0])
             if normalize_movement_type(cur["movement_type"]) != "FLOOR_TRANSFER":
                 raise HTTPException(400, "Only floor-transfer entries can be edited here")
             link = await latest_activity_link(c, "FLOOR_TRANSFER", mv_id)
@@ -2292,6 +2296,7 @@ async def delete_floor_tx(mv_id: int, user=Depends(get_user)):
             if not cur:
                 raise HTTPException(404, "Transaction not found")
             require_entry_owner(user, cur["created_by"])
+            await guard_closed_day(c, user, row_business_context(cur)[0])
             if normalize_movement_type(cur["movement_type"]) != "FLOOR_TRANSFER":
                 raise HTTPException(400, "Only floor-transfer entries can be deleted here")
             link = await latest_activity_link(c, "FLOOR_TRANSFER", mv_id)
@@ -2417,6 +2422,7 @@ async def create_production_log(request: Request, user=Depends(get_user)):
     business_date, shift, entry_ts = parse_business_context(body)
     async with pool.acquire() as c:
         async with c.transaction():
+            await guard_closed_day(c, user, business_date)
             if machines_list and isinstance(machines_list, list):
                 logs = []
                 tolerances = []
@@ -2567,6 +2573,7 @@ async def update_production_log(log_id: int, request: Request, user=Depends(get_
             if not cur:
                 raise HTTPException(404, "Production log not found")
             require_entry_owner(user, cur["created_by"])
+            await guard_closed_day(c, user, row_business_context(cur)[0])
             movement = await consumption_movement_for_log(c, log_id)
             link = await latest_activity_link(c, "PRODUCTION", log_id)
             if (not movement or not movement["material_type_id"]
@@ -2630,6 +2637,7 @@ async def delete_production_log(log_id: int, user=Depends(get_user)):
             if not cur:
                 raise HTTPException(404, "Production log not found")
             require_entry_owner(user, cur["created_by"])
+            await guard_closed_day(c, user, row_business_context(cur)[0])
             movement = await consumption_movement_for_log(c, log_id)
             link = await latest_activity_link(c, "PRODUCTION", log_id)
             if (not movement or not movement["material_type_id"]
@@ -2754,6 +2762,20 @@ async def next_document_no(c, prefix: str, table: str, column: str,
     stem = f"{prefix}-{business_date:%Y%m%d}" + (f"-{shift}" if shift else "")
     count = await c.fetchval(f"SELECT COUNT(*) FROM {table} WHERE {column} LIKE $1", stem + "-%")
     return f"{stem}-{int(count) + 1:03d}"
+
+
+async def guard_closed_day(c, user: dict, business_date) -> None:
+    """A closed day is signed off: only an owner may still post into it.
+
+    Workers get a clear refusal instead of silently changing figures the owner
+    has already closed; owner corrections show up as variance on the closing.
+    """
+    if business_date is None or is_owner_or_admin(user):
+        return
+    if await c.fetchval("SELECT 1 FROM stock_day_closings WHERE business_date = $1", business_date):
+        raise HTTPException(403, (
+            f"{business_date:%d %b %Y} has been closed. Ask an owner to post or correct "
+            "entries for a closed day."))
 
 
 def validate_transfer_route(from_loc: str, from_machine: dict | None,
@@ -2918,6 +2940,7 @@ async def create_stock_transfer(request: Request, user=Depends(get_user)):
             from_machine = await fetch_machine(c, body.get("from_machine_id")) if from_loc == "MACHINE" else None
             to_machine = await fetch_machine(c, body.get("to_machine_id")) if to_loc == "MACHINE" else None
             validate_transfer_route(from_loc, from_machine, to_loc, to_machine)
+            await guard_closed_day(c, user, business_date)
             material_id, type_id, material_name = await resolve_stock_material(c, body)
             transfer_no = await next_document_no(c, "ST", "stock_transfers", "transfer_no", business_date)
             transfer = await c.fetchrow(
@@ -2995,6 +3018,7 @@ async def reverse_stock_transfer(transfer_id: int, user=Depends(get_user)):
             require_entry_owner(user, t["created_by"])
             if t["status"] != "ACTIVE":
                 raise HTTPException(400, "This transfer has already been reversed")
+            await guard_closed_day(c, user, t["business_date"])
             quantity = decimal_kg(t["quantity_kg"])
             try:
                 balances = await apply_stock_deltas(
@@ -3129,6 +3153,7 @@ async def create_production_batch(request: Request, user=Depends(get_user)):
     created_by = user_id_from_token(user)
     async with pool.acquire() as c:
         async with c.transaction():
+            await guard_closed_day(c, user, business_date)
             prepared = await build_batch_lines(c, body.get("lines"))
             batch_no = await next_document_no(
                 c, "PB", "production_batches", "batch_no", business_date, shift)
@@ -3179,6 +3204,7 @@ async def reverse_production_batch(batch_id: int, user=Depends(get_user)):
             require_entry_owner(user, batch["created_by"])
             if batch["status"] != "ACTIVE":
                 raise HTTPException(400, "This batch has already been reversed")
+            await guard_closed_day(c, user, batch["business_date"])
             logs = await c.fetch(
                 "SELECT * FROM production_logs WHERE batch_id = $1 ORDER BY id FOR UPDATE", batch_id)
             receipts = []
@@ -3217,6 +3243,9 @@ async def reverse_production_batch(batch_id: int, user=Depends(get_user)):
 
 @app.post("/stock/returns")
 async def create_stock_return(request: Request, user=Depends(get_user)):
+    # A return removes stock from the site and keeps it out of the everyday feed,
+    # so like a manual adjustment it is an owner decision.
+    require_owner_or_admin(user)
     body = await request.json()
     quantity = parse_quantity_kg(body)
     location = str(body.get("location") or "").strip().upper()

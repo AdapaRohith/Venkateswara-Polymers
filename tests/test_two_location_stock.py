@@ -440,11 +440,6 @@ async def test_end_to_end_transfer_consume_and_exact_reversals(monkeypatch):
     ]
 
 
-@pytest.mark.asyncio
-async def _noop_sync(*_args):
-    return None
-
-
 async def _noop_sync(*_args):
     return None
 
