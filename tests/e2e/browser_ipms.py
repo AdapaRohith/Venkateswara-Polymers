@@ -121,6 +121,14 @@ def t_transfer(page):
     shot(page, "05-transfer")
 
 
+@step("Old Send-to-Floor entries live in the Transfer register; /materials redirects there")
+def t_legacy(page):
+    page.goto(f"{UI}/materials")
+    expect(page).to_have_url(re.compile(r"/stock/transfers$"))
+    expect(page.get_by_text(re.compile(r"^FT-\d+$")).first).to_be_visible(timeout=10000)
+    assert page.locator("aside nav").get_by_role("link", name="Materials", exact=True).count() == 0
+
+
 @step("Machine Stock lists machines by floor with Assign / Release")
 def t_machines(page):
     nav(page, "Machine Stock")
@@ -216,7 +224,7 @@ def main():
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         login(page, os.environ["VP_E2E_OWNER"])
-        for test in (t_nav, t_overview, t_opening_closing, t_shifts, t_transfer, t_machines, t_batch,
+        for test in (t_nav, t_overview, t_opening_closing, t_shifts, t_transfer, t_legacy, t_machines, t_batch,
                      t_return, t_activity, t_usage, t_production_log, t_worker):
             test(page)
         browser.close()

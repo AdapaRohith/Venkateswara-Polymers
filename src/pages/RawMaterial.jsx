@@ -251,7 +251,6 @@ export default function RawMaterial({ user }) {
   }
 
   useEffect(() => {
-    console.info('[RawMaterial] mounted')
   }, [])
 
   const [addForm, setAddForm] = usePersistentState('vp_raw_material_add_form', {
@@ -274,7 +273,6 @@ export default function RawMaterial({ user }) {
   const [batchesError, setBatchesError] = useState('')
 
   const refreshRawTotals = useCallback(async (silent = false) => {
-    console.info('[RawMaterial] calling GET /raw-material/totals')
     if (!silent) setLoadingTotals(true)
     setTotalsError('')
     try {
@@ -289,7 +287,6 @@ export default function RawMaterial({ user }) {
   }, [])
 
   const refreshMaterialOptions = useCallback(async (silent = false) => {
-    console.info('[RawMaterial] calling GET /raw-material/options')
     if (!silent) setLoadingMaterialOptions(true)
     setMaterialOptionsError('')
     try {
@@ -304,7 +301,6 @@ export default function RawMaterial({ user }) {
   }, [])
 
   const refreshBatches = useCallback(async (silent = false) => {
-    console.info('[RawMaterial] calling GET /raw-material/batches')
     if (!silent) setLoadingBatches(true)
     setBatchesError('')
     try {
@@ -369,7 +365,6 @@ export default function RawMaterial({ user }) {
 
     setSubmittingAdd(true)
     try {
-      console.info('[RawMaterial] calling POST /raw-material/add')
       const { data } = await api.post('/raw-material/add', {
         material_name: addForm.material_name.trim(),
         quantity_kg: qtyInKg,

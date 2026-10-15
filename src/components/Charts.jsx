@@ -37,7 +37,7 @@ export function ComparisonBarChart({ data }) {
             <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase mb-5">
                 Raw Material Production
             </h3>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={300} minWidth={0} initialDimension={{ width: 600, height: 300 }}>
                 <BarChart data={data} barGap={8} barCategoryGap="25%">
                     <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
                     <XAxis dataKey="name" tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={{ stroke: GRID_COLOR }} tickLine={false} />
@@ -60,7 +60,7 @@ export function TrendLineChart({ data, title = 'Trend', color, gradientId = 'gra
             <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase mb-5">
                 {title}
             </h3>
-            <ResponsiveContainer width="100%" height={240}>
+            <ResponsiveContainer width="100%" height={240} minWidth={0} initialDimension={{ width: 600, height: 240 }}>
                 <AreaChart data={data} onClick={handleChartClick} style={onPointClick ? { cursor: 'pointer' } : undefined}>
                     <defs>
                         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
@@ -94,7 +94,7 @@ export function WastageAreaChart({ data }) {
             <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase mb-5">
                 Wastage Breakdown
             </h3>
-            <ResponsiveContainer width="100%" height={260}>
+            <ResponsiveContainer width="100%" height={260} minWidth={0} initialDimension={{ width: 600, height: 260 }}>
                 <BarChart data={data} barCategoryGap="30%">
                     <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
                     <XAxis dataKey="name" tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={{ stroke: GRID_COLOR }} tickLine={false} />
@@ -117,7 +117,7 @@ export function SectionBarChart({ data, title = 'Breakdown', color, onBarClick }
             <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase mb-5">
                 {title}
             </h3>
-            <ResponsiveContainer width="100%" height={260}>
+            <ResponsiveContainer width="100%" height={260} minWidth={0} initialDimension={{ width: 600, height: 260 }}>
                 <BarChart data={data} barCategoryGap="30%">
                     <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
                     <XAxis dataKey="name" tick={{ fill: TICK_COLOR, fontSize: 12 }} axisLine={{ stroke: GRID_COLOR }} tickLine={false} />

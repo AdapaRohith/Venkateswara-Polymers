@@ -89,7 +89,7 @@ export default function StockUsage() {
       <Panel title="Usage by day and shift">
         {chart.every((c) => !c.AM && !c.PM) ? <EmptyState>No production usage in this range.</EmptyState> : (
           <div className="h-72 w-full">
-            <ResponsiveContainer>
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} initialDimension={{ width: 600, height: 288 }}>
               <BarChart data={chart} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
                 <XAxis dataKey="day" tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} />
