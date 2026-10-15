@@ -1961,6 +1961,8 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
     body = await request.json()
     mat_name = str(body.get("material_name") or "").strip()
     qty = to_num(body.get("quantity_kg"))
+    if qty <= 0 and body.get("quantity_bags") not in (None, ""):
+        qty = float(parse_quantity_kg(body))
     note = body.get("note")
     thickness = str(body.get("thickness") or "").strip() or None
     if not mat_name or qty <= 0:
@@ -2774,6 +2776,9 @@ async def guard_closed_day(c, user: dict, business_date) -> None:
     """
     if business_date is None or is_owner_or_admin(user):
         return
+    # Shared with every other writer, exclusive for the day close, so a close
+    # cannot slip in between this check and the write that follows it.
+    await c.execute("SELECT pg_advisory_xact_lock_shared(hashtext('vp-day-close'))")
     if await c.fetchval("SELECT 1 FROM stock_day_closings WHERE business_date = $1", business_date):
         raise HTTPException(403, (
             f"{business_date:%d %b %Y} has been closed. Ask an owner to post or correct "
