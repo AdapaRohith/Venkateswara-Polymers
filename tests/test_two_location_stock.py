@@ -21,9 +21,12 @@ from server import (
 
 
 class LedgerFakeConnection:
-    def __init__(self, warehouse=500, floor=50, fail_activity=False):
+    def __init__(self, warehouse=500, floor=50, fail_activity=False,
+                 first_floor=0, machines=None):
         self.warehouse = Decimal(str(warehouse))
         self.floor = Decimal(str(floor))
+        self.first_floor = Decimal(str(first_floor))
+        self.machines = {int(k): Decimal(str(v)) for k, v in (machines or {}).items()}
         self.fail_activity = fail_activity
         self.lock_order = []
         self.machine_syncs = []
@@ -39,6 +42,9 @@ class LedgerFakeConnection:
         if "FROM floor_material_balance" in query and "FOR UPDATE" in query:
             self.lock_order.append("floor")
             return {"total_quantity_kg": self.floor}
+        if "FROM first_floor_material_balance" in query and "FOR UPDATE" in query:
+            self.lock_order.append("first_floor")
+            return {"total_quantity_kg": self.first_floor}
         if "INSERT INTO stock_activity_log" in query:
             if self.fail_activity:
                 raise RuntimeError("activity insert failed")
@@ -56,9 +62,26 @@ class LedgerFakeConnection:
             return row
         raise AssertionError(f"Unexpected fetchrow: {query}")
 
+    async def fetch(self, query, *args):
+        if "FROM machine_stock_allocations" in query and "FOR UPDATE" in query:
+            self.lock_order.append("machines")
+            return [{"machine_id": k, "quantity_kg": v} for k, v in sorted(self.machines.items())]
+        raise AssertionError(f"Unexpected fetch: {query}")
+
+    async def fetchval(self, query, *args):
+        if "FROM machine_stock_allocations" in query and "machine_id = $1" in query:
+            return self.machines.get(int(args[0]))
+        raise AssertionError(f"Unexpected fetchval: {query}")
+
     async def execute(self, query, *args):
         if "INSERT INTO floor_material_balance" in query:
             return "INSERT 0 0"
+        if "INSERT INTO first_floor_material_balance" in query:
+            self.first_floor = Decimal(str(args[0]))
+            return "INSERT 0 1"
+        if "INSERT INTO machine_stock_allocations" in query:
+            self.machines[int(args[0])] = Decimal(str(args[2]))
+            return "INSERT 0 1"
         if "UPDATE raw_material_totals" in query:
             self.warehouse = Decimal(str(args[0]))
             return "UPDATE 1"
@@ -74,8 +97,9 @@ async def test_lock_stock_locations_uses_consistent_warehouse_then_floor_order()
 
     balances = await lock_stock_locations(conn, material_id=7, material_type_id=3)
 
-    assert conn.lock_order == ["warehouse", "floor"]
-    assert balances == {"warehouse_kg": Decimal("500"), "floor_kg": Decimal("50")}
+    assert conn.lock_order == ["warehouse", "floor", "first_floor", "machines"]
+    assert balances == {"warehouse_kg": Decimal("500"), "floor_kg": Decimal("50"),
+                        "first_floor_kg": Decimal("0"), "machines_kg": {}}
 
 
 @pytest.mark.asyncio
@@ -99,6 +123,10 @@ async def test_location_delta_moves_stock_without_changing_plant_total(monkeypat
         "warehouse_closing_kg": 400.0,
         "floor_opening_kg": 50.0,
         "floor_closing_kg": 150.0,
+        "first_floor_opening_kg": 0.0,
+        "first_floor_closing_kg": 0.0,
+        "machines_total_opening_kg": 0.0,
+        "machines_total_closing_kg": 0.0,
         "plant_opening_kg": 550.0,
         "plant_closing_kg": 550.0,
     }
@@ -410,3 +438,68 @@ async def test_end_to_end_transfer_consume_and_exact_reversals(monkeypatch):
     assert [row["action"] for row in conn.activity_rows] == [
         "CREATE", "CREATE", "REVERSE", "REVERSE",
     ]
+
+
+@pytest.mark.asyncio
+async def test_production_consumes_machine_stock_before_ground_floor(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=400, floor=150, machines={1: 20})
+    monkeypatch.setattr("server.sync_machine_assignments", lambda *_args: None)
+
+    receipt = await apply_production_consumption(
+        conn, log_id=31, material_id=7, material_type_id=3,
+        net_kg=50, machine_id=1, created_by=9, correlation_id=UUID(int=31),
+    )
+
+    assert conn.machines[1] == Decimal("0")
+    assert conn.floor == Decimal("120")
+    assert conn.warehouse == Decimal("400")
+    assert receipt["machine_consumed_kg"] == 20.0
+    assert receipt["floor_consumed_kg"] == 30.0
+    assert receipt["plant_opening_kg"] == 570.0
+    assert receipt["plant_closing_kg"] == 520.0
+
+
+@pytest.mark.asyncio
+async def test_production_reversal_returns_stock_to_the_machine_it_came_from(monkeypatch):
+    conn = LedgerFakeConnection(warehouse=400, floor=120, machines={1: 0})
+    monkeypatch.setattr("server.sync_machine_assignments", lambda *_args: None)
+
+    await reverse_production_consumption(
+        conn,
+        {"id": 31, "material_id": 7, "material_type_id": 3, "quantity_kg": 50,
+         "machine_consumed_kg": 20, "activity_id": 1, "machine_id": 1},
+        created_by=9,
+    )
+
+    assert conn.machines[1] == Decimal("20")
+    assert conn.floor == Decimal("150")
+
+
+@pytest.mark.asyncio
+async def test_stock_deltas_move_ground_floor_to_first_floor_and_machine(monkeypatch):
+    from server import apply_stock_deltas
+    conn = LedgerFakeConnection(warehouse=100, floor=80, first_floor=0, machines={6: 0})
+    monkeypatch.setattr("server.sync_machine_assignments", lambda *_args: None)
+
+    first = await apply_stock_deltas(conn, material_id=7, material_type_id=3,
+                                     ground_floor=-30, first_floor=30)
+    second = await apply_stock_deltas(conn, material_id=7, material_type_id=3,
+                                      first_floor=-10, machine_id=6, machine=10)
+
+    assert (conn.floor, conn.first_floor, conn.machines[6]) == (Decimal("50"), Decimal("20"), Decimal("10"))
+    assert first["plant_opening_kg"] == first["plant_closing_kg"] == 180.0
+    assert second["machine_closing_kg"] == 10.0
+    assert second["machines_total_closing_kg"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_stock_deltas_reject_first_floor_overdraw_without_any_write(monkeypatch):
+    from server import apply_stock_deltas
+    conn = LedgerFakeConnection(warehouse=100, floor=80, first_floor=5)
+    monkeypatch.setattr("server.sync_machine_assignments", lambda *_args: None)
+
+    with pytest.raises(HTTPException, match="Insufficient First Floor Stock. Available: 5.000 kg"):
+        await apply_stock_deltas(conn, material_id=7, material_type_id=3,
+                                 first_floor=-6, ground_floor=6)
+
+    assert (conn.floor, conn.first_floor) == (Decimal("80"), Decimal("5"))
