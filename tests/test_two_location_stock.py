@@ -16,7 +16,6 @@ from server import (
     record_stock_activity,
     reverse_floor_transfer,
     reverse_production_consumption,
-    update_floor_transfer_stock,
 )
 
 
@@ -29,7 +28,6 @@ class LedgerFakeConnection:
         self.machines = {int(k): Decimal(str(v)) for k, v in (machines or {}).items()}
         self.fail_activity = fail_activity
         self.lock_order = []
-        self.machine_syncs = []
         self.activity_rows = []
 
     def is_in_transaction(self):
@@ -106,10 +104,6 @@ async def test_lock_stock_locations_uses_consistent_warehouse_then_floor_order()
 async def test_location_delta_moves_stock_without_changing_plant_total(monkeypatch):
     conn = LedgerFakeConnection(warehouse=Decimal("500"), floor=Decimal("50"))
 
-    async def sync_machine(_conn, material_type_id):
-        conn.machine_syncs.append(material_type_id)
-
-    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
     receipt = await apply_location_delta(
         conn,
         material_id=7,
@@ -132,13 +126,11 @@ async def test_location_delta_moves_stock_without_changing_plant_total(monkeypat
     }
     assert conn.warehouse == Decimal("400")
     assert conn.floor == Decimal("150")
-    assert conn.machine_syncs == [3]
 
 
 @pytest.mark.asyncio
 async def test_location_delta_rejects_warehouse_overdraw_without_updates(monkeypatch):
     conn = LedgerFakeConnection(warehouse=5, floor=10)
-    monkeypatch.setattr("server.sync_machine_assignments", lambda *_args: None)
 
     with pytest.raises(HTTPException) as exc:
         await apply_location_delta(
@@ -155,7 +147,6 @@ async def test_location_delta_rejects_warehouse_overdraw_without_updates(monkeyp
 @pytest.mark.asyncio
 async def test_location_delta_rejects_floor_overdraw_without_updates(monkeypatch):
     conn = LedgerFakeConnection(warehouse=20, floor=5)
-    monkeypatch.setattr("server.sync_machine_assignments", lambda *_args: None)
 
     with pytest.raises(HTTPException) as exc:
         await apply_location_delta(
@@ -201,10 +192,6 @@ async def test_record_stock_activity_propagates_insert_failure():
 async def test_floor_transfer_decreases_warehouse_and_increases_floor(monkeypatch):
     conn = LedgerFakeConnection(warehouse=500, floor=50)
 
-    async def sync_machine(_conn, material_type_id):
-        conn.machine_syncs.append(material_type_id)
-
-    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
     result = await apply_floor_transfer(
         conn,
         source_id=12,
@@ -223,35 +210,9 @@ async def test_floor_transfer_decreases_warehouse_and_increases_floor(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_floor_transfer_update_applies_only_quantity_delta(monkeypatch):
-    conn = LedgerFakeConnection(warehouse=400, floor=150)
-
-    async def sync_machine(_conn, _material_type_id):
-        return None
-
-    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
-    result = await update_floor_transfer_stock(
-        conn,
-        {"id": 12, "material_id": 7, "material_type_id": 3, "quantity_kg": 100, "activity_id": 1},
-        new_quantity_kg=60,
-        created_by=9,
-    )
-
-    assert conn.warehouse == Decimal("440")
-    assert conn.floor == Decimal("110")
-    assert result["warehouse_closing_kg"] == 440.0
-    assert result["floor_closing_kg"] == 110.0
-    assert conn.activity_rows[-1]["action"] == "UPDATE"
-
-
-@pytest.mark.asyncio
 async def test_delete_floor_transfer_restores_exact_original_quantity(monkeypatch):
     conn = LedgerFakeConnection(warehouse=400, floor=150)
 
-    async def sync_machine(_conn, _material_type_id):
-        return None
-
-    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
     result = await reverse_floor_transfer(
         conn,
         {"id": 12, "material_id": 7, "material_type_id": 3, "quantity_kg": 100, "activity_id": 1},
@@ -268,10 +229,6 @@ async def test_delete_floor_transfer_restores_exact_original_quantity(monkeypatc
 async def test_delete_floor_transfer_rejects_quantity_already_consumed(monkeypatch):
     conn = LedgerFakeConnection(warehouse=400, floor=40)
 
-    async def sync_machine(_conn, _material_type_id):
-        return None
-
-    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
     with pytest.raises(HTTPException) as exc:
         await reverse_floor_transfer(
             conn,
@@ -289,10 +246,6 @@ async def test_delete_floor_transfer_rejects_quantity_already_consumed(monkeypat
 async def test_concurrent_floor_transfers_cannot_overdraw_available_stock(monkeypatch):
     conn = LedgerFakeConnection(warehouse=100, floor=0)
 
-    async def sync_machine(_conn, _material_type_id):
-        return None
-
-    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
     await apply_floor_transfer(
         conn, source_id=1, material_id=7, material_type_id=3,
         quantity_kg=70, created_by=9, correlation_id=UUID(int=1),
@@ -311,10 +264,6 @@ async def test_concurrent_floor_transfers_cannot_overdraw_available_stock(monkey
 async def test_production_uses_floor_without_second_warehouse_deduction(monkeypatch):
     conn = LedgerFakeConnection(warehouse=400, floor=150)
 
-    async def sync_machine(_conn, material_type_id):
-        conn.machine_syncs.append(material_type_id)
-
-    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
     receipt = await apply_production_consumption(
         conn, log_id=21, material_id=7, material_type_id=3,
         net_kg=30, machine_id=1, created_by=9, correlation_id=UUID(int=21),
@@ -330,7 +279,6 @@ async def test_production_uses_floor_without_second_warehouse_deduction(monkeypa
 @pytest.mark.asyncio
 async def test_production_rejects_insufficient_floor_stock(monkeypatch):
     conn = LedgerFakeConnection(warehouse=400, floor=20)
-    monkeypatch.setattr("server.sync_machine_assignments", lambda *_args: None)
 
     with pytest.raises(HTTPException, match="Available: 20.000 kg"):
         await apply_production_consumption(
@@ -346,10 +294,6 @@ async def test_production_rejects_insufficient_floor_stock(monkeypatch):
 async def test_delete_production_restores_exact_recorded_quantity(monkeypatch):
     conn = LedgerFakeConnection(warehouse=400, floor=120)
 
-    async def sync_machine(*_args):
-        return None
-
-    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
 
     receipt = await reverse_production_consumption(
         conn,
@@ -395,10 +339,6 @@ async def test_production_material_change_restores_old_before_consuming_new(monk
 async def test_end_to_end_transfer_consume_and_exact_reversals(monkeypatch):
     conn = LedgerFakeConnection(warehouse=500, floor=50)
 
-    async def sync_machine(_conn, _material_type_id):
-        return None
-
-    monkeypatch.setattr("server.sync_machine_assignments", sync_machine)
     states = []
 
     transfer = await apply_floor_transfer(
@@ -447,7 +387,6 @@ async def _noop_sync(*_args):
 @pytest.mark.asyncio
 async def test_production_consumes_machine_stock_before_ground_floor(monkeypatch):
     conn = LedgerFakeConnection(warehouse=400, floor=150, machines={1: 20})
-    monkeypatch.setattr("server.sync_machine_assignments", _noop_sync)
 
     receipt = await apply_production_consumption(
         conn, log_id=31, material_id=7, material_type_id=3,
@@ -466,7 +405,6 @@ async def test_production_consumes_machine_stock_before_ground_floor(monkeypatch
 @pytest.mark.asyncio
 async def test_production_reversal_returns_stock_to_the_machine_it_came_from(monkeypatch):
     conn = LedgerFakeConnection(warehouse=400, floor=120, machines={1: 0})
-    monkeypatch.setattr("server.sync_machine_assignments", _noop_sync)
 
     await reverse_production_consumption(
         conn,
@@ -483,7 +421,6 @@ async def test_production_reversal_returns_stock_to_the_machine_it_came_from(mon
 async def test_stock_deltas_move_ground_floor_to_first_floor_and_machine(monkeypatch):
     from server import apply_stock_deltas
     conn = LedgerFakeConnection(warehouse=100, floor=80, first_floor=0, machines={6: 0})
-    monkeypatch.setattr("server.sync_machine_assignments", _noop_sync)
 
     first = await apply_stock_deltas(conn, material_id=7, material_type_id=3,
                                      ground_floor=-30, first_floor=30)
@@ -500,7 +437,6 @@ async def test_stock_deltas_move_ground_floor_to_first_floor_and_machine(monkeyp
 async def test_stock_deltas_reject_first_floor_overdraw_without_any_write(monkeypatch):
     from server import apply_stock_deltas
     conn = LedgerFakeConnection(warehouse=100, floor=80, first_floor=5)
-    monkeypatch.setattr("server.sync_machine_assignments", _noop_sync)
 
     with pytest.raises(HTTPException, match="Insufficient First Floor Stock. Available: 5.000 kg"):
         await apply_stock_deltas(conn, material_id=7, material_type_id=3,

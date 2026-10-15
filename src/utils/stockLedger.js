@@ -112,7 +112,7 @@ export function activityActionLabel(sourceDomain, action) {
   if (verb === 'UPDATE') return 'Corrected'
   return {
     RAW_INPUT: 'Received',
-    FLOOR_TRANSFER: 'Moved to Floor',
+    FLOOR_TRANSFER: 'Moved to Ground Floor',
     PRODUCTION: 'Used in Production',
     WASTAGE: 'Wastage Reported',
     MANUAL_ADJUSTMENT: 'Corrected',

@@ -19,7 +19,7 @@ import {
 
 const SOURCE_LABELS = {
   RAW_INPUT: 'Raw Input',
-  FLOOR_TRANSFER: 'Floor Transfer',
+  FLOOR_TRANSFER: 'Warehouse → Ground Floor',
   PRODUCTION: 'Production',
   WASTAGE: 'Wastage',
   MANUAL_ADJUSTMENT: 'Adjustment',

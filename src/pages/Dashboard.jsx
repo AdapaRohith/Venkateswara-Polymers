@@ -224,7 +224,7 @@ export default function Dashboard() {
     // Plant Totals bar → target page, flash whole selected month.
     const handleTotalsBarClick = useCallback((entry) => {
         const route = {
-            'Total Input': '/materials',
+            'Total Input': '/stock/transfers',
             'Total Output': '/production-log',
             'Wastage': '/wastage',
         }[entry?.name]
@@ -237,7 +237,7 @@ export default function Dashboard() {
     }, [navigate])
 
     const handleInputPointClick = useCallback((label) => {
-        if (label) navigate('/materials', { state: { flashDate: label } })
+        if (label) navigate('/stock/transfers', { state: { flashDate: label } })
     }, [navigate])
 
     return (

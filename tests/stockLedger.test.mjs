@@ -107,7 +107,7 @@ test('activity filters serialize only populated values', () => {
 
 test('activity labels explain stock meaning in plain language', () => {
   assert.equal(activityActionLabel('RAW_INPUT', 'CREATE'), 'Received')
-  assert.equal(activityActionLabel('FLOOR_TRANSFER', 'CREATE'), 'Moved to Floor')
+  assert.equal(activityActionLabel('FLOOR_TRANSFER', 'CREATE'), 'Moved to Ground Floor')
   assert.equal(activityActionLabel('PRODUCTION', 'CREATE'), 'Used in Production')
   assert.equal(activityActionLabel('MANUAL_ADJUSTMENT', 'CREATE'), 'Corrected')
   assert.equal(activityActionLabel('PRODUCTION', 'REVERSE'), 'Reversed')

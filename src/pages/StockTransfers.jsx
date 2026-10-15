@@ -111,7 +111,7 @@ export default function StockTransfers({ user }) {
   const reverse = async (t) => {
     if (!window.confirm(`Reverse ${t.transfer_no}? ${formatWeight(t.quantity_kg)} of ${t.material_name} goes back from ${t.route.split(' → ')[1]} to ${t.route.split(' → ')[0]}. The reversal stays in Stock Activity.`)) return
     try {
-      await api.delete(`/stock/transfers/${t.id}`)
+      await api.delete(t.kind === 'FLOOR_TRANSFER' ? `/floor/transactions/${t.id}` : `/stock/transfers/${t.id}`)
       toast.success(`${t.transfer_no} reversed`)
       load()
     } catch (error) {
@@ -119,7 +119,7 @@ export default function StockTransfers({ user }) {
     }
   }
 
-  const canReverse = (t) => t.status === 'ACTIVE' && (String(user?.role).toLowerCase() !== 'worker' || String(t.created_by) === String(user?.id))
+  const canReverse = (t) => t.reversible && t.status === 'ACTIVE' && (String(user?.role).toLowerCase() !== 'worker' || String(t.created_by) === String(user?.id))
 
   const grouped = useMemo(() => {
     const groups = new Map()
@@ -235,7 +235,7 @@ export default function StockTransfers({ user }) {
                   <tbody key={day}>
                     <tr><td colSpan={8} className="bg-bg-row-alt px-4 py-1.5 text-xs font-semibold text-text-secondary">{formatBusinessDate(day)}</td></tr>
                     {items.map((t) => (
-                      <tr key={t.id} className={`border-b border-border-subtle ${t.status !== 'ACTIVE' ? 'opacity-60' : ''}`}>
+                      <tr key={`${t.kind}-${t.id}`} className={`border-b border-border-subtle ${t.status !== 'ACTIVE' ? 'opacity-60' : ''}`}>
                         <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-text-primary">{t.transfer_no}</td>
                         <td className="px-4 py-2"><ShiftBadge shift={t.shift} /></td>
                         <td className="whitespace-nowrap px-4 py-2 font-medium text-text-primary">{t.material_name}</td>

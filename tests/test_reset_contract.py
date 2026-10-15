@@ -67,7 +67,7 @@ class ResetContractTest(unittest.TestCase):
         checks = {
             "raw_material_totals": "SELECT count(*) FROM raw_material_totals WHERE total_quantity_kg <> 0",
             "floor_material_balance": "SELECT count(*) FROM floor_material_balance WHERE total_quantity_kg <> 0",
-            "machine_stock_assignments": "SELECT count(*) FROM machine_stock_assignments WHERE quantity_kg <> 0",
+            "machine_stock_allocations": "SELECT count(*) FROM machine_stock_allocations WHERE quantity_kg <> 0",
             "machine_state": "SELECT count(*) FROM machine_state WHERE current_worker IS NOT NULL",
         }
         for name, sql in checks.items():

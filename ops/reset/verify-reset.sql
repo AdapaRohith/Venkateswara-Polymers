@@ -29,7 +29,7 @@ BEGIN
     IF EXISTS (SELECT 1 FROM floor_material_balance WHERE total_quantity_kg <> 0) THEN
         RAISE EXCEPTION 'reset invariant failed: floor stock is nonzero';
     END IF;
-    IF EXISTS (SELECT 1 FROM machine_stock_assignments WHERE quantity_kg <> 0) THEN
+    IF EXISTS (SELECT 1 FROM machine_stock_allocations WHERE quantity_kg <> 0) THEN
         RAISE EXCEPTION 'reset invariant failed: machine stock is nonzero';
     END IF;
     IF EXISTS (SELECT 1 FROM machine_state WHERE current_worker IS NOT NULL) THEN

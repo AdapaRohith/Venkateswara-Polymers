@@ -11,7 +11,7 @@ filling the new `machines.floor` column (production â†’ Ground Floor, cutting â†
 | Warehouse | `raw_material_totals` | receipts land here |
 | Ground Floor | `floor_material_balance` | the former "Floor Stock", unchanged |
 | First Floor | `first_floor_material_balance` | new, starts at 0 |
-| Machine | `machine_stock_allocations` | new, starts at 0 (the old `machine_stock_assignments` stays a mirror) |
+| Machine | `machine_stock_allocations` | new, starts at 0 (replaces the old per-machine mirror, dropped in migration 009) |
 
 * Transfers (`stock_transfers`) move stock between locations; plant total never changes.
   Machine stock moves only through the machine's own floor.

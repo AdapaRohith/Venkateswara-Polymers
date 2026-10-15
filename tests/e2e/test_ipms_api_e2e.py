@@ -242,7 +242,7 @@ def test_12_transfer_reversal_refuses_when_destination_is_short(owner):
 
 def test_13_existing_screens_still_answer(owner, worker):
     for path in ("/floor/stock", "/raw-material/totals", "/production/logs", "/stock/activity",
-                 "/floor/transactions", "/raw-material/batches", "/machines", "/stock/machines",
+                 "/raw-material/batches", "/machines", "/stock/machines",
                  "/stock/day-closings", "/stock/transfers"):
         ok(owner.get(path))
     ok(worker.get("/stock/activity", params={"limit": 5}))

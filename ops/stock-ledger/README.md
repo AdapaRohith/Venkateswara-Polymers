@@ -36,7 +36,7 @@ Do not continue unless PM2 `vp-api` runs `/root/backend/server.py` and the stage
 sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" <<'SQL'
 SELECT 'warehouse' location, COUNT(*) rows, COALESCE(SUM(total_quantity_kg),0) total_kg FROM raw_material_totals
 UNION ALL SELECT 'floor', COUNT(*), COALESCE(SUM(total_quantity_kg),0) FROM floor_material_balance
-UNION ALL SELECT 'machine', COUNT(*), COALESCE(SUM(quantity_kg),0) FROM machine_stock_assignments;
+UNION ALL SELECT 'machine', COUNT(*), COALESCE(SUM(quantity_kg),0) FROM machine_stock_allocations;
 SELECT movement_type, COUNT(*), COALESCE(SUM(quantity_kg),0) FROM material_movements GROUP BY movement_type ORDER BY movement_type;
 SELECT COUNT(*) production_rows, COUNT(created_by) attributed_rows FROM production_logs;
 SELECT to_regclass('public.stock_activity_log') activity_table;

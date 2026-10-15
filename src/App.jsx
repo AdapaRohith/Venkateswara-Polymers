@@ -10,7 +10,6 @@ import Login from './components/ui/animated-characters-login-page.jsx'
 import Users from './pages/Users'
 import Orders from './pages/Orders'
 import Production from './pages/Production'
-import MaterialMovement from './pages/MaterialMovement'
 import ProductionOrders from './pages/ProductionOrders'
 import Fulfillment from './pages/Fulfillment'
 import MachineReports from './pages/MachineReports'
@@ -98,16 +97,8 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
                     />
                   }
                 />
-                <Route
-                  path="/materials"
-                  element={
-                    <ProtectedRoute
-                      user={user}
-                      allowedRoles={['owner', 'worker']}
-                      element={<MaterialMovement user={user} />}
-                    />
-                  }
-                />
+                {/* "Send to Floor" is now a Warehouse → Ground Floor stock transfer. */}
+                <Route path="/materials" element={<Navigate to="/stock/transfers" replace />} />
                 <Route
                   path="/wastage"
                   element={
