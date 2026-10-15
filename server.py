@@ -2326,6 +2326,7 @@ async def bulk_delete_floor_tx(request: Request, user=Depends(get_user)):
                 raise HTTPException(404, "One or more transactions were not found")
             for r_ in rs_:
                 require_entry_owner(user, r_["created_by"])
+                await guard_closed_day(c, user, row_business_context(r_)[0])
             if any(normalize_movement_type(r_["movement_type"]) != "FLOOR_TRANSFER" for r_ in rs_):
                 raise HTTPException(400, "Only floor-transfer entries can be deleted here")
             receipts = []
@@ -2673,6 +2674,7 @@ async def bulk_delete_production_logs(request: Request, user=Depends(get_user)):
                 raise HTTPException(404, "One or more production logs were not found")
             for r_ in rs_:
                 require_entry_owner(user, r_["created_by"])
+                await guard_closed_day(c, user, row_business_context(r_)[0])
             receipts = []
             for r_ in rs_:
                 movement = await consumption_movement_for_log(c, r_["id"])
