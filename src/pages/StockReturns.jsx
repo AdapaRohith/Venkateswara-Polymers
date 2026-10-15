@@ -7,10 +7,8 @@ import useStockMeta from '../hooks/useStockMeta'
 import api from '../utils/api'
 import { LOCATIONS, apiError, formatBusinessDate } from '../utils/ipms'
 import { formatWeight, toKg } from '../utils/units'
-import {
-  EmptyState, LocationBadge, PageHeader, Panel, PrimaryButton, QuantityInput, ShiftBadge, ShiftDatePicker, StatusBadge,
-  Weight, inputClass, labelClass,
-} from '../components/ipms/Kit'
+import { EmptyState, LocationBadge, PageHeader, Panel, PrimaryButton, QuantityInput, ShiftBadge, ShiftDatePicker, StatusBadge, Weight } from '../components/ipms/Kit'
+import { inputClass, inputInline, labelClass } from '../components/ipms/styles'
 
 const RETURN_LOCATIONS = ['GROUND_FLOOR', 'FIRST_FLOOR', 'MACHINE', 'WAREHOUSE']
 const KEY_BY_LOCATION = { WAREHOUSE: 'warehouse_kg', GROUND_FLOOR: 'ground_floor_kg', FIRST_FLOOR: 'first_floor_kg' }
@@ -92,7 +90,7 @@ export default function StockReturns({ user }) {
       <PageHeader icon={Undo2} title="Return Stock"
         subtitle="Returned stock leaves the site completely — it is taken out of every location, never counts as usage, and is hidden from the everyday activity feed. It remains on record here and shows as RETURNED whenever it is searched for." />
 
-      <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[420px_minmax(0,1fr)]">
         <Panel title="Record a return" subtitle={isOwner ? 'Owner action' : 'Only an owner can record returns'}>
           {!isOwner ? <EmptyState>Ask an owner to record a return.</EmptyState> : (
             <form onSubmit={submit} className="space-y-4">
@@ -140,7 +138,7 @@ export default function StockReturns({ user }) {
           actions={(
             <form onSubmit={(e) => { e.preventDefault(); load(query) }} className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-text-secondary" />
-              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search return no., material, party…" className={`${inputClass} w-64 pl-8`} aria-label="Search returns" />
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search return no., material, party…" className={`${inputInline} w-64 pl-8`} aria-label="Search returns" />
             </form>
           )}>
           {returns.length === 0 ? <div className="p-4"><EmptyState>No returns found.</EmptyState></div> : (

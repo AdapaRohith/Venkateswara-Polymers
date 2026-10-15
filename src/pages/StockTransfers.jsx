@@ -10,10 +10,8 @@ import {
   LOCATIONS, allowedDestinations, apiError, formatBusinessDate, locationLabel, machinesForFloor,
 } from '../utils/ipms'
 import { formatWeight, toKg } from '../utils/units'
-import {
-  EmptyState, LocationBadge, PageHeader, Panel, PrimaryButton, QuantityInput, SecondaryButton, ShiftBadge,
-  ShiftDatePicker, StatusBadge, Weight, inputClass, labelClass,
-} from '../components/ipms/Kit'
+import { EmptyState, LocationBadge, PageHeader, Panel, PrimaryButton, QuantityInput, SecondaryButton, ShiftBadge, ShiftDatePicker, StatusBadge, Weight } from '../components/ipms/Kit'
+import { inputClass, labelClass } from '../components/ipms/styles'
 
 const SOURCES = ['WAREHOUSE', 'GROUND_FLOOR', 'FIRST_FLOOR', 'MACHINE']
 const KEY_BY_LOCATION = { WAREHOUSE: 'warehouse_kg', GROUND_FLOOR: 'ground_floor_kg', FIRST_FLOOR: 'first_floor_kg' }
@@ -137,7 +135,7 @@ export default function StockTransfers({ user }) {
       <PageHeader icon={ArrowLeftRight} title="Stock Transfers"
         subtitle="Move stock between the Warehouse, Ground Floor, First Floor and machines. The source goes down and the destination goes up by exactly the same amount — the plant total never changes." />
 
-      <div className="grid gap-5 xl:grid-cols-[440px_minmax(0,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[440px_minmax(0,1fr)]">
         <Panel title="New transfer">
           <form onSubmit={submit} className="space-y-4">
             <div>
@@ -225,7 +223,7 @@ export default function StockTransfers({ user }) {
         <Panel title="Transfer register" subtitle="Grouped by business day; newest first" bodyClassName="p-0">
           {grouped.length === 0 ? <div className="p-4"><EmptyState>No transfers yet.</EmptyState></div> : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] text-sm">
+              <table className="w-full min-w-[900px] text-sm">
                 <thead>
                   <tr className="border-b border-border-default text-left text-[11px] uppercase tracking-wider text-text-secondary">
                     <th className="px-4 py-2.5">No.</th><th className="px-4 py-2.5">Shift</th><th className="px-4 py-2.5">Material</th>
@@ -238,9 +236,9 @@ export default function StockTransfers({ user }) {
                     <tr><td colSpan={8} className="bg-bg-row-alt px-4 py-1.5 text-xs font-semibold text-text-secondary">{formatBusinessDate(day)}</td></tr>
                     {items.map((t) => (
                       <tr key={t.id} className={`border-b border-border-subtle ${t.status !== 'ACTIVE' ? 'opacity-60' : ''}`}>
-                        <td className="px-4 py-2 font-mono text-xs text-text-primary">{t.transfer_no}</td>
+                        <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-text-primary">{t.transfer_no}</td>
                         <td className="px-4 py-2"><ShiftBadge shift={t.shift} /></td>
-                        <td className="px-4 py-2 font-medium text-text-primary">{t.material_name}</td>
+                        <td className="whitespace-nowrap px-4 py-2 font-medium text-text-primary">{t.material_name}</td>
                         <td className="px-4 py-2">
                           <span className="inline-flex flex-wrap items-center gap-1">
                             <LocationBadge location={t.from_location} label={locationLabel(t.from_location, t.from_machine_name)} />

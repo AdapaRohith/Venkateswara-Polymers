@@ -9,9 +9,8 @@ import useSSE from '../hooks/useSSE'
 import api from '../utils/api'
 import { apiError, formatBusinessDate } from '../utils/ipms'
 import { formatBags } from '../utils/units'
-import {
-  EmptyState, LocationBadge, PageHeader, Panel, PrimaryButton, SecondaryButton, ShiftBadge, StatTile, Weight, inputClass,
-} from '../components/ipms/Kit'
+import { EmptyState, LocationBadge, PageHeader, Panel, PrimaryButton, SecondaryButton, ShiftBadge, StatTile, Weight } from '../components/ipms/Kit'
+import { inputInline } from '../components/ipms/styles'
 
 const COLUMNS = [
   { key: 'warehouse_kg', loc: 'WAREHOUSE' },
@@ -101,7 +100,7 @@ export default function StockOverview({ user }) {
           hint={`${formatBags(totals.plant_kg)} across ${(data?.materials || []).length} materials`} />
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
         <Panel
           title="Stock by material and location"
           subtitle={focus ? `Showing materials held on ${focus.replace('_', ' ').toLowerCase()}` : 'Every material with stock anywhere in the plant'}
@@ -110,7 +109,7 @@ export default function StockOverview({ user }) {
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-text-secondary" />
               <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter materials"
-                className={`${inputClass} w-56 pl-8`} aria-label="Filter materials" />
+                className={`${inputInline} w-56 pl-8`} aria-label="Filter materials" />
             </div>
           )}
         >

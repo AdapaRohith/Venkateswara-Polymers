@@ -150,6 +150,7 @@ export default function StockActivity() {
     { key: 'first_floor_impact', label: 'First Floor: Opening → Change → Closing', icon: 'production' },
     { key: 'machine_impact', label: 'Machine: Opening → Change → Closing', icon: 'production' },
     { key: 'plant_impact', label: 'Plant Total: Opening → Change → Closing', icon: 'dashboard' },
+    { key: 'reason', label: 'Detail', icon: 'note', render: (value) => value || '—' },
     { key: 'created_by_name', label: 'Operator', icon: 'person', render: (value) => value || 'System / legacy' },
     { key: 'reverses_activity_id', label: 'Linked Reversal', icon: 'history', render: (value) => value ? `Reverses activity #${value}` : '—' },
     {

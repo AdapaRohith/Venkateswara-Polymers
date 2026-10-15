@@ -79,7 +79,7 @@ const Icon = {
 const stockControlItems = (isOwner) => [
   { name: 'Stock Overview', path: '/stock', icon: Icon.stock },
   { name: 'Opening Stock', path: '/stock/ledger?view=opening', icon: Icon.opening },
-  { name: 'Closing Stock', path: '/stock/ledger?view=closing', icon: Icon.closing },
+  { name: 'Closing Stock', short: 'Closing', path: '/stock/ledger?view=closing', icon: Icon.closing },
   { name: 'AM / PM Shift Ledger', path: '/stock/ledger?view=shifts', icon: Icon.ledger },
   { name: 'Stock Transfers', path: '/stock/transfers', icon: Icon.transfer },
   { name: 'Machine Stock', path: '/stock/machines', icon: Icon.machine },
@@ -110,7 +110,7 @@ const ownerNavGroups = [
   {
     label: 'Production',
     items: [
-      { name: 'Production Batches', path: '/production-batches', icon: Icon.batches },
+      { name: 'Production Batches', short: 'Batches', path: '/production-batches', icon: Icon.batches },
       { name: 'Production Log', path: '/production-log', icon: Icon.production },
       { name: 'Production Orders', path: '/production-orders', icon: Icon.orders },
       { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
@@ -141,7 +141,7 @@ const workerNavGroups = [
   {
     label: 'Work',
     items: [
-      { name: 'Production Batches', path: '/production-batches', icon: Icon.batches },
+      { name: 'Production Batches', short: 'Batches', path: '/production-batches', icon: Icon.batches },
       { name: 'Production Log', path: '/production-log', icon: Icon.production },
       { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
       { name: 'Stock Activity', path: '/stock-activity', icon: Icon.reports },
@@ -256,7 +256,7 @@ export default function Sidebar({ user, onLogout }) {
               }
             >
               <span className="w-4 h-4 flex items-center justify-center">{item.icon}</span>
-              <span className="text-[10px] font-medium leading-none">{item.name.split(' ')[0]}</span>
+              <span className="text-[10px] font-medium leading-none">{item.short || item.name.split(' ')[0]}</span>
             </NavLink>
           ))}
           <button

@@ -2,13 +2,9 @@ import { useId } from 'react'
 import { ArrowDown, ArrowUp, Moon, Sun } from 'lucide-react'
 
 import { formatBags, formatWeight, kgToBags, toKg } from '../../utils/units'
+import { inputBase, inputClass, labelClass } from './styles'
 import { LOCATIONS, SHIFT_LABELS, TONE_CLASSES, formatBusinessDate } from '../../utils/ipms'
 
-export const inputClass =
-  'w-full rounded-lg border border-border-default bg-bg-input px-3 py-2 text-sm text-text-primary ' +
-  'focus:border-accent-gold focus:outline-none focus:ring-2 focus:ring-accent-gold/20 disabled:opacity-50'
-
-export const labelClass = 'mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-secondary'
 
 export function PageHeader({ icon: Icon, title, subtitle, actions }) {
   return (
@@ -27,7 +23,7 @@ export function PageHeader({ icon: Icon, title, subtitle, actions }) {
 
 export function Panel({ title, subtitle, actions, children, className = '', bodyClassName = 'p-4' }) {
   return (
-    <section className={`rounded-xl border border-border-default bg-bg-card ${className}`}>
+    <section className={`min-w-0 rounded-xl border border-border-default bg-bg-card ${className}`}>
       {(title || actions) && (
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border-default px-4 py-3">
           <div className="min-w-0">
@@ -119,7 +115,7 @@ export function ShiftDatePicker({ date, shift, onChange, liveDate, liveShift, di
         <div className="flex flex-wrap items-center gap-2">
           <input id={dateId} type="date" value={date || ''} max={liveDate || undefined} disabled={disabled}
             onChange={(e) => onChange({ date: e.target.value, shift })}
-            className={`${inputClass} w-auto`} aria-label="Business date" />
+            className={`${inputBase} w-auto`} aria-label="Business date" />
           <div role="radiogroup" aria-label="Shift" className="inline-flex overflow-hidden rounded-lg border border-border-default">
             {['AM', 'PM'].map((s) => {
               const Icon = s === 'AM' ? Sun : Moon

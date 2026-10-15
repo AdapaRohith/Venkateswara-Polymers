@@ -10,7 +10,8 @@ import api from '../utils/api'
 import { exportSingleSheet } from '../utils/exportToExcel'
 import { apiError, formatBusinessDate, shiftDate } from '../utils/ipms'
 import { formatBags, formatWeight } from '../utils/units'
-import { EmptyState, PageHeader, Panel, SecondaryButton, StatTile, Weight, inputClass } from '../components/ipms/Kit'
+import { EmptyState, PageHeader, Panel, SecondaryButton, StatTile, Weight } from '../components/ipms/Kit'
+import { inputInline } from '../components/ipms/styles'
 
 const AM_COLOR = '#d97706'
 const PM_COLOR = '#7c3aed'
@@ -71,8 +72,8 @@ export default function StockUsage() {
         subtitle="Material used in production per business day, split into the morning (AM) and night (PM) shift. Returned stock is never counted as usage."
         actions={(
           <>
-            <input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className={`${inputClass} w-auto`} aria-label="From" />
-            <input type="date" value={range.to} max={meta?.live_business_date} onChange={(e) => setRange({ ...range, to: e.target.value })} className={`${inputClass} w-auto`} aria-label="To" />
+            <input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className={`${inputInline} w-auto`} aria-label="From" />
+            <input type="date" value={range.to} max={meta?.live_business_date} onChange={(e) => setRange({ ...range, to: e.target.value })} className={`${inputInline} w-auto`} aria-label="To" />
             <SecondaryButton onClick={exportRows} disabled={!days.length}><Download className="h-4 w-4" />Export</SecondaryButton>
           </>
         )} />

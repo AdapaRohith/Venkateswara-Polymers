@@ -10,9 +10,8 @@ import api from '../utils/api'
 import { exportMultiSheet } from '../utils/exportToExcel'
 import { LEDGER_LOCATIONS, LOCATIONS, apiError, formatBusinessDate } from '../utils/ipms'
 import { formatBags, formatWeight } from '../utils/units'
-import {
-  EmptyState, FlowCell, LocationBadge, PageHeader, Panel, PrimaryButton, SecondaryButton, StatTile, Weight, inputClass,
-} from '../components/ipms/Kit'
+import { EmptyState, FlowCell, LocationBadge, PageHeader, Panel, PrimaryButton, SecondaryButton, StatTile, Weight } from '../components/ipms/Kit'
+import { inputClass, inputInline } from '../components/ipms/styles'
 
 const VIEWS = [
   { id: 'opening', label: 'Opening Stock', icon: CalendarClock },
@@ -241,7 +240,7 @@ export default function StockLedger({ user }) {
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-default bg-bg-card p-3">
         <div className="flex flex-wrap items-center gap-2">
           <SecondaryButton aria-label="Previous day" onClick={() => ledger && goDate(ledger.previous_date)}><ChevronLeft className="h-4 w-4" /></SecondaryButton>
-          <input type="date" value={date} max={ledger?.live_business_date} onChange={(e) => e.target.value && goDate(e.target.value)} className={`${inputClass} w-auto`} aria-label="Business date" />
+          <input type="date" value={date} max={ledger?.live_business_date} onChange={(e) => e.target.value && goDate(e.target.value)} className={`${inputInline} w-auto`} aria-label="Business date" />
           <SecondaryButton aria-label="Next day" disabled={!ledger || ledger.is_live_day || ledger.is_future} onClick={() => goDate(ledger.next_date)}><ChevronRight className="h-4 w-4" /></SecondaryButton>
           {ledger && !ledger.is_live_day && <SecondaryButton onClick={() => goDate(ledger.live_business_date)}>Today</SecondaryButton>}
         </div>

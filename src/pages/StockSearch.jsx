@@ -5,7 +5,8 @@ import { Search } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { apiError, formatBusinessDate } from '../utils/ipms'
-import { EmptyState, PageHeader, Panel, PrimaryButton, ShiftBadge, StatusBadge, Weight, inputClass } from '../components/ipms/Kit'
+import { EmptyState, PageHeader, Panel, PrimaryButton, ShiftBadge, StatusBadge, Weight } from '../components/ipms/Kit'
+import { inputClass } from '../components/ipms/styles'
 
 const KINDS = {
   RETURN: { label: 'Return', path: '/stock/returns' },

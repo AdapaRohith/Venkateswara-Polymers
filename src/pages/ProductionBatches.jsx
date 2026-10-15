@@ -7,10 +7,8 @@ import useStockMeta from '../hooks/useStockMeta'
 import api from '../utils/api'
 import { apiError, formatBusinessDate, machinesForFloor, shiftDate } from '../utils/ipms'
 import { formatBags, formatWeight } from '../utils/units'
-import {
-  EmptyState, PageHeader, Panel, PrimaryButton, SecondaryButton, ShiftBadge, ShiftDatePicker, StatusBadge, Weight,
-  inputClass, labelClass,
-} from '../components/ipms/Kit'
+import { EmptyState, PageHeader, Panel, PrimaryButton, SecondaryButton, ShiftBadge, ShiftDatePicker, StatusBadge, Weight } from '../components/ipms/Kit'
+import { inputClass, inputInline, labelClass } from '../components/ipms/styles'
 
 const blankLine = () => ({ key: crypto.randomUUID(), machine: '', typeId: '', mode: 'gross', gross: '', tare: '', net: '', size: '', worker: '' })
 
@@ -229,9 +227,9 @@ export default function ProductionBatches({ user }) {
       <Panel title="Batch register" bodyClassName="p-0"
         actions={(
           <div className="flex items-center gap-2 text-xs">
-            <input type="date" value={range.from} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))} className={`${inputClass} w-auto`} aria-label="From" />
+            <input type="date" value={range.from} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))} className={`${inputInline} w-auto`} aria-label="From" />
             <span className="text-text-secondary">to</span>
-            <input type="date" value={range.to} onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))} className={`${inputClass} w-auto`} aria-label="To" />
+            <input type="date" value={range.to} onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))} className={`${inputInline} w-auto`} aria-label="To" />
           </div>
         )}>
         {batches.length === 0 ? <div className="p-4"><EmptyState>No batches in this range.</EmptyState></div> : (
