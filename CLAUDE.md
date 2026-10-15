@@ -43,6 +43,17 @@ Enable API call logging: `localStorage.setItem('vp_api_logs', '1')` (auto-enable
 | `/reports` | owner | MachineReports |
 | `/raw-material` | owner | RawMaterial |
 | `/users` | owner | Users |
+| `/stock` | owner, worker | StockOverview (all locations, Opening/Closing buttons) |
+| `/stock/ledger?view=opening\|shifts\|closing` | owner, worker | StockLedger (day ledger, AM/PM, Close Day) |
+| `/stock/transfers` | owner, worker | StockTransfers |
+| `/stock/machines` | owner, worker | MachineStock |
+| `/stock/returns` | owner | StockReturns |
+| `/stock/usage` | owner, worker | StockUsage (day-wise usage) |
+| `/stock/search` | owner, worker | StockSearch |
+| `/production-batches` | owner, worker | ProductionBatches (Ground Floor only) |
+
+Stock model, shifts, bags (25 kg) and rollout: see `ops/ipms/README.md`. Weights display via
+`src/utils/units.js` (kg below 1,000 kg, tons above).
 
 Route transitions use `framer-motion` `AnimatePresence` with `opacity + y` animation.
 
