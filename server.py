@@ -454,15 +454,16 @@ def parse_activity_limit(value) -> int:
 
 def build_stock_activity_filters(
     *, date_from=None, date_to=None, material_id=None, source_domain=None,
-    action=None, operator_id=None,
+    action=None, operator_id=None, shift=None, location=None, include_returns=False,
 ) -> tuple[str, list]:
     conditions, values = [], []
+    business_date = sql_business_date("sal.business_date", "sal.occurred_at")
     if date_from:
         values.append(parse_date(date_from))
-        conditions.append(f"sal.occurred_at >= ${len(values)}::date")
+        conditions.append(f"{business_date} >= ${len(values)}::date")
     if date_to:
         values.append(parse_date(date_to))
-        conditions.append(f"sal.occurred_at < (${len(values)}::date + INTERVAL '1 day')")
+        conditions.append(f"{business_date} <= ${len(values)}::date")
     if material_id not in (None, ""):
         try:
             values.append(int(material_id))
@@ -481,6 +482,20 @@ def build_stock_activity_filters(
         except (TypeError, ValueError) as exc:
             raise HTTPException(400, "operator_id must be a number") from exc
         conditions.append(f"sal.created_by = ${len(values)}")
+    if shift:
+        values.append(normalize_shift(shift))
+        conditions.append(f"{sql_shift('sal.shift', 'sal.occurred_at')} = ${len(values)}")
+    if location:
+        loc = str(location).strip().upper()
+        column = {"WAREHOUSE": "warehouse_delta_kg", "GROUND_FLOOR": "floor_delta_kg",
+                  "FIRST_FLOOR": "first_floor_delta_kg", "MACHINE": "machine_delta_kg"}.get(loc)
+        if not column:
+            raise HTTPException(400, "Unknown location")
+        conditions.append(f"COALESCE(sal.{column}, 0) <> 0")
+    # Returned stock leaves the site as if it never existed: it stays out of the
+    # everyday feed and only shows up when asked for (or searched for).
+    if not include_returns and str(source_domain or "").strip().upper() != "STOCK_RETURN":
+        conditions.append("sal.source_domain <> 'STOCK_RETURN'")
     return (f"WHERE {' AND '.join(conditions)}" if conditions else ""), values
 
 
@@ -494,6 +509,8 @@ def normalize_activity_row(row: dict) -> dict:
         "PRODUCTION": "/production-log",
         "WASTAGE": "/wastage",
         "MANUAL_ADJUSTMENT": "/raw-material",
+        "STOCK_TRANSFER": "/stock/transfers",
+        "STOCK_RETURN": "/stock/returns",
     }
     nouns = {
         "RAW_INPUT": "Raw material",
@@ -501,12 +518,18 @@ def normalize_activity_row(row: dict) -> dict:
         "PRODUCTION": "Production",
         "WASTAGE": "Wastage",
         "MANUAL_ADJUSTMENT": "Stock adjustment",
+        "STOCK_TRANSFER": "Stock transfer",
+        "STOCK_RETURN": "Stock return",
     }
     verbs = {"CREATE": "recorded", "UPDATE": "updated", "REVERSE": "reversed",
              "LEGACY": "legacy entry"}
     item["entry_path"] = paths.get(source)
     item["action_label"] = f"{nouns.get(source, 'Stock')} {verbs.get(action, action.lower())}"
     item["is_legacy"] = action == "LEGACY"
+    item["is_return"] = source == "STOCK_RETURN"
+    if item.get("business_date") is None and isinstance(item.get("occurred_at"), datetime):
+        item["business_date"], derived_shift = derive_business_context(item["occurred_at"])
+        item["shift"] = item.get("shift") or derived_shift
     item.pop("total_count", None)
     return item
 
@@ -733,8 +756,30 @@ def decimal_kg(value) -> Decimal:
     return Decimal(str(value or 0))
 
 
+# ── Multi-location stock engine ─────────────────────────────────────────────
+#
+# Stock for one material lives in four places:
+#   WAREHOUSE     raw_material_totals            (keyed by materials_master id)
+#   GROUND_FLOOR  floor_material_balance          (keyed by material_types id)
+#   FIRST_FLOOR   first_floor_material_balance    (keyed by material_types id)
+#   MACHINE       machine_stock_allocations       (machine id + material_types id)
+# Plant total = all four. Every writer locks them in that order, so concurrent
+# writers serialise instead of deadlocking or racing a balance check.
+
+STOCK_LOCATIONS = ("WAREHOUSE", "GROUND_FLOOR", "FIRST_FLOOR", "MACHINE")
+FLOOR_LOCATIONS = ("GROUND_FLOOR", "FIRST_FLOOR")
+LOCATION_LABELS = {
+    "WAREHOUSE": "Warehouse",
+    "GROUND_FLOOR": "Ground Floor",
+    "FIRST_FLOOR": "First Floor",
+    "MACHINE": "Machine",
+}
+SHIFTS = ("AM", "PM")
+BAG_KG = Decimal("25")
+
+
 async def lock_stock_locations(conn, material_id: int, material_type_id: int) -> dict:
-    """Lock warehouse then floor rows in one stable order for every stock writer."""
+    """Lock every location row for one material in one stable order."""
     require_tx(conn)
     material_id = int(material_id)
     material_type_id = int(material_type_id)
@@ -753,51 +798,245 @@ async def lock_stock_locations(conn, material_id: int, material_type_id: int) ->
         "SELECT total_quantity_kg FROM floor_material_balance WHERE material_type_id = $1 FOR UPDATE",
         material_type_id,
     )
+    first_floor = await conn.fetchrow(
+        "SELECT total_quantity_kg FROM first_floor_material_balance WHERE material_type_id = $1 FOR UPDATE",
+        material_type_id,
+    )
+    machine_rows = await conn.fetch(
+        """SELECT machine_id, quantity_kg FROM machine_stock_allocations
+            WHERE material_type_id = $1 ORDER BY machine_id FOR UPDATE""",
+        material_type_id,
+    )
+    machines = {int(r["machine_id"]): decimal_kg(r["quantity_kg"]) for r in machine_rows}
     return {
         "warehouse_kg": decimal_kg(warehouse["total_quantity_kg"]),
         "floor_kg": decimal_kg(floor["total_quantity_kg"] if floor else 0),
+        "first_floor_kg": decimal_kg(first_floor["total_quantity_kg"] if first_floor else 0),
+        "machines_kg": machines,
     }
+
+
+def _shortfall(location: str, available, machine_id=None) -> HTTPException:
+    label = LOCATION_LABELS.get(location, location)
+    if location == "GROUND_FLOOR":
+        # Ground Floor is the historical "Floor Stock"; keep the old wording visible.
+        label = "Ground Floor Stock (Floor Stock)"
+    elif location == "MACHINE":
+        label = f"Machine {machine_id} stock"
+    else:
+        label = f"{label} Stock"
+    return HTTPException(400, f"Insufficient {label}. Available: {float(available):.3f} kg")
+
+
+async def apply_stock_deltas(
+    conn, *, material_id: int, material_type_id: int,
+    warehouse: float = 0, ground_floor: float = 0, first_floor: float = 0,
+    machine_id: int | None = None, machine: float = 0,
+) -> dict:
+    """Apply one atomic multi-location change and return authoritative balances.
+
+    Every check happens before any write, so an overdraw anywhere leaves every
+    location untouched.
+    """
+    opening = await lock_stock_locations(conn, material_id, material_type_id)
+    d_wh, d_gf = decimal_kg(warehouse), decimal_kg(ground_floor)
+    d_ff, d_mc = decimal_kg(first_floor), decimal_kg(machine)
+    if d_mc and machine_id is None:
+        raise HTTPException(400, "A machine is required for machine stock changes")
+    wh_open, gf_open, ff_open = opening["warehouse_kg"], opening["floor_kg"], opening["first_floor_kg"]
+    machines = opening["machines_kg"]
+    mc_open = machines.get(int(machine_id), Decimal("0")) if machine_id is not None else Decimal("0")
+    mtot_open = sum(machines.values(), Decimal("0"))
+    wh_close, gf_close, ff_close, mc_close = wh_open + d_wh, gf_open + d_gf, ff_open + d_ff, mc_open + d_mc
+    if wh_close < 0:
+        raise _shortfall("WAREHOUSE", wh_open)
+    if gf_close < 0:
+        raise _shortfall("GROUND_FLOOR", gf_open)
+    if ff_close < 0:
+        raise _shortfall("FIRST_FLOOR", ff_open)
+    if mc_close < 0:
+        raise _shortfall("MACHINE", mc_open, machine_id)
+    if d_wh:
+        await conn.execute(
+            "UPDATE raw_material_totals SET total_quantity_kg = $1, updated_at = NOW() WHERE material_id = $2",
+            wh_close, int(material_id),
+        )
+    if d_gf:
+        await conn.execute(
+            "UPDATE floor_material_balance SET total_quantity_kg = $1, updated_at = NOW() WHERE material_type_id = $2",
+            gf_close, int(material_type_id),
+        )
+    if d_ff:
+        await conn.execute(
+            """INSERT INTO first_floor_material_balance (material_type_id, total_quantity_kg, updated_at)
+               VALUES ($2, $1, NOW()) ON CONFLICT (material_type_id)
+               DO UPDATE SET total_quantity_kg = EXCLUDED.total_quantity_kg, updated_at = NOW()""",
+            ff_close, int(material_type_id),
+        )
+    if d_mc:
+        await conn.execute(
+            """INSERT INTO machine_stock_allocations (machine_id, material_type_id, quantity_kg, updated_at)
+               VALUES ($1, $2, $3, NOW()) ON CONFLICT (machine_id, material_type_id)
+               DO UPDATE SET quantity_kg = EXCLUDED.quantity_kg, updated_at = NOW()""",
+            int(machine_id), int(material_type_id), mc_close,
+        )
+    if d_gf:
+        await sync_machine_assignments(conn, int(material_type_id))
+    mtot_close = mtot_open + d_mc
+    plant_open = wh_open + gf_open + ff_open + mtot_open
+    plant_close = wh_close + gf_close + ff_close + mtot_close
+    balances = {
+        "warehouse_opening_kg": float(wh_open),
+        "warehouse_closing_kg": float(wh_close),
+        "floor_opening_kg": float(gf_open),
+        "floor_closing_kg": float(gf_close),
+        "first_floor_opening_kg": float(ff_open),
+        "first_floor_closing_kg": float(ff_close),
+        "machines_total_opening_kg": float(mtot_open),
+        "machines_total_closing_kg": float(mtot_close),
+        "plant_opening_kg": float(plant_open),
+        "plant_closing_kg": float(plant_close),
+    }
+    if machine_id is not None:
+        balances.update({
+            "machine_id": int(machine_id),
+            "machine_opening_kg": float(mc_open),
+            "machine_closing_kg": float(mc_close),
+        })
+    return balances
 
 
 async def apply_location_delta(
     conn, *, material_id: int, material_type_id: int,
     warehouse_delta: float, floor_delta: float,
 ) -> dict:
-    """Apply one atomic two-location change and return authoritative balances."""
-    opening = await lock_stock_locations(conn, material_id, material_type_id)
-    warehouse_opening = opening["warehouse_kg"]
-    floor_opening = opening["floor_kg"]
-    warehouse_closing = warehouse_opening + decimal_kg(warehouse_delta)
-    floor_closing = floor_opening + decimal_kg(floor_delta)
-    if warehouse_closing < 0:
-        raise HTTPException(
-            400,
-            f"Insufficient Warehouse Stock. Available: {float(warehouse_opening):.3f} kg",
-        )
-    if floor_closing < 0:
-        raise HTTPException(
-            400,
-            f"Insufficient Floor Stock. Available: {float(floor_opening):.3f} kg",
-        )
-    await conn.execute(
-        "UPDATE raw_material_totals SET total_quantity_kg = $1, updated_at = NOW() WHERE material_id = $2",
-        warehouse_closing, int(material_id),
+    """Warehouse / Ground Floor change (the original two-location primitive)."""
+    return await apply_stock_deltas(
+        conn, material_id=material_id, material_type_id=material_type_id,
+        warehouse=warehouse_delta, ground_floor=floor_delta,
     )
-    await conn.execute(
-        "UPDATE floor_material_balance SET total_quantity_kg = $1, updated_at = NOW() WHERE material_type_id = $2",
-        floor_closing, int(material_type_id),
-    )
-    await sync_machine_assignments(conn, int(material_type_id))
-    plant_opening = warehouse_opening + floor_opening
-    plant_closing = warehouse_closing + floor_closing
-    return {
-        "warehouse_opening_kg": float(warehouse_opening),
-        "warehouse_closing_kg": float(warehouse_closing),
-        "floor_opening_kg": float(floor_opening),
-        "floor_closing_kg": float(floor_closing),
-        "plant_opening_kg": float(plant_opening),
-        "plant_closing_kg": float(plant_closing),
-    }
+
+
+def location_deltas(location: str, quantity, machine_id=None) -> dict:
+    """Keyword deltas for apply_stock_deltas that add `quantity` at a location."""
+    location = str(location or "").upper()
+    if location == "WAREHOUSE":
+        return {"warehouse": quantity}
+    if location == "GROUND_FLOOR":
+        return {"ground_floor": quantity}
+    if location == "FIRST_FLOOR":
+        return {"first_floor": quantity}
+    if location == "MACHINE":
+        if machine_id is None:
+            raise HTTPException(400, "A machine is required for machine stock")
+        return {"machine": quantity, "machine_id": int(machine_id)}
+    raise HTTPException(400, f"Unknown stock location: {location}")
+
+
+# ── Business date + AM/PM shift ───────────────────────────────────────────
+
+# Morning (AM) shift runs from SHIFT_AM_START to SHIFT_PM_START; the night (PM)
+# shift runs from SHIFT_PM_START until the next morning and belongs to the day it
+# started on, so work keyed in at 02:00 is filed under the previous day's PM.
+SHIFT_AM_START = _parse_clock(os.getenv("SHIFT_AM_START", "08:00:00"), dtime(8, 0, 0))
+SHIFT_PM_START = _parse_clock(os.getenv("SHIFT_PM_START", "20:00:00"), dtime(20, 0, 0))
+# Clock time stamped on an entry filed for another business date / shift.
+SHIFT_ENTRY_TIME = {"AM": BACKDATED_ENTRY_TIME, "PM": _parse_clock(
+    os.getenv("BACKDATED_PM_ENTRY_TIME", "21:00:00"), dtime(21, 0, 0))}
+
+
+def derive_business_context(moment: datetime | None = None) -> tuple[dt_date, str]:
+    moment = moment or datetime.now()
+    clock = moment.time()
+    if SHIFT_AM_START <= clock < SHIFT_PM_START:
+        return moment.date(), "AM"
+    if clock >= SHIFT_PM_START:
+        return moment.date(), "PM"
+    return moment.date() - timedelta(days=1), "PM"
+
+
+def row_business_context(row) -> tuple[dt_date | None, str | None]:
+    """The business date/shift an existing entry belongs to (derived for old rows).
+
+    Corrections and reversals are filed on the original entry's day and shift, so
+    a deleted mistake disappears from that day's ledger instead of distorting the
+    day it was noticed on.
+    """
+    if not row:
+        return None, None
+    get = row.get if hasattr(row, "get") else (lambda k: row[k] if k in row else None)
+    business_date, shift = get("business_date"), get("shift")
+    created_at = get("created_at")
+    if (business_date is None or shift is None) and isinstance(created_at, datetime):
+        derived_date, derived_shift = derive_business_context(created_at)
+        business_date = business_date or derived_date
+        shift = shift or derived_shift
+    return business_date, shift
+
+
+def sql_business_date(date_col: str, ts_col: str) -> str:
+    """SQL for a row's business date; historical rows derive it from their clock."""
+    return (f"COALESCE({date_col}, CASE WHEN {ts_col}::time < '{SHIFT_AM_START.isoformat()}'::time "
+            f"THEN ({ts_col}::date - 1) ELSE {ts_col}::date END)")
+
+
+def sql_shift(shift_col: str, ts_col: str) -> str:
+    """SQL for a row's AM/PM shift; historical rows derive it from their clock."""
+    return (f"COALESCE({shift_col}, CASE WHEN {ts_col}::time >= '{SHIFT_AM_START.isoformat()}'::time "
+            f"AND {ts_col}::time < '{SHIFT_PM_START.isoformat()}'::time THEN 'AM' ELSE 'PM' END)")
+
+
+def normalize_shift(value) -> str | None:
+    text = str(value or "").strip().upper()
+    if not text:
+        return None
+    aliases = {"AM": "AM", "MORNING": "AM", "DAY": "AM", "A": "AM",
+               "PM": "PM", "NIGHT": "PM", "EVENING": "PM", "N": "PM"}
+    if text not in aliases:
+        raise HTTPException(400, "shift must be AM (morning) or PM (night)")
+    return aliases[text]
+
+
+def parse_business_context(payload: dict, now: datetime | None = None):
+    """(business_date, shift, created_at) for an entry.
+
+    No date and no shift → the live clock decides both and created_at stays None
+    so the column default records the real time. Any other day or shift gets a
+    fixed clock (AM 09:00, PM 21:00) so the row reads plainly as filed later.
+    """
+    payload = payload or {}
+    live_date, live_shift = derive_business_context(now)
+    raw_date = (payload.get("business_date") or payload.get("production_date")
+                or payload.get("entry_date") or payload.get("date"))
+    business_date = parse_optional_date(raw_date) or live_date
+    requested_shift = normalize_shift(payload.get("shift"))
+    if not requested_shift and business_date in (live_date, (now or datetime.now()).date()):
+        # No shift and "today" (calendar or business): the live clock decides,
+        # so a night-shift entry at 02:00 still lands on the previous day's PM.
+        return live_date, live_shift, None
+    shift = requested_shift or "AM"
+    if business_date == live_date and shift == live_shift:
+        return business_date, shift, None
+    return business_date, shift, datetime.combine(business_date, SHIFT_ENTRY_TIME[shift])
+
+
+def parse_quantity_kg(body: dict, field: str = "quantity_kg") -> Decimal:
+    """Quantity in kg from either `quantity_kg` or `quantity_bags` (1 bag = 25 kg)."""
+    body = body or {}
+    bags = body.get("quantity_bags", body.get("bags"))
+    if bags not in (None, "") and body.get(field) in (None, ""):
+        try:
+            value = Decimal(str(bags)) * BAG_KG
+        except Exception as exc:
+            raise HTTPException(400, "Bags must be a number") from exc
+    else:
+        try:
+            value = Decimal(str(body.get(field)))
+        except Exception as exc:
+            raise HTTPException(400, "Quantity must be a number") from exc
+    if not value.is_finite() or value <= 0:
+        raise HTTPException(400, "Quantity must be greater than zero")
+    return value.quantize(Decimal("0.001"))
 
 
 async def warehouse_stock_receipt(conn, material_id: int, opening_kg, closing_kg) -> tuple[dict, int | None]:
@@ -811,16 +1050,30 @@ async def warehouse_stock_receipt(conn, material_id: int, opening_kg, closing_kg
         int(material_id),
     )
     floor = decimal_kg(floor_row["total_quantity_kg"] if floor_row else 0)
+    type_id = int(floor_row["material_type_id"]) if floor_row and floor_row["material_type_id"] else None
+    first_floor = machines_total = Decimal("0")
+    if type_id:
+        first_floor = decimal_kg(await conn.fetchval(
+            "SELECT total_quantity_kg FROM first_floor_material_balance WHERE material_type_id = $1",
+            type_id) or 0)
+        machines_total = decimal_kg(await conn.fetchval(
+            "SELECT COALESCE(SUM(quantity_kg), 0) FROM machine_stock_allocations WHERE material_type_id = $1",
+            type_id) or 0)
     opening = decimal_kg(opening_kg)
     closing = decimal_kg(closing_kg)
+    elsewhere = floor + first_floor + machines_total
     return ({
         "warehouse_opening_kg": float(opening),
         "warehouse_closing_kg": float(closing),
         "floor_opening_kg": float(floor),
         "floor_closing_kg": float(floor),
-        "plant_opening_kg": float(opening + floor),
-        "plant_closing_kg": float(closing + floor),
-    }, int(floor_row["material_type_id"]) if floor_row and floor_row["material_type_id"] else None)
+        "first_floor_opening_kg": float(first_floor),
+        "first_floor_closing_kg": float(first_floor),
+        "machines_total_opening_kg": float(machines_total),
+        "machines_total_closing_kg": float(machines_total),
+        "plant_opening_kg": float(opening + elsewhere),
+        "plant_closing_kg": float(closing + elsewhere),
+    }, type_id)
 
 
 async def record_stock_activity(
@@ -828,15 +1081,26 @@ async def record_stock_activity(
     correlation_id, material_id: int, material_type_id: int | None,
     quantity_kg: float, balances: dict, reason: str | None,
     created_by: int, reverses_activity_id: int | None = None,
+    business_date: dt_date | None = None, shift: str | None = None,
+    from_location: str | None = None, to_location: str | None = None,
 ) -> dict:
     """Append the audit receipt; failures propagate so the stock transaction rolls back."""
     require_tx(conn)
-    warehouse_opening = balances.get("warehouse_opening_kg")
-    warehouse_closing = balances.get("warehouse_closing_kg")
-    floor_opening = balances.get("floor_opening_kg")
-    floor_closing = balances.get("floor_closing_kg")
-    plant_opening = balances.get("plant_opening_kg")
-    plant_closing = balances.get("plant_closing_kg")
+    if business_date is None or shift is None:
+        live_date, live_shift = derive_business_context()
+        business_date = business_date or live_date
+        shift = shift or live_shift
+
+    def triple(prefix):
+        opening = balances.get(f"{prefix}_opening_kg")
+        closing = balances.get(f"{prefix}_closing_kg")
+        opening = decimal_kg(opening) if opening is not None else None
+        closing = decimal_kg(closing) if closing is not None else None
+        delta = (closing - opening) if opening is not None and closing is not None else None
+        return opening, delta, closing
+
+    wh, gf, pl = triple("warehouse"), triple("floor"), triple("plant")
+    ff, mc, mt = triple("first_floor"), triple("machine"), triple("machines_total")
     row = await conn.fetchrow(
         """INSERT INTO stock_activity_log (
                action, source_domain, source_id, correlation_id, material_id,
@@ -844,27 +1108,23 @@ async def record_stock_activity(
                warehouse_opening_kg, warehouse_delta_kg, warehouse_closing_kg,
                floor_opening_kg, floor_delta_kg, floor_closing_kg,
                plant_opening_kg, plant_delta_kg, plant_closing_kg,
-               reason, created_by, reverses_activity_id
+               reason, created_by, reverses_activity_id,
+               first_floor_opening_kg, first_floor_delta_kg, first_floor_closing_kg,
+               machine_id, machine_opening_kg, machine_delta_kg, machine_closing_kg,
+               machines_total_opening_kg, machines_total_delta_kg, machines_total_closing_kg,
+               business_date, shift, from_location, to_location
            ) VALUES (
                $1, $2, $3, $4, $5, $6, $7,
-               $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+               $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+               $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33
            ) RETURNING *""",
         action, source_domain, source_id, correlation_id,
         int(material_id) if material_id is not None else None,
         int(material_type_id) if material_type_id else None, decimal_kg(quantity_kg),
-        warehouse_opening,
-        (warehouse_closing - warehouse_opening)
-        if warehouse_opening is not None and warehouse_closing is not None else None,
-        warehouse_closing,
-        floor_opening,
-        (floor_closing - floor_opening)
-        if floor_opening is not None and floor_closing is not None else None,
-        floor_closing,
-        plant_opening,
-        (plant_closing - plant_opening)
-        if plant_opening is not None and plant_closing is not None else None,
-        plant_closing,
+        *wh, *gf, *pl,
         reason, int(created_by) if created_by else None, reverses_activity_id,
+        *ff, balances.get("machine_id"), *mc, *mt,
+        business_date, shift, from_location, to_location,
     )
     return dict(row)
 
@@ -872,6 +1132,7 @@ async def record_stock_activity(
 async def apply_floor_transfer(
     conn, *, source_id: int, material_id: int, material_type_id: int,
     quantity_kg: float, created_by: int, correlation_id, reason: str | None = None,
+    business_date: dt_date | None = None, shift: str | None = None,
 ) -> dict:
     quantity = decimal_kg(quantity_kg)
     if quantity <= 0:
@@ -895,6 +1156,8 @@ async def apply_floor_transfer(
         balances=balances,
         reason=reason,
         created_by=created_by,
+        business_date=business_date, shift=shift,
+        from_location="WAREHOUSE", to_location="GROUND_FLOOR",
     )
     return {**balances, "activity_id": activity["id"]}
 
@@ -929,6 +1192,9 @@ async def update_floor_transfer_stock(
         reason=movement_row.get("note"),
         created_by=created_by,
         reverses_activity_id=movement_row.get("activity_id"),
+        business_date=row_business_context(movement_row)[0],
+        shift=row_business_context(movement_row)[1],
+        from_location="WAREHOUSE", to_location="GROUND_FLOOR",
     )
     return {**balances, "activity_id": activity["id"]}
 
@@ -967,6 +1233,9 @@ async def reverse_floor_transfer(conn, movement_row: dict, created_by: int) -> d
         reason=movement_row.get("note"),
         created_by=created_by,
         reverses_activity_id=movement_row.get("activity_id"),
+        business_date=row_business_context(movement_row)[0],
+        shift=row_business_context(movement_row)[1],
+        from_location="GROUND_FLOOR", to_location="WAREHOUSE",
     )
     return {**balances, "activity_id": activity["id"]}
 
@@ -975,18 +1244,41 @@ async def apply_production_consumption(
     conn, *, log_id: int, material_id: int, material_type_id: int,
     net_kg: float, machine_id: int, created_by: int, correlation_id,
     action: str = "CREATE", reverses_activity_id: int | None = None,
+    business_date: dt_date | None = None, shift: str | None = None,
+    batch_no: str | None = None,
 ) -> dict:
-    """Consume finished-production weight from Floor Stock only."""
+    """Consume production weight: the machine's own stock first, then Ground Floor.
+
+    Warehouse and First Floor are never touched. `machine_consumed_kg` in the
+    result is what reversal must give back to the machine.
+    """
     quantity = decimal_kg(net_kg)
     if quantity <= 0:
         raise HTTPException(400, "Net weight must be greater than zero")
-    balances = await apply_location_delta(
-        conn,
-        material_id=material_id,
-        material_type_id=material_type_id,
-        warehouse_delta=0,
-        floor_delta=-quantity,
-    )
+    machine_available = Decimal("0")
+    if machine_id is not None:
+        machine_available = decimal_kg(await conn.fetchval(
+            """SELECT quantity_kg FROM machine_stock_allocations
+                WHERE machine_id = $1 AND material_type_id = $2""",
+            int(machine_id), int(material_type_id)) or 0)
+    from_machine = min(machine_available, quantity)
+    from_floor = quantity - from_machine
+    if from_machine > 0:
+        balances = await apply_stock_deltas(
+            conn, material_id=material_id, material_type_id=material_type_id,
+            ground_floor=-from_floor, machine_id=int(machine_id), machine=-from_machine,
+        )
+    else:
+        balances = await apply_location_delta(
+            conn,
+            material_id=material_id,
+            material_type_id=material_type_id,
+            warehouse_delta=0,
+            floor_delta=-quantity,
+        )
+    reason = f"Production on machine {machine_id}"
+    if batch_no:
+        reason = f"{reason} · batch {batch_no}"
     activity = await record_stock_activity(
         conn,
         action=action,
@@ -997,27 +1289,42 @@ async def apply_production_consumption(
         material_type_id=material_type_id,
         quantity_kg=quantity,
         balances=balances,
-        reason=f"Production on machine {machine_id}",
+        reason=reason,
         created_by=created_by,
         reverses_activity_id=reverses_activity_id,
+        business_date=business_date, shift=shift,
+        from_location="MACHINE" if from_machine > 0 else "GROUND_FLOOR",
     )
-    return {**balances, "activity_id": activity["id"]}
+    return {**balances, "activity_id": activity["id"],
+            "machine_consumed_kg": float(from_machine),
+            "floor_consumed_kg": float(from_floor)}
 
 
 async def reverse_production_consumption(
     conn, movement_row: dict, created_by: int,
 ) -> dict:
-    """Restore exactly the quantity recorded by the linked consumption movement."""
+    """Restore exactly the quantity recorded by the linked consumption movement,
+    to the same places it was taken from."""
     quantity = decimal_kg(movement_row.get("quantity_kg"))
     if quantity <= 0 or not movement_row.get("material_type_id"):
         raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
-    balances = await apply_location_delta(
-        conn,
-        material_id=int(movement_row["material_id"]),
-        material_type_id=int(movement_row["material_type_id"]),
-        warehouse_delta=0,
-        floor_delta=quantity,
-    )
+    to_machine = min(decimal_kg(movement_row.get("machine_consumed_kg") or 0), quantity)
+    to_floor = quantity - to_machine
+    if to_machine > 0:
+        balances = await apply_stock_deltas(
+            conn, material_id=int(movement_row["material_id"]),
+            material_type_id=int(movement_row["material_type_id"]),
+            ground_floor=to_floor, machine_id=int(movement_row["machine_id"]),
+            machine=to_machine,
+        )
+    else:
+        balances = await apply_location_delta(
+            conn,
+            material_id=int(movement_row["material_id"]),
+            material_type_id=int(movement_row["material_type_id"]),
+            warehouse_delta=0,
+            floor_delta=quantity,
+        )
     activity = await record_stock_activity(
         conn,
         action="REVERSE",
@@ -1031,6 +1338,9 @@ async def reverse_production_consumption(
         reason=f"Reverse production on machine {movement_row.get('machine_id')}",
         created_by=created_by,
         reverses_activity_id=movement_row.get("activity_id"),
+        business_date=movement_row.get("business_date"),
+        shift=movement_row.get("shift"),
+        to_location="MACHINE" if to_machine > 0 else "GROUND_FLOOR",
     )
     return {**balances, "activity_id": activity["id"]}
 
@@ -1053,6 +1363,8 @@ async def update_production_consumption(
         correlation_id=movement_row.get("correlation_id") or uuid4(),
         action="UPDATE",
         reverses_activity_id=reversal["activity_id"],
+        business_date=movement_row.get("business_date"),
+        shift=movement_row.get("shift"),
     )
     return {**receipt, "reversal_receipt": reversal}
 
@@ -1397,6 +1709,7 @@ async def health():
 async def get_stock_activity(
     date_from: str = None, date_to: str = None, material_id: str = None,
     source_domain: str = None, action: str = None, operator_id: str = None,
+    shift: str = None, location: str = None, include_returns: str = None,
     limit: str = "200", offset: str = "0", user=Depends(get_user),
 ):
     """One immutable, filterable explanation of every stock change."""
@@ -1408,15 +1721,19 @@ async def get_stock_activity(
     where, values = build_stock_activity_filters(
         date_from=date_from, date_to=date_to, material_id=material_id,
         source_domain=source_domain, action=action, operator_id=operator_id,
+        shift=shift, location=location,
+        include_returns=str(include_returns or "").lower() in ("1", "true", "yes"),
     )
     values.extend([parsed_limit, parsed_offset])
     async with pool.acquire() as c:
         result = await c.fetch(
             f"""SELECT sal.*, m.name AS material_name, u.name AS created_by_name,
+                       mc.name AS machine_name,
                        COUNT(*) OVER()::int AS total_count
                   FROM stock_activity_log sal
                   LEFT JOIN materials_master m ON m.id = sal.material_id
                   LEFT JOIN users u ON u.id = sal.created_by
+                  LEFT JOIN machines mc ON mc.id = sal.machine_id
                 {where}
                  ORDER BY sal.occurred_at DESC, sal.id DESC
                  LIMIT ${len(values) - 1} OFFSET ${len(values)}""",
@@ -1505,7 +1822,7 @@ async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
     async with pool.acquire() as c:
         async with c.transaction():
             cur = await c.fetchrow(
-                "SELECT id, material_id, material_name, quantity_kg, note, thickness, created_by FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
+                "SELECT id, material_id, material_name, quantity_kg, note, thickness, created_by, created_at, business_date, shift FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
             if not cur:
                 raise HTTPException(404, "Batch not found")
             link = await latest_activity_link(c, "RAW_INPUT", batch_id)
@@ -1526,7 +1843,8 @@ async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
                     correlation_id=link["correlation_id"], material_id=next_mat_id,
                     material_type_id=material_type_id, quantity_kg=next_qty,
                     balances=impact_receipt, reason=next_note, created_by=user.get("id"),
-                    reverses_activity_id=link["activity_id"])
+                    reverses_activity_id=link["activity_id"],
+                    business_date=row_business_context(cur)[0], shift=row_business_context(cur)[1])
             else:
                 old_opening = to_num(await c.fetchval(
                     "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
@@ -1539,7 +1857,8 @@ async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
                     correlation_id=link["correlation_id"], material_id=cur["material_id"],
                     material_type_id=old_type_id, quantity_kg=cur_qty,
                     balances=old_receipt, reason=cur["note"], created_by=user.get("id"),
-                    reverses_activity_id=link["activity_id"])
+                    reverses_activity_id=link["activity_id"],
+                    business_date=row_business_context(cur)[0], shift=row_business_context(cur)[1])
                 new_opening = to_num(await c.fetchval(
                     "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
                     next_mat_id))
@@ -1551,7 +1870,8 @@ async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
                     correlation_id=link["correlation_id"], material_id=next_mat_id,
                     material_type_id=material_type_id, quantity_kg=next_qty,
                     balances=impact_receipt, reason=next_note, created_by=user.get("id"),
-                    reverses_activity_id=reversed_activity["id"])
+                    reverses_activity_id=reversed_activity["id"],
+                    business_date=row_business_context(cur)[0], shift=row_business_context(cur)[1])
             updated = await c.fetchrow(
                 "UPDATE raw_material_batches SET material_id=$1, material_name=$2, quantity_kg=$3, note=$4, thickness=$5 WHERE id=$6 RETURNING *",
                 next_mat_id, next_name, next_qty, next_note, next_thickness, batch_id)
@@ -1571,7 +1891,7 @@ async def delete_batch(batch_id: int, user=Depends(get_user)):
         raise HTTPException(400, "Invalid batch id")
     async with pool.acquire() as c:
         async with c.transaction():
-            cur = await c.fetchrow("SELECT id, material_id, quantity_kg, note FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
+            cur = await c.fetchrow("SELECT id, material_id, quantity_kg, note, created_at, business_date, shift FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
             if not cur:
                 raise HTTPException(404, "Batch not found")
             link = await latest_activity_link(c, "RAW_INPUT", batch_id)
@@ -1588,7 +1908,8 @@ async def delete_batch(batch_id: int, user=Depends(get_user)):
                 correlation_id=link["correlation_id"], material_id=cur["material_id"],
                 material_type_id=material_type_id, quantity_kg=cur["quantity_kg"],
                 balances=impact_receipt, reason=cur["note"], created_by=user.get("id"),
-                reverses_activity_id=link["activity_id"])
+                reverses_activity_id=link["activity_id"],
+                business_date=row_business_context(cur)[0], shift=row_business_context(cur)[1])
             await c.execute("DELETE FROM raw_material_batches WHERE id = $1", batch_id)
     await broadcast("raw_material")
     return {"success": True, "impact_receipt": impact_receipt,
@@ -1648,7 +1969,7 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
         raise HTTPException(401, "User not authenticated properly")
     # Stock is often keyed in after the lorry has gone, so the operator can name
     # the day it actually arrived. Absent or today -> the column default stands.
-    entry_ts = parse_entry_timestamp(body)
+    business_date, shift, entry_ts = parse_business_context(body)
     async with pool.acquire() as c:
         async with c.transaction():
             mat_id = await get_or_create_material(c, mat_name)
@@ -1660,9 +1981,11 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
                 mat_id, qty)
             batch = await c.fetchrow(
                 """INSERT INTO raw_material_batches
-                       (material_id, material_name, quantity_kg, created_by, note, thickness, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW())) RETURNING *""",
-                mat_id, mat_name, qty, user["id"], note or None, thickness, entry_ts)
+                       (material_id, material_name, quantity_kg, created_by, note, thickness, created_at,
+                        business_date, shift)
+                   VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()), $8, $9) RETURNING *""",
+                mat_id, mat_name, qty, user["id"], note or None, thickness, entry_ts,
+                business_date, shift)
             opening = decimal_kg(upsert["total_quantity_kg"]) - decimal_kg(qty)
             impact_receipt, material_type_id = await warehouse_stock_receipt(
                 c, mat_id, opening, upsert["total_quantity_kg"])
@@ -1670,7 +1993,8 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
                 c, action="CREATE", source_domain="RAW_INPUT", source_id=batch["id"],
                 correlation_id=uuid4(), material_id=mat_id,
                 material_type_id=material_type_id, quantity_kg=qty,
-                balances=impact_receipt, reason=note, created_by=user["id"])
+                balances=impact_receipt, reason=note, created_by=user["id"],
+                business_date=business_date, shift=shift, to_location="WAREHOUSE")
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "raw_add", "mat": mat_name})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                 raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
@@ -1759,18 +2083,21 @@ async def issue_from_raw(request: Request, user=Depends(get_user)):
             mat_id = await get_or_create_material(c, mat_name)
             mt_id = await get_or_create_material_type(c, mat_name)
             machine_count = await c.fetchval("SELECT COUNT(*) FROM machines")
+            business_date, shift, entry_ts = parse_business_context(body)
             movement = await c.fetchrow(
                 """INSERT INTO material_movements
                        (material_id, material_type_id, quantity_kg, direction,
-                        movement_type, reference_id, note, created_by, created_at)
+                        movement_type, reference_id, note, created_by, created_at,
+                        business_date, shift)
                    VALUES ($1, $2, $3, 'OUT', 'FLOOR_TRANSFER', NULL, $4, $5,
-                           COALESCE($6, NOW())) RETURNING *""",
+                           COALESCE($6, NOW()), $7, $8) RETURNING *""",
                 mat_id, mt_id, qty, "Issued to floor and auto-assigned to all machines",
-                user.get("id"), parse_entry_timestamp(body))
+                user.get("id"), entry_ts, business_date, shift)
             receipt = await apply_floor_transfer(
                 c, source_id=movement["id"], material_id=mat_id,
                 material_type_id=mt_id, quantity_kg=qty, created_by=user.get("id"),
                 correlation_id=uuid4(), reason=movement["note"],
+                business_date=business_date, shift=shift,
             )
             tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "floor_issue", "mat": mat_name})
             if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
@@ -1826,19 +2153,22 @@ async def move_material(request: Request, user=Depends(get_user)):
                 if direction != "OUT":
                     raise HTTPException(400, "Floor transfers must move OUT of Warehouse Stock")
                 mt_id = await get_or_create_material_type(c, mat_name)
+                business_date, shift, entry_ts = parse_business_context(body)
                 mv = await c.fetchrow(
                     """INSERT INTO material_movements
                            (material_id, material_type_id, quantity_kg, direction,
-                            movement_type, reference_id, note, created_by, created_at)
+                            movement_type, reference_id, note, created_by, created_at,
+                            business_date, shift)
                        VALUES ($1, $2, $3, 'OUT', 'FLOOR_TRANSFER', $4, $5, $6,
-                               COALESCE($7, NOW())) RETURNING *""",
+                               COALESCE($7, NOW()), $8, $9) RETURNING *""",
                     mat_id, mt_id, qty, body.get("reference_id"), body.get("note"),
-                    user.get("id"), parse_entry_timestamp(body))
+                    user.get("id"), entry_ts, business_date, shift)
                 receipt = await apply_floor_transfer(
                     c, source_id=mv["id"], material_id=mat_id,
                     material_type_id=mt_id, quantity_kg=qty,
                     created_by=user.get("id"), correlation_id=uuid4(),
                     reason=body.get("note"),
+                    business_date=business_date, shift=shift,
                 )
             elif direction == "OUT":
                 bal = await c.fetchrow("SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE", mat_id)
@@ -2036,21 +2366,27 @@ async def resolve_production_material(c, machine_id, explicit_type_id, explicit_
 
 async def insert_production_log(c, *, machine_id, material_type_id, material_master_id,
                                 size, worker_name, gross, tare, created_at, created_by,
-                                returning="*"):
-    """Insert one production log and deduct exactly its net weight from the floor pool.
+                                returning="*", business_date=None, shift=None,
+                                batch_id=None, batch_no=None):
+    """Insert one production log and deduct exactly its net weight from production stock.
 
     Deduction and insert share one transaction, and the consumption movement written
     here is the receipt the reversal path reads back.
     """
     net = gross - tare
+    if business_date is None or shift is None:
+        live_date, live_shift = derive_business_context()
+        business_date = business_date or live_date
+        shift = shift or live_shift
     log_row = await c.fetchrow(
-        f"""INSERT INTO production_logs
+        """INSERT INTO production_logs
                 (machine_id, material_id, material_type_id, size, worker_name,
-                 gross_weight, tare_weight, created_at, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()), $9)
-            RETURNING {returning}""",
+                 gross_weight, tare_weight, created_at, created_by,
+                 business_date, shift, batch_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()), $9, $10, $11, $12)
+            RETURNING id""",
         machine_id, material_master_id, material_type_id, size, worker_name,
-        gross, tare, created_at, created_by)
+        gross, tare, created_at, created_by, business_date, shift, batch_id)
     await upsert_consumption_movement(c, log_row["id"], {
         "machine_id": machine_id,
         "material_type_id": material_type_id,
@@ -2065,7 +2401,12 @@ async def insert_production_log(c, *, machine_id, material_type_id, material_mas
         machine_id=machine_id,
         created_by=created_by,
         correlation_id=uuid4(),
+        business_date=business_date, shift=shift, batch_no=batch_no,
     )
+    log_row = await c.fetchrow(
+        f"""UPDATE production_logs SET machine_consumed_kg = $1 WHERE id = $2
+            RETURNING {returning}""",
+        receipt["machine_consumed_kg"], log_row["id"])
     return log_row, receipt
 
 
@@ -2073,7 +2414,7 @@ async def insert_production_log(c, *, machine_id, material_type_id, material_mas
 async def create_production_log(request: Request, user=Depends(get_user)):
     body = await request.json()
     machines_list = body.get("machines")
-    entry_ts = parse_entry_timestamp(body)
+    business_date, shift, entry_ts = parse_business_context(body)
     async with pool.acquire() as c:
         async with c.transaction():
             if machines_list and isinstance(machines_list, list):
@@ -2102,8 +2443,9 @@ async def create_production_log(request: Request, user=Depends(get_user)):
                         worker_name=(f"User {body.get('entered_by')}" if body.get("entered_by")
                                      else m.get("worker_name")),
                         gross=gw, tare=tw,
-                        created_at=parse_entry_timestamp(m) or entry_ts,
+                        created_at=entry_ts,
                         created_by=user.get("id"),
+                        business_date=business_date, shift=shift,
                         returning=("id, machine_id, material_id, size, worker_name, "
                                    "gross_weight, tare_weight, created_at"))
                     tol = await eval_qty_tolerance(get_expected_qty(m, net, ["expected_net_weight_kg"]), net, c, {"op": "batch_log", "machine": m["machine_id"]})
@@ -2141,7 +2483,8 @@ async def create_production_log(request: Request, user=Depends(get_user)):
                     machine_id=machine_id, material_type_id=mt_id, material_master_id=master_id,
                     size=body.get("size"), worker_name=body.get("worker_name"),
                     gross=gw, tare=tw, created_at=entry_ts,
-                    created_by=user.get("id"))
+                    created_by=user.get("id"),
+                    business_date=business_date, shift=shift)
                 tol = await eval_qty_tolerance(get_expected_qty(body, net, ["expected_net_weight_kg"]), net, c, {"op": "production_log", "machine": machine_id})
                 if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
                     raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
@@ -2176,12 +2519,15 @@ async def get_production_logs(machine_id: str = None, date_from: str = None, dat
         rs_ = await c.fetch(
             f"""SELECT pl.id, pl.machine_id, pl.material_id, pl.material_type_id, pl.size,
                        pl.worker_name, pl.gross_weight, pl.tare_weight, pl.created_at,
-                       pl.created_by,
+                       pl.created_by, pl.batch_id, pb.batch_no, pl.machine_consumed_kg,
+                       {sql_business_date("pl.business_date", "pl.created_at")} AS business_date,
+                       {sql_shift("pl.shift", "pl.created_at")} AS shift,
                        m.name AS machine_name,
                        COALESCE(mt.name, mat.name) AS material_name,
                        (sal.action = 'LEGACY' OR sal.id IS NULL) AS is_legacy
                   FROM production_logs pl
                   LEFT JOIN machines m ON m.id = pl.machine_id
+                  LEFT JOIN production_batches pb ON pb.id = pl.batch_id
                   LEFT JOIN material_types mt ON mt.id = pl.material_type_id
                   LEFT JOIN materials_master mat ON mat.id = pl.material_id
                   LEFT JOIN LATERAL (
@@ -2230,6 +2576,9 @@ async def update_production_log(log_id: int, request: Request, user=Depends(get_
                 **dict(movement),
                 "id": log_id,
                 "machine_id": cur["machine_id"],
+                "machine_consumed_kg": cur["machine_consumed_kg"],
+                "business_date": row_business_context(cur)[0],
+                "shift": row_business_context(cur)[1],
                 **(dict(link) if link else {}),
             }
             next_mt_id = await resolve_material_type_id(
@@ -2253,10 +2602,11 @@ async def update_production_log(log_id: int, request: Request, user=Depends(get_
             updated = await c.fetchrow(
                 """UPDATE production_logs
                       SET machine_id=$1, material_id=$2, material_type_id=$3, size=$4,
-                          worker_name=$5, gross_weight=$6, tare_weight=$7
+                          worker_name=$5, gross_weight=$6, tare_weight=$7,
+                          machine_consumed_kg=$9
                     WHERE id=$8 RETURNING *""",
                 machine_id_val, next_master_id, next_mt_id, body.get("size"),
-                body.get("worker_name"), gw, tw, log_id)
+                body.get("worker_name"), gw, tw, log_id, receipt["machine_consumed_kg"])
             await upsert_consumption_movement(c, log_id, {
                 "machine_id": machine_id_val,
                 "material_type_id": next_mt_id,
@@ -2289,6 +2639,9 @@ async def delete_production_log(log_id: int, user=Depends(get_user)):
                 **dict(movement),
                 "id": log_id,
                 "machine_id": cur["machine_id"],
+                "machine_consumed_kg": cur["machine_consumed_kg"],
+                "business_date": row_business_context(cur)[0],
+                "shift": row_business_context(cur)[1],
                 **(dict(link) if link else {}),
             }
             receipt = await reverse_production_consumption(c, recorded, user.get("id"))
@@ -2323,6 +2676,9 @@ async def bulk_delete_production_logs(request: Request, user=Depends(get_user)):
                     **dict(movement),
                     "id": r_["id"],
                     "machine_id": r_["machine_id"],
+                    "machine_consumed_kg": r_["machine_consumed_kg"],
+                    "business_date": row_business_context(r_)[0],
+                    "shift": row_business_context(r_)[1],
                     **(dict(link) if link else {}),
                 }
                 receipts.append(await reverse_production_consumption(
@@ -2331,6 +2687,1118 @@ async def bulk_delete_production_logs(request: Request, user=Depends(get_user)):
             await c.execute("DELETE FROM production_logs WHERE id = ANY($1::int[])", ids)
     await broadcast("production")
     return {"success": True, "deleted": len(ids), "stock_receipts": receipts}
+
+
+# ── IPMS: locations, transfers, machine stock, batches, returns, day ledger ──
+
+def kg_out(value) -> float:
+    return round(float(value or 0), 3)
+
+
+async def resolve_stock_material(c, body: dict) -> tuple[int, int, str]:
+    """(materials_master id, material_types id, name) for a stock operation.
+
+    Accepts material_type_id, material_id or material_name. A material that has
+    never been in the Warehouse gets a zero Warehouse row so every location for
+    it can be locked in the same order as everything else.
+    """
+    body = body or {}
+    name = str(body.get("material_name") or "").strip()
+    if body.get("material_type_id") not in (None, ""):
+        r_ = await c.fetchrow("SELECT name FROM material_types WHERE id = $1", int(to_num(body["material_type_id"])))
+        if not r_:
+            raise HTTPException(404, "Material not found")
+        name = r_["name"]
+    elif body.get("material_id") not in (None, ""):
+        r_ = await c.fetchrow("SELECT name FROM materials_master WHERE id = $1", int(to_num(body["material_id"])))
+        if not r_:
+            raise HTTPException(404, "Material not found")
+        name = r_["name"]
+    if not name:
+        raise HTTPException(400, "Material is required")
+    master = await c.fetchrow(
+        "SELECT id, name FROM materials_master WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) ORDER BY id LIMIT 1",
+        name)
+    if not master:
+        raise HTTPException(404, f"Material '{name}' was not found")
+    type_id = await get_or_create_material_type(c, master["name"])
+    await c.execute(
+        """INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at)
+           VALUES ($1, 0, NOW()) ON CONFLICT (material_id) DO NOTHING""",
+        master["id"])
+    return int(master["id"]), int(type_id), master["name"]
+
+
+def machine_floor_sql(alias: str = "") -> str:
+    prefix = f"{alias}." if alias else ""
+    return (f"COALESCE({prefix}floor, CASE WHEN {prefix}type = 'cutting' THEN 'FIRST_FLOOR' "
+            "ELSE 'GROUND_FLOOR' END)")
+
+
+MACHINE_FLOOR_SQL = machine_floor_sql()
+
+
+async def fetch_machine(c, machine_id) -> dict:
+    mid = parse_machine_id(machine_id)
+    r_ = await c.fetchrow(
+        f"SELECT id, name, type, {MACHINE_FLOOR_SQL} AS floor FROM machines WHERE id = $1", mid)
+    if not r_:
+        raise HTTPException(404, f"Machine {mid} was not found")
+    return dict(r_)
+
+
+async def next_document_no(c, prefix: str, table: str, column: str,
+                           business_date: dt_date, shift: str | None = None) -> str:
+    """Sequential, human-readable document number, e.g. PB-20261015-AM-001."""
+    await c.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"vp-docno-{prefix}")
+    stem = f"{prefix}-{business_date:%Y%m%d}" + (f"-{shift}" if shift else "")
+    count = await c.fetchval(f"SELECT COUNT(*) FROM {table} WHERE {column} LIKE $1", stem + "-%")
+    return f"{stem}-{int(count) + 1:03d}"
+
+
+def validate_transfer_route(from_loc: str, from_machine: dict | None,
+                            to_loc: str, to_machine: dict | None):
+    if from_loc not in STOCK_LOCATIONS or to_loc not in STOCK_LOCATIONS:
+        raise HTTPException(400, "Locations must be WAREHOUSE, GROUND_FLOOR, FIRST_FLOOR or MACHINE")
+    if from_loc == to_loc and from_loc != "MACHINE":
+        raise HTTPException(400, "Choose two different locations")
+    if from_loc == "MACHINE" and to_loc == "MACHINE":
+        raise HTTPException(400, "Release machine stock to its floor before assigning it to another machine")
+    if "WAREHOUSE" in (from_loc, to_loc) and "MACHINE" in (from_loc, to_loc):
+        raise HTTPException(400, "Machine stock moves through the machine's floor, not straight from the Warehouse")
+    if to_loc == "MACHINE" and to_machine["floor"] != from_loc:
+        raise HTTPException(400, (
+            f"{to_machine['name']} is on the {LOCATION_LABELS[to_machine['floor']]}; "
+            f"assign it stock from the {LOCATION_LABELS[to_machine['floor']]}"))
+    if from_loc == "MACHINE" and from_machine["floor"] != to_loc:
+        raise HTTPException(400, (
+            f"{from_machine['name']} is on the {LOCATION_LABELS[from_machine['floor']]}; "
+            f"release its stock back to the {LOCATION_LABELS[from_machine['floor']]}"))
+
+
+def transfer_deltas(from_loc, from_machine_id, to_loc, to_machine_id, quantity) -> dict:
+    deltas = location_deltas(from_loc, -quantity, from_machine_id)
+    deltas.update(location_deltas(to_loc, quantity, to_machine_id))
+    return deltas
+
+
+def describe_location(location: str, machine_name: str | None = None) -> str:
+    if location == "MACHINE":
+        return machine_name or "Machine"
+    return LOCATION_LABELS.get(location, location)
+
+
+@app.get("/stock/meta")
+async def get_stock_meta(user=Depends(get_user)):
+    live_date, live_shift = derive_business_context()
+    async with pool.acquire() as c:
+        machines = rows(await c.fetch(
+            f"SELECT id, name, type, {MACHINE_FLOOR_SQL} AS floor FROM machines ORDER BY id"))
+    return {
+        "locations": [{"id": k, "label": v} for k, v in LOCATION_LABELS.items()],
+        "shifts": [
+            {"id": "AM", "label": "AM · Morning shift",
+             "starts": SHIFT_AM_START.isoformat(timespec="minutes"),
+             "ends": SHIFT_PM_START.isoformat(timespec="minutes")},
+            {"id": "PM", "label": "PM · Night shift",
+             "starts": SHIFT_PM_START.isoformat(timespec="minutes"),
+             "ends": SHIFT_AM_START.isoformat(timespec="minutes")},
+        ],
+        "bag_kg": float(BAG_KG),
+        "live_business_date": live_date.isoformat(),
+        "live_shift": live_shift,
+        "machines": machines,
+    }
+
+
+# ── Current balances across every location ──
+
+async def current_location_balances(c) -> dict:
+    """{material key: {material_id, material_type_id, material_name, WAREHOUSE, ...}}"""
+    result = await c.fetch(
+        """WITH type_master AS (
+               SELECT mt.id AS type_id, mt.name AS type_name,
+                      (SELECT mm.id FROM materials_master mm
+                        WHERE LOWER(TRIM(mm.name)) = LOWER(TRIM(mt.name))
+                        ORDER BY mm.id LIMIT 1) AS master_id
+                 FROM material_types mt)
+           SELECT 'WAREHOUSE' AS loc, rmt.material_id AS master_id, NULL::bigint AS type_id,
+                  rmt.total_quantity_kg AS qty
+             FROM raw_material_totals rmt WHERE rmt.material_id IS NOT NULL
+           UNION ALL
+           SELECT 'GROUND_FLOOR', tm.master_id, fmb.material_type_id, fmb.total_quantity_kg
+             FROM floor_material_balance fmb JOIN type_master tm ON tm.type_id = fmb.material_type_id
+           UNION ALL
+           SELECT 'FIRST_FLOOR', tm.master_id, ffb.material_type_id, ffb.total_quantity_kg
+             FROM first_floor_material_balance ffb JOIN type_master tm ON tm.type_id = ffb.material_type_id
+           UNION ALL
+           SELECT 'MACHINES', tm.master_id, msa.material_type_id, SUM(msa.quantity_kg)
+             FROM machine_stock_allocations msa JOIN type_master tm ON tm.type_id = msa.material_type_id
+            GROUP BY tm.master_id, msa.material_type_id""")
+    names = {int(r_["id"]): r_["name"] for r_ in await c.fetch("SELECT id, name FROM materials_master")}
+    type_names = {int(r_["id"]): r_["name"] for r_ in await c.fetch("SELECT id, name FROM material_types")}
+    balances: dict = {}
+    for r_ in result:
+        key = f"m{r_['master_id']}" if r_["master_id"] is not None else f"t{r_['type_id']}"
+        entry = balances.setdefault(key, {
+            "key": key,
+            "material_id": int(r_["master_id"]) if r_["master_id"] is not None else None,
+            "material_type_id": None,
+            "material_name": names.get(r_["master_id"]) if r_["master_id"] is not None
+            else type_names.get(r_["type_id"]),
+            "WAREHOUSE": Decimal("0"), "GROUND_FLOOR": Decimal("0"),
+            "FIRST_FLOOR": Decimal("0"), "MACHINES": Decimal("0"),
+        })
+        if r_["type_id"] is not None:
+            entry["material_type_id"] = int(r_["type_id"])
+        entry[r_["loc"]] += decimal_kg(r_["qty"])
+    # Fill type ids for warehouse-only materials so the UI can transfer them.
+    for entry in balances.values():
+        if entry["material_type_id"] is None and entry["material_name"]:
+            tid = next((i for i, n in type_names.items()
+                        if n.strip().lower() == entry["material_name"].strip().lower()), None)
+            entry["material_type_id"] = tid
+    return balances
+
+
+@app.get("/stock/overview")
+async def get_stock_overview(user=Depends(get_user)):
+    live_date, live_shift = derive_business_context()
+    async with pool.acquire() as c:
+        balances = await current_location_balances(c)
+        allocations = rows(await c.fetch(
+            f"""SELECT msa.machine_id, m.name AS machine_name, {machine_floor_sql('m')} AS floor,
+                       msa.material_type_id, mt.name AS material_name, msa.quantity_kg::float AS quantity_kg,
+                       msa.updated_at
+                  FROM machine_stock_allocations msa
+                  JOIN machines m ON m.id = msa.machine_id
+                  JOIN material_types mt ON mt.id = msa.material_type_id
+                 WHERE msa.quantity_kg > 0
+                 ORDER BY msa.machine_id, mt.name"""))
+        machines = rows(await c.fetch(
+            f"SELECT id, name, type, {MACHINE_FLOOR_SQL} AS floor FROM machines ORDER BY id"))
+    materials = []
+    totals = {k: Decimal("0") for k in ("WAREHOUSE", "GROUND_FLOOR", "FIRST_FLOOR", "MACHINES", "PLANT")}
+    for entry in balances.values():
+        plant = entry["WAREHOUSE"] + entry["GROUND_FLOOR"] + entry["FIRST_FLOOR"] + entry["MACHINES"]
+        if plant == 0:
+            continue
+        for k in ("WAREHOUSE", "GROUND_FLOOR", "FIRST_FLOOR", "MACHINES"):
+            totals[k] += entry[k]
+        totals["PLANT"] += plant
+        materials.append({
+            "key": entry["key"], "material_id": entry["material_id"],
+            "material_type_id": entry["material_type_id"], "material_name": entry["material_name"],
+            "warehouse_kg": kg_out(entry["WAREHOUSE"]), "ground_floor_kg": kg_out(entry["GROUND_FLOOR"]),
+            "first_floor_kg": kg_out(entry["FIRST_FLOOR"]), "machines_kg": kg_out(entry["MACHINES"]),
+            "plant_kg": kg_out(plant),
+        })
+    materials.sort(key=lambda m: (m["material_name"] or "").lower())
+    return {
+        "live_business_date": live_date.isoformat(), "live_shift": live_shift,
+        "materials": materials,
+        "totals": {k.lower() + "_kg": kg_out(v) for k, v in totals.items()},
+        "machine_allocations": allocations,
+        "machines": machines,
+    }
+
+
+# ── Stock transfers between locations ──
+
+@app.post("/stock/transfers")
+async def create_stock_transfer(request: Request, user=Depends(get_user)):
+    body = await request.json()
+    quantity = parse_quantity_kg(body)
+    from_loc = str(body.get("from_location") or "").strip().upper()
+    to_loc = str(body.get("to_location") or "").strip().upper()
+    business_date, shift, entry_ts = parse_business_context(body)
+    note = str(body.get("note") or "").strip() or None
+    async with pool.acquire() as c:
+        async with c.transaction():
+            from_machine = await fetch_machine(c, body.get("from_machine_id")) if from_loc == "MACHINE" else None
+            to_machine = await fetch_machine(c, body.get("to_machine_id")) if to_loc == "MACHINE" else None
+            validate_transfer_route(from_loc, from_machine, to_loc, to_machine)
+            material_id, type_id, material_name = await resolve_stock_material(c, body)
+            transfer_no = await next_document_no(c, "ST", "stock_transfers", "transfer_no", business_date)
+            transfer = await c.fetchrow(
+                """INSERT INTO stock_transfers
+                       (transfer_no, material_id, material_type_id, quantity_kg,
+                        from_location, from_machine_id, to_location, to_machine_id,
+                        business_date, shift, note, created_by, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13, NOW()))
+                   RETURNING *""",
+                transfer_no, material_id, type_id, quantity, from_loc,
+                from_machine["id"] if from_machine else None, to_loc,
+                to_machine["id"] if to_machine else None, business_date, shift, note,
+                user_id_from_token(user), entry_ts)
+            balances = await apply_stock_deltas(
+                c, material_id=material_id, material_type_id=type_id,
+                **transfer_deltas(from_loc, from_machine["id"] if from_machine else None,
+                                  to_loc, to_machine["id"] if to_machine else None, quantity))
+            route = (f"{describe_location(from_loc, from_machine and from_machine['name'])} → "
+                     f"{describe_location(to_loc, to_machine and to_machine['name'])}")
+            activity = await record_stock_activity(
+                c, action="CREATE", source_domain="STOCK_TRANSFER", source_id=transfer["id"],
+                correlation_id=uuid4(), material_id=material_id, material_type_id=type_id,
+                quantity_kg=quantity, balances=balances,
+                reason=f"{transfer_no} · {route}" + (f" · {note}" if note else ""),
+                created_by=user_id_from_token(user), business_date=business_date, shift=shift,
+                from_location=from_loc, to_location=to_loc)
+    await broadcast("stock")
+    await broadcast("floor_stock")
+    await broadcast("raw_material")
+    return {"success": True, "transfer": {**dict(transfer), "material_name": material_name, "route": route},
+            "impact_receipt": balances, "activity_id": activity["id"]}
+
+
+@app.get("/stock/transfers")
+async def list_stock_transfers(date_from: str = None, date_to: str = None, shift: str = None,
+                               location: str = None, limit: str = "500", user=Depends(get_user)):
+    conds, vals = [], []
+    if date_from:
+        vals.append(parse_date(date_from)); conds.append(f"st.business_date >= ${len(vals)}")
+    if date_to:
+        vals.append(parse_date(date_to)); conds.append(f"st.business_date <= ${len(vals)}")
+    if shift:
+        vals.append(normalize_shift(shift)); conds.append(f"st.shift = ${len(vals)}")
+    if location:
+        vals.append(str(location).upper())
+        conds.append(f"(st.from_location = ${len(vals)} OR st.to_location = ${len(vals)})")
+    vals.append(min(max(int(to_num(limit, 500)), 1), 1000))
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    async with pool.acquire() as c:
+        result = rows(await c.fetch(
+            f"""SELECT st.*, mm.name AS material_name, fm.name AS from_machine_name,
+                       tm.name AS to_machine_name, u.name AS created_by_name,
+                       ru.name AS reversed_by_name
+                  FROM stock_transfers st
+                  JOIN materials_master mm ON mm.id = st.material_id
+                  LEFT JOIN machines fm ON fm.id = st.from_machine_id
+                  LEFT JOIN machines tm ON tm.id = st.to_machine_id
+                  LEFT JOIN users u ON u.id = st.created_by
+                  LEFT JOIN users ru ON ru.id = st.reversed_by
+                {where} ORDER BY st.business_date DESC, st.shift DESC, st.id DESC LIMIT ${len(vals)}""",
+            *vals))
+    for t in result:
+        t["route"] = (f"{describe_location(t['from_location'], t['from_machine_name'])} → "
+                      f"{describe_location(t['to_location'], t['to_machine_name'])}")
+    return result
+
+
+@app.delete("/stock/transfers/{transfer_id}")
+async def reverse_stock_transfer(transfer_id: int, user=Depends(get_user)):
+    async with pool.acquire() as c:
+        async with c.transaction():
+            t = await c.fetchrow("SELECT * FROM stock_transfers WHERE id = $1 FOR UPDATE", transfer_id)
+            if not t:
+                raise HTTPException(404, "Transfer not found")
+            require_entry_owner(user, t["created_by"])
+            if t["status"] != "ACTIVE":
+                raise HTTPException(400, "This transfer has already been reversed")
+            quantity = decimal_kg(t["quantity_kg"])
+            try:
+                balances = await apply_stock_deltas(
+                    c, material_id=t["material_id"], material_type_id=t["material_type_id"],
+                    **transfer_deltas(t["to_location"], t["to_machine_id"],
+                                      t["from_location"], t["from_machine_id"], quantity))
+            except HTTPException as exc:
+                if exc.status_code == 400 and "Insufficient" in str(exc.detail):
+                    raise HTTPException(400, (
+                        f"Cannot reverse {t['transfer_no']}: the destination no longer holds "
+                        f"{float(quantity):.3f} kg. {exc.detail}")) from exc
+                raise
+            link = await latest_activity_link(c, "STOCK_TRANSFER", transfer_id)
+            activity = await record_stock_activity(
+                c, action="REVERSE", source_domain="STOCK_TRANSFER", source_id=transfer_id,
+                correlation_id=link["correlation_id"] if link else uuid4(),
+                material_id=t["material_id"], material_type_id=t["material_type_id"],
+                quantity_kg=quantity, balances=balances,
+                reason=f"{t['transfer_no']} reversed", created_by=user_id_from_token(user),
+                reverses_activity_id=link["activity_id"] if link else None,
+                business_date=t["business_date"], shift=t["shift"],
+                from_location=t["to_location"], to_location=t["from_location"])
+            await c.execute(
+                "UPDATE stock_transfers SET status = 'REVERSED', reversed_by = $1, reversed_at = NOW() WHERE id = $2",
+                user_id_from_token(user), transfer_id)
+    await broadcast("stock")
+    await broadcast("floor_stock")
+    await broadcast("raw_material")
+    return {"success": True, "impact_receipt": balances, "activity_id": activity["id"]}
+
+
+# ── Machine stock ──
+
+@app.get("/stock/machines")
+async def get_machine_stock(user=Depends(get_user)):
+    async with pool.acquire() as c:
+        machines = rows(await c.fetch(
+            f"SELECT id, name, type, {MACHINE_FLOOR_SQL} AS floor FROM machines ORDER BY id"))
+        allocations = rows(await c.fetch(
+            """SELECT msa.machine_id, msa.material_type_id, mt.name AS material_name,
+                      msa.quantity_kg::float AS quantity_kg, msa.updated_at
+                 FROM machine_stock_allocations msa
+                 JOIN material_types mt ON mt.id = msa.material_type_id
+                WHERE msa.quantity_kg > 0 ORDER BY mt.name"""))
+        live_date, _ = derive_business_context()
+        consumed = rows(await c.fetch(
+            f"""SELECT machine_id, {sql_shift('shift', 'created_at')} AS shift,
+                       SUM(gross_weight - tare_weight)::float AS net_kg, COUNT(*)::int AS entries
+                  FROM production_logs
+                 WHERE {sql_business_date('business_date', 'created_at')} = $1
+                 GROUP BY 1, 2""", live_date))
+    for m in machines:
+        m["allocations"] = [a for a in allocations if a["machine_id"] == m["id"]]
+        m["allocated_kg"] = kg_out(sum(a["quantity_kg"] for a in m["allocations"]))
+        m["today"] = {r_["shift"]: {"net_kg": kg_out(r_["net_kg"]), "entries": r_["entries"]}
+                      for r_ in consumed if r_["machine_id"] == m["id"]}
+    return {"machines": machines, "business_date": live_date.isoformat()}
+
+
+# ── Production batches (Ground Floor stock only) ──
+
+async def build_batch_lines(c, lines: list) -> list:
+    prepared = []
+    for index, line in enumerate(lines or [], start=1):
+        if not isinstance(line, dict) or not line.get("machine_id"):
+            raise HTTPException(400, f"Line {index}: machine is required")
+        machine = await fetch_machine(c, line["machine_id"])
+        if machine["floor"] != "GROUND_FLOOR":
+            raise HTTPException(400, (
+                f"Line {index}: {machine['name']} is on the First Floor. Production batches "
+                "draw only Ground Floor stock — use Ground Floor machines."))
+        if line.get("gross_weight") in (None, "") and line.get("net_weight") not in (None, ""):
+            gross, tare = to_num(line.get("net_weight")), 0.0
+        else:
+            gross, tare = to_num(line.get("gross_weight")), to_num(line.get("tare_weight"))
+        if line.get("bags") not in (None, "") and not gross:
+            gross, tare = float(Decimal(str(line["bags"])) * BAG_KG), 0.0
+        if gross < tare:
+            raise HTTPException(400, f"Line {index}: gross weight must be at least the tare weight")
+        if gross - tare <= 0:
+            raise HTTPException(400, f"Line {index}: net weight must be greater than zero")
+        if line.get("material_name") and not (line.get("material_type_id") or line.get("material_id")):
+            master_id, type_id, _ = await resolve_stock_material(c, line)
+        else:
+            type_id, master_id = await resolve_production_material(
+                c, machine["id"], line.get("material_type_id"), line.get("material_id"))
+        if not type_id or master_id <= 0:
+            raise HTTPException(400, f"Line {index}: choose the material this machine used")
+        prepared.append({"machine": machine, "type_id": type_id, "master_id": master_id,
+                         "gross": gross, "tare": tare, "size": line.get("size"),
+                         "worker_name": line.get("worker_name")})
+    if not prepared:
+        raise HTTPException(400, "Add at least one machine line to the batch")
+    return prepared
+
+
+async def fetch_batches(c, where: str, vals: list) -> list:
+    batches = rows(await c.fetch(
+        f"""SELECT pb.*, u.name AS created_by_name, ru.name AS reversed_by_name
+              FROM production_batches pb
+              LEFT JOIN users u ON u.id = pb.created_by
+              LEFT JOIN users ru ON ru.id = pb.reversed_by
+            {where} ORDER BY pb.business_date DESC, pb.shift DESC, pb.id DESC LIMIT 300""", *vals))
+    if not batches:
+        return []
+    lines = rows(await c.fetch(
+        """SELECT pl.id, pl.batch_id, pl.machine_id, m.name AS machine_name, pl.material_type_id,
+                  COALESCE(mt.name, mat.name) AS material_name, pl.size, pl.worker_name,
+                  pl.gross_weight::float AS gross_weight, pl.tare_weight::float AS tare_weight,
+                  (pl.gross_weight - pl.tare_weight)::float AS net_weight,
+                  COALESCE(pl.machine_consumed_kg, 0)::float AS machine_consumed_kg
+             FROM production_logs pl
+             LEFT JOIN machines m ON m.id = pl.machine_id
+             LEFT JOIN material_types mt ON mt.id = pl.material_type_id
+             LEFT JOIN materials_master mat ON mat.id = pl.material_id
+            WHERE pl.batch_id = ANY($1::bigint[]) ORDER BY pl.id""",
+        [b["id"] for b in batches]))
+    for b in batches:
+        b["lines"] = [ln for ln in lines if ln["batch_id"] == b["id"]]
+        b["total_net_kg"] = kg_out(sum(ln["net_weight"] for ln in b["lines"]))
+        b["from_machine_kg"] = kg_out(sum(ln["machine_consumed_kg"] for ln in b["lines"]))
+        b["from_ground_floor_kg"] = kg_out(b["total_net_kg"] - b["from_machine_kg"])
+        b["machine_count"] = len({ln["machine_id"] for ln in b["lines"]})
+    return batches
+
+
+@app.post("/production/batches")
+async def create_production_batch(request: Request, user=Depends(get_user)):
+    body = await request.json()
+    business_date, shift, entry_ts = parse_business_context(body)
+    note = str(body.get("note") or "").strip() or None
+    created_by = user_id_from_token(user)
+    async with pool.acquire() as c:
+        async with c.transaction():
+            prepared = await build_batch_lines(c, body.get("lines"))
+            batch_no = await next_document_no(
+                c, "PB", "production_batches", "batch_no", business_date, shift)
+            batch = await c.fetchrow(
+                """INSERT INTO production_batches (batch_no, business_date, shift, note, created_by)
+                   VALUES ($1, $2, $3, $4, $5) RETURNING *""",
+                batch_no, business_date, shift, note, created_by)
+            receipts = []
+            for line in prepared:
+                log_row, receipt = await insert_production_log(
+                    c, machine_id=line["machine"]["id"], material_type_id=line["type_id"],
+                    material_master_id=line["master_id"], size=line["size"],
+                    worker_name=line["worker_name"], gross=line["gross"], tare=line["tare"],
+                    created_at=entry_ts, created_by=created_by, returning="id",
+                    business_date=business_date, shift=shift,
+                    batch_id=batch["id"], batch_no=batch_no)
+                receipts.append({"log_id": log_row["id"], **receipt})
+            result = await fetch_batches(c, "WHERE pb.id = $1", [batch["id"]])
+    await broadcast("production")
+    await broadcast("stock")
+    return {"success": True, "batch": result[0], "stock_receipts": receipts}
+
+
+@app.get("/production/batches")
+async def list_production_batches(date_from: str = None, date_to: str = None, shift: str = None,
+                                  status: str = None, user=Depends(get_user)):
+    conds, vals = [], []
+    if date_from:
+        vals.append(parse_date(date_from)); conds.append(f"pb.business_date >= ${len(vals)}")
+    if date_to:
+        vals.append(parse_date(date_to)); conds.append(f"pb.business_date <= ${len(vals)}")
+    if shift:
+        vals.append(normalize_shift(shift)); conds.append(f"pb.shift = ${len(vals)}")
+    if status:
+        vals.append(str(status).upper()); conds.append(f"pb.status = ${len(vals)}")
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    async with pool.acquire() as c:
+        return await fetch_batches(c, where, vals)
+
+
+@app.delete("/production/batches/{batch_id}")
+async def reverse_production_batch(batch_id: int, user=Depends(get_user)):
+    async with pool.acquire() as c:
+        async with c.transaction():
+            batch = await c.fetchrow("SELECT * FROM production_batches WHERE id = $1 FOR UPDATE", batch_id)
+            if not batch:
+                raise HTTPException(404, "Batch not found")
+            require_entry_owner(user, batch["created_by"])
+            if batch["status"] != "ACTIVE":
+                raise HTTPException(400, "This batch has already been reversed")
+            logs = await c.fetch(
+                "SELECT * FROM production_logs WHERE batch_id = $1 ORDER BY id FOR UPDATE", batch_id)
+            receipts = []
+            for log in logs:
+                movement = await consumption_movement_for_log(c, log["id"])
+                link = await latest_activity_link(c, "PRODUCTION", log["id"])
+                if not movement or not movement["material_type_id"]:
+                    raise HTTPException(400, "Batch line has no stock receipt and cannot be reversed")
+                recorded = {
+                    **dict(movement), "id": log["id"], "machine_id": log["machine_id"],
+                    "machine_consumed_kg": log["machine_consumed_kg"],
+                    "business_date": row_business_context(log)[0],
+                    "shift": row_business_context(log)[1],
+                    **(dict(link) if link else {}),
+                }
+                receipts.append(await reverse_production_consumption(c, recorded, user_id_from_token(user)))
+            ids = [log["id"] for log in logs]
+            if ids:
+                await c.execute(
+                    "DELETE FROM material_movements WHERE movement_type = 'CONSUMPTION' AND reference_id = ANY($1::bigint[])", ids)
+                await c.execute("DELETE FROM production_logs WHERE id = ANY($1::bigint[])", ids)
+            await c.execute(
+                """UPDATE production_batches
+                      SET status = 'REVERSED', reversed_by = $1, reversed_at = NOW(),
+                          note = CONCAT_WS(' · ', note, $3::text)
+                    WHERE id = $2""",
+                user_id_from_token(user), batch_id,
+                f"Reversed {len(ids)} line(s), "
+                f"{sum(float(log['gross_weight'] - log['tare_weight']) for log in logs):.3f} kg restored")
+    await broadcast("production")
+    await broadcast("stock")
+    return {"success": True, "reversed_lines": len(ids), "stock_receipts": receipts}
+
+
+# ── Stock returns ──
+
+@app.post("/stock/returns")
+async def create_stock_return(request: Request, user=Depends(get_user)):
+    body = await request.json()
+    quantity = parse_quantity_kg(body)
+    location = str(body.get("location") or "").strip().upper()
+    if location not in STOCK_LOCATIONS:
+        raise HTTPException(400, "Choose the location the stock is returned from")
+    reason = str(body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "A reason is required for every return")
+    returned_to = str(body.get("returned_to") or "").strip() or None
+    business_date, shift, entry_ts = parse_business_context(body)
+    async with pool.acquire() as c:
+        async with c.transaction():
+            machine = await fetch_machine(c, body.get("machine_id")) if location == "MACHINE" else None
+            material_id, type_id, material_name = await resolve_stock_material(c, body)
+            batch_id = body.get("production_batch_id")
+            if batch_id not in (None, ""):
+                batch_id = int(to_num(batch_id))
+                if not await c.fetchval("SELECT 1 FROM production_batches WHERE id = $1", batch_id):
+                    raise HTTPException(404, "Production batch not found")
+            else:
+                batch_id = None
+            return_no = await next_document_no(c, "RT", "stock_returns", "return_no", business_date)
+            ret = await c.fetchrow(
+                """INSERT INTO stock_returns
+                       (return_no, material_id, material_type_id, quantity_kg, location, machine_id,
+                        production_batch_id, business_date, shift, returned_to, reason,
+                        created_by, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13, NOW()))
+                   RETURNING *""",
+                return_no, material_id, type_id, quantity, location,
+                machine["id"] if machine else None, batch_id, business_date, shift,
+                returned_to, reason, user_id_from_token(user), entry_ts)
+            balances = await apply_stock_deltas(
+                c, material_id=material_id, material_type_id=type_id,
+                **location_deltas(location, -quantity, machine["id"] if machine else None))
+            activity = await record_stock_activity(
+                c, action="CREATE", source_domain="STOCK_RETURN", source_id=ret["id"],
+                correlation_id=uuid4(), material_id=material_id, material_type_id=type_id,
+                quantity_kg=quantity, balances=balances,
+                reason=f"{return_no} · returned" + (f" to {returned_to}" if returned_to else "")
+                       + f" · {reason}",
+                created_by=user_id_from_token(user), business_date=business_date, shift=shift,
+                from_location=location)
+    await broadcast("stock")
+    await broadcast("floor_stock")
+    await broadcast("raw_material")
+    return {"success": True,
+            "return": {**dict(ret), "material_name": material_name,
+                       "location_label": describe_location(location, machine and machine["name"])},
+            "impact_receipt": balances, "activity_id": activity["id"]}
+
+
+@app.get("/stock/returns")
+async def list_stock_returns(q: str = None, date_from: str = None, date_to: str = None,
+                             user=Depends(get_user)):
+    conds, vals = [], []
+    if q:
+        vals.append(f"%{q.strip()}%")
+        conds.append(f"""(sr.return_no ILIKE ${len(vals)} OR mm.name ILIKE ${len(vals)}
+                          OR sr.returned_to ILIKE ${len(vals)} OR sr.reason ILIKE ${len(vals)}
+                          OR pb.batch_no ILIKE ${len(vals)})""")
+    if date_from:
+        vals.append(parse_date(date_from)); conds.append(f"sr.business_date >= ${len(vals)}")
+    if date_to:
+        vals.append(parse_date(date_to)); conds.append(f"sr.business_date <= ${len(vals)}")
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    async with pool.acquire() as c:
+        result = rows(await c.fetch(
+            f"""SELECT sr.*, mm.name AS material_name, m.name AS machine_name,
+                       pb.batch_no, u.name AS created_by_name
+                  FROM stock_returns sr
+                  JOIN materials_master mm ON mm.id = sr.material_id
+                  LEFT JOIN machines m ON m.id = sr.machine_id
+                  LEFT JOIN production_batches pb ON pb.id = sr.production_batch_id
+                  LEFT JOIN users u ON u.id = sr.created_by
+                {where} ORDER BY sr.business_date DESC, sr.id DESC LIMIT 500""", *vals))
+    for r_ in result:
+        r_["location_label"] = describe_location(r_["location"], r_["machine_name"])
+        r_["status"] = "RETURNED"
+    return result
+
+
+# ── Day ledger: opening / closing per location, per AM/PM shift ──
+
+LEDGER_LOCATIONS = ("WAREHOUSE", "GROUND_FLOOR", "FIRST_FLOOR", "MACHINES")
+LEDGER_DELTA_COLUMNS = {
+    "WAREHOUSE": "warehouse_delta_kg", "GROUND_FLOOR": "floor_delta_kg",
+    "FIRST_FLOOR": "first_floor_delta_kg", "MACHINES": "machines_total_delta_kg",
+}
+LEDGER_CATEGORIES = {
+    "RAW_INPUT": "received", "MANUAL_ADJUSTMENT": "adjusted",
+    "FLOOR_TRANSFER": "transfer", "STOCK_TRANSFER": "transfer",
+    "PRODUCTION": "consumed", "STOCK_RETURN": "returned",
+}
+
+
+async def ledger_movements(c, from_date: dt_date) -> list:
+    """Net movement per entry (so a deleted entry nets to zero), then per material,
+    business date, shift and domain, split into stock in / stock out."""
+    bd = sql_business_date("sal.business_date", "sal.occurred_at")
+    sh = sql_shift("sal.shift", "sal.occurred_at")
+    per_loc = ",\n".join(
+        f"SUM(COALESCE(sal.{col}, 0)) AS {loc.lower()}" for loc, col in LEDGER_DELTA_COLUMNS.items())
+    split = ",\n".join(
+        f"SUM(GREATEST({loc.lower()}, 0)) AS {loc.lower()}_in, "
+        f"SUM(LEAST({loc.lower()}, 0)) AS {loc.lower()}_out" for loc in LEDGER_DELTA_COLUMNS)
+    return rows(await c.fetch(
+        f"""WITH per_entry AS (
+                SELECT sal.material_id, {bd} AS bd, {sh} AS shift, sal.source_domain,
+                       COALESCE(sal.source_id, -sal.id) AS entry,
+                       {per_loc}
+                  FROM stock_activity_log sal
+                 WHERE sal.material_id IS NOT NULL AND {bd} >= $1
+                 GROUP BY 1, 2, 3, 4, 5)
+            SELECT material_id, bd, shift, source_domain, {split}
+              FROM per_entry GROUP BY 1, 2, 3, 4""", from_date))
+
+
+async def machine_ledger_movements(c, from_date: dt_date) -> list:
+    bd = sql_business_date("sal.business_date", "sal.occurred_at")
+    sh = sql_shift("sal.shift", "sal.occurred_at")
+    return rows(await c.fetch(
+        f"""SELECT sal.machine_id, sal.material_id, {bd} AS bd, {sh} AS shift,
+                   SUM(GREATEST(COALESCE(sal.machine_delta_kg, 0), 0)) AS inflow,
+                   SUM(LEAST(COALESCE(sal.machine_delta_kg, 0), 0)) AS outflow
+              FROM stock_activity_log sal
+             WHERE sal.machine_id IS NOT NULL AND sal.material_id IS NOT NULL AND {bd} >= $1
+             GROUP BY 1, 2, 3, 4""", from_date))
+
+
+def _blank_location_day():
+    return {"opening": Decimal("0"), "closing": Decimal("0"),
+            "am": {"in": Decimal("0"), "out": Decimal("0")},
+            "pm": {"in": Decimal("0"), "out": Decimal("0")},
+            "received": Decimal("0"), "adjusted": Decimal("0"), "transfer_in": Decimal("0"),
+            "transfer_out": Decimal("0"), "consumed": Decimal("0"), "returned": Decimal("0")}
+
+
+def compute_day_ledger(balances: dict, movements: list, day: dt_date) -> dict:
+    """Opening/closing per material and location for `day`, derived backwards from the
+    live balance so today's closing is exactly the live stock and every day's
+    closing is exactly the next day's opening."""
+    materials: dict = {}
+
+    def ensure(key, material_id=None, name=None):
+        if key not in materials:
+            base = balances.get(key, {})
+            materials[key] = {
+                "key": key,
+                "material_id": base.get("material_id", material_id),
+                "material_type_id": base.get("material_type_id"),
+                "material_name": base.get("material_name", name),
+                "current": {loc: base.get(loc, Decimal("0")) for loc in LEDGER_LOCATIONS},
+                "after": {loc: Decimal("0") for loc in LEDGER_LOCATIONS},
+                "day": {loc: _blank_location_day() for loc in LEDGER_LOCATIONS},
+                "moved": False,
+            }
+        return materials[key]
+
+    for key in balances:
+        ensure(key)
+    for mv in movements:
+        key = f"m{mv['material_id']}"
+        entry = ensure(key, int(mv["material_id"]))
+        mv_day = mv["bd"]
+        for loc in LEDGER_LOCATIONS:
+            inflow = decimal_kg(mv[f"{loc.lower()}_in"])
+            outflow = decimal_kg(mv[f"{loc.lower()}_out"])
+            if mv_day > day:
+                entry["after"][loc] += inflow + outflow
+                continue
+            if mv_day != day:
+                continue
+            if inflow or outflow:
+                entry["moved"] = True
+            slot = entry["day"][loc]
+            shift_slot = slot["am" if mv["shift"] == "AM" else "pm"]
+            shift_slot["in"] += inflow
+            shift_slot["out"] += outflow
+            category = LEDGER_CATEGORIES.get(mv["source_domain"])
+            if category == "transfer":
+                slot["transfer_in"] += inflow
+                slot["transfer_out"] += -outflow
+            elif category in ("received", "adjusted"):
+                slot[category] += inflow + outflow
+            elif category in ("consumed", "returned"):
+                slot[category] += -(inflow + outflow)
+
+    out_rows = []
+    totals = {loc: _blank_location_day() for loc in (*LEDGER_LOCATIONS, "PLANT")}
+    for entry in materials.values():
+        locations = {}
+        plant = _blank_location_day()
+        for loc in LEDGER_LOCATIONS:
+            slot = entry["day"][loc]
+            closing = entry["current"][loc] - entry["after"][loc]
+            pm_net = slot["pm"]["in"] + slot["pm"]["out"]
+            am_net = slot["am"]["in"] + slot["am"]["out"]
+            am_closing = closing - pm_net
+            opening = am_closing - am_net
+            locations[loc] = {
+                "opening_kg": opening, "closing_kg": closing,
+                "am": {"opening_kg": opening, "in_kg": slot["am"]["in"], "out_kg": -slot["am"]["out"],
+                       "closing_kg": am_closing},
+                "pm": {"opening_kg": am_closing, "in_kg": slot["pm"]["in"], "out_kg": -slot["pm"]["out"],
+                       "closing_kg": closing},
+                "received_kg": slot["received"], "adjusted_kg": slot["adjusted"],
+                "transfer_in_kg": slot["transfer_in"], "transfer_out_kg": slot["transfer_out"],
+                "consumed_kg": slot["consumed"], "returned_kg": slot["returned"],
+            }
+        for field in ("opening_kg", "closing_kg", "received_kg", "adjusted_kg",
+                      "transfer_in_kg", "transfer_out_kg", "consumed_kg", "returned_kg"):
+            plant[field] = sum((locations[loc][field] for loc in LEDGER_LOCATIONS), Decimal("0"))
+        plant["am"] = {k: sum((locations[loc]["am"][k] for loc in LEDGER_LOCATIONS), Decimal("0"))
+                       for k in ("opening_kg", "in_kg", "out_kg", "closing_kg")}
+        plant["pm"] = {k: sum((locations[loc]["pm"][k] for loc in LEDGER_LOCATIONS), Decimal("0"))
+                       for k in ("opening_kg", "in_kg", "out_kg", "closing_kg")}
+        locations["PLANT"] = plant
+        if not entry["moved"] and plant["opening_kg"] == 0 and plant["closing_kg"] == 0:
+            continue
+        for loc, data in locations.items():
+            agg = totals[loc]
+            for field in ("opening_kg", "closing_kg", "received_kg", "adjusted_kg",
+                          "transfer_in_kg", "transfer_out_kg", "consumed_kg", "returned_kg"):
+                agg[field] = agg.get(field, Decimal("0")) + data[field]
+            for sh in ("am", "pm"):
+                agg.setdefault(f"{sh}_totals", {k: Decimal("0") for k in ("opening_kg", "in_kg", "out_kg", "closing_kg")})
+                for k in ("opening_kg", "in_kg", "out_kg", "closing_kg"):
+                    agg[f"{sh}_totals"][k] += data[sh][k]
+        out_rows.append({
+            "key": entry["key"], "material_id": entry["material_id"],
+            "material_type_id": entry["material_type_id"], "material_name": entry["material_name"],
+            "moved": entry["moved"], "locations": _floatify(locations),
+        })
+    out_rows.sort(key=lambda r_: (r_["material_name"] or "").lower())
+    clean_totals = {}
+    for loc, agg in totals.items():
+        clean_totals[loc] = _floatify({
+            k: v for k, v in agg.items()
+            if k.endswith("_kg")
+        })
+        clean_totals[loc]["am"] = _floatify(agg.get("am_totals") or {})
+        clean_totals[loc]["pm"] = _floatify(agg.get("pm_totals") or {})
+    return {"materials": out_rows, "totals": clean_totals}
+
+
+def _floatify(value):
+    if isinstance(value, dict):
+        return {k: _floatify(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_floatify(v) for v in value]
+    if isinstance(value, Decimal):
+        return kg_out(value)
+    return value
+
+
+async def build_day_ledger(c, day: dt_date) -> dict:
+    balances = await current_location_balances(c)
+    movements = await ledger_movements(c, day)
+    ledger = compute_day_ledger(balances, movements, day)
+    # Per-machine opening/closing.
+    current_alloc = rows(await c.fetch(
+        """SELECT msa.machine_id, mm.id AS material_id, msa.quantity_kg
+             FROM machine_stock_allocations msa
+             JOIN material_types mt ON mt.id = msa.material_type_id
+             JOIN materials_master mm ON LOWER(TRIM(mm.name)) = LOWER(TRIM(mt.name))"""))
+    machine_moves = await machine_ledger_movements(c, day)
+    machines = {r_["id"]: dict(r_) for r_ in await c.fetch(
+        f"SELECT id, name, {MACHINE_FLOOR_SQL} AS floor FROM machines")}
+    names = {r_["id"]: r_["name"] for r_ in await c.fetch("SELECT id, name FROM materials_master")}
+    per_machine: dict = {}
+    for a in current_alloc:
+        key = (a["machine_id"], a["material_id"])
+        per_machine.setdefault(key, {"current": Decimal("0"), "after": Decimal("0"),
+                                     "am_in": Decimal("0"), "am_out": Decimal("0"),
+                                     "pm_in": Decimal("0"), "pm_out": Decimal("0")})
+        per_machine[key]["current"] += decimal_kg(a["quantity_kg"])
+    for mv in machine_moves:
+        key = (mv["machine_id"], mv["material_id"])
+        slot = per_machine.setdefault(key, {"current": Decimal("0"), "after": Decimal("0"),
+                                            "am_in": Decimal("0"), "am_out": Decimal("0"),
+                                            "pm_in": Decimal("0"), "pm_out": Decimal("0")})
+        if mv["bd"] > day:
+            slot["after"] += decimal_kg(mv["inflow"]) + decimal_kg(mv["outflow"])
+        elif mv["bd"] == day:
+            prefix = "am" if mv["shift"] == "AM" else "pm"
+            slot[f"{prefix}_in"] += decimal_kg(mv["inflow"])
+            slot[f"{prefix}_out"] += -decimal_kg(mv["outflow"])
+    machine_rows = []
+    for (machine_id, material_id), slot in per_machine.items():
+        closing = slot["current"] - slot["after"]
+        am_closing = closing - (slot["pm_in"] - slot["pm_out"])
+        opening = am_closing - (slot["am_in"] - slot["am_out"])
+        if not any((opening, closing, slot["am_in"], slot["am_out"], slot["pm_in"], slot["pm_out"])):
+            continue
+        machine = machines.get(machine_id, {})
+        machine_rows.append(_floatify({
+            "machine_id": machine_id, "machine_name": machine.get("name"), "floor": machine.get("floor"),
+            "material_id": material_id, "material_name": names.get(material_id),
+            "opening_kg": opening, "am_closing_kg": am_closing, "closing_kg": closing,
+            "in_kg": slot["am_in"] + slot["pm_in"], "out_kg": slot["am_out"] + slot["pm_out"],
+        }))
+    machine_rows.sort(key=lambda r_: (r_["machine_id"], (r_["material_name"] or "").lower()))
+    for m in ledger["materials"]:
+        if not m["material_name"] and m["material_id"] is not None:
+            m["material_name"] = names.get(m["material_id"])
+    closing_row = await c.fetchrow(
+        """SELECT sdc.*, u.name AS closed_by_name FROM stock_day_closings sdc
+             LEFT JOIN users u ON u.id = sdc.closed_by WHERE sdc.business_date = $1""", day)
+    closing_record = None
+    if closing_row:
+        snapshot = closing_row["snapshot"]
+        if isinstance(snapshot, str):
+            snapshot = orjson.loads(snapshot)
+        live_by_key = {m["key"]: m["locations"]["PLANT"]["closing_kg"] for m in ledger["materials"]}
+        snap_by_key = {m["key"]: m["plant_closing_kg"] for m in snapshot.get("materials", [])}
+        variance = []
+        for key in set(live_by_key) | set(snap_by_key):
+            diff = round(live_by_key.get(key, 0.0) - snap_by_key.get(key, 0.0), 3)
+            if abs(diff) >= 0.001:
+                name = next((m["material_name"] for m in ledger["materials"] if m["key"] == key),
+                            next((m["material_name"] for m in snapshot.get("materials", []) if m["key"] == key), key))
+                variance.append({"key": key, "material_name": name, "difference_kg": diff})
+        closing_record = {
+            "closed_at": closing_row["closed_at"], "closed_by_name": closing_row["closed_by_name"],
+            "note": closing_row["note"],
+            "plant_closing_kg": snapshot.get("plant_closing_kg"),
+            "variance": variance,
+        }
+    usage = {"AM": Decimal("0"), "PM": Decimal("0")}
+    for mv in movements:
+        if mv["bd"] == day and mv["source_domain"] == "PRODUCTION":
+            net = sum((decimal_kg(mv[f"{loc.lower()}_in"]) + decimal_kg(mv[f"{loc.lower()}_out"])
+                       for loc in LEDGER_LOCATIONS), Decimal("0"))
+            usage["AM" if mv["shift"] == "AM" else "PM"] += -net
+    live_date, live_shift = derive_business_context()
+    return {
+        "business_date": day.isoformat(),
+        "previous_date": (day - timedelta(days=1)).isoformat(),
+        "next_date": (day + timedelta(days=1)).isoformat(),
+        "live_business_date": live_date.isoformat(), "live_shift": live_shift,
+        "is_live_day": day == live_date,
+        "is_future": day > live_date,
+        **ledger,
+        "machines": machine_rows,
+        "usage": {"am_kg": kg_out(usage["AM"]), "pm_kg": kg_out(usage["PM"]),
+                  "total_kg": kg_out(usage["AM"] + usage["PM"])},
+        "day_closing": closing_record,
+    }
+
+
+@app.get("/stock/ledger")
+async def get_stock_ledger(date: str = None, user=Depends(get_user)):
+    day = parse_optional_date(date) or derive_business_context()[0]
+    async with pool.acquire() as c:
+        return await build_day_ledger(c, day)
+
+
+@app.post("/stock/day-close")
+async def close_stock_day(request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
+    body = await request.json()
+    day = parse_required_date(body.get("business_date"), "business_date")
+    live_date, _ = derive_business_context()
+    if day > live_date:
+        raise HTTPException(400, "A future day cannot be closed")
+    note = str(body.get("note") or "").strip() or None
+    async with pool.acquire() as c:
+        async with c.transaction():
+            await c.execute("SELECT pg_advisory_xact_lock(hashtext('vp-day-close'))")
+            ledger = await build_day_ledger(c, day)
+            snapshot = {
+                "business_date": day.isoformat(),
+                "plant_closing_kg": ledger["totals"]["PLANT"]["closing_kg"],
+                "totals": {loc: ledger["totals"][loc]["closing_kg"] for loc in ledger["totals"]},
+                "materials": [{
+                    "key": m["key"], "material_id": m["material_id"], "material_name": m["material_name"],
+                    **{f"{loc.lower()}_closing_kg": m["locations"][loc]["closing_kg"]
+                       for loc in (*LEDGER_LOCATIONS, "PLANT")},
+                } for m in ledger["materials"]],
+                "machines": ledger["machines"],
+            }
+            await c.execute(
+                """INSERT INTO stock_day_closings (business_date, snapshot, note, closed_by, closed_at)
+                   VALUES ($1, $2::jsonb, $3, $4, NOW())
+                   ON CONFLICT (business_date) DO UPDATE
+                      SET snapshot = EXCLUDED.snapshot, note = EXCLUDED.note,
+                          closed_by = EXCLUDED.closed_by, closed_at = NOW()""",
+                day, orjson.dumps(snapshot, default=_orjson_default).decode(), note,
+                user_id_from_token(user))
+            ledger = await build_day_ledger(c, day)
+    await broadcast("stock")
+    return {"success": True, "ledger": ledger}
+
+
+@app.get("/stock/day-closings")
+async def list_day_closings(user=Depends(get_user)):
+    async with pool.acquire() as c:
+        result = rows(await c.fetch(
+            """SELECT sdc.business_date, sdc.closed_at, sdc.note, u.name AS closed_by_name,
+                      (sdc.snapshot->>'plant_closing_kg')::float AS plant_closing_kg
+                 FROM stock_day_closings sdc LEFT JOIN users u ON u.id = sdc.closed_by
+                ORDER BY sdc.business_date DESC LIMIT 120"""))
+    return result
+
+
+# ── Day-wise usage ──
+
+@app.get("/stock/usage")
+async def get_stock_usage(date_from: str = None, date_to: str = None, user=Depends(get_user)):
+    live_date, _ = derive_business_context()
+    end = parse_optional_date(date_to) or live_date
+    start = parse_optional_date(date_from) or (end - timedelta(days=13))
+    if start > end:
+        raise HTTPException(400, "date_from must be on or before date_to")
+    bd = sql_business_date("sal.business_date", "sal.occurred_at")
+    sh = sql_shift("sal.shift", "sal.occurred_at")
+    async with pool.acquire() as c:
+        usage = rows(await c.fetch(
+            f"""SELECT {bd} AS business_date, {sh} AS shift, sal.material_id, mm.name AS material_name,
+                       -SUM(COALESCE(sal.floor_delta_kg, 0) + COALESCE(sal.machines_total_delta_kg, 0))::float AS consumed_kg,
+                       -SUM(COALESCE(sal.machines_total_delta_kg, 0))::float AS from_machine_kg,
+                       -SUM(COALESCE(sal.floor_delta_kg, 0))::float AS from_ground_floor_kg
+                  FROM stock_activity_log sal
+                  JOIN materials_master mm ON mm.id = sal.material_id
+                 WHERE sal.source_domain = 'PRODUCTION' AND {bd} BETWEEN $1 AND $2
+                 GROUP BY 1, 2, 3, 4
+                HAVING SUM(COALESCE(sal.floor_delta_kg, 0) + COALESCE(sal.machines_total_delta_kg, 0)) <> 0
+                 ORDER BY 1 DESC, 2, 4""", start, end))
+        moved = rows(await c.fetch(
+            f"""SELECT {bd} AS business_date, {sh} AS shift,
+                       SUM(CASE WHEN sal.action = 'REVERSE' THEN -sal.quantity_kg ELSE sal.quantity_kg END)::float AS moved_kg
+                  FROM stock_activity_log sal
+                 WHERE sal.source_domain IN ('FLOOR_TRANSFER', 'STOCK_TRANSFER')
+                   AND sal.action IN ('CREATE', 'REVERSE') AND {bd} BETWEEN $1 AND $2
+                 GROUP BY 1, 2""", start, end))
+        received = rows(await c.fetch(
+            f"""SELECT {bd} AS business_date, {sh} AS shift,
+                       SUM(COALESCE(sal.warehouse_delta_kg, 0))::float AS received_kg
+                  FROM stock_activity_log sal
+                 WHERE sal.source_domain = 'RAW_INPUT' AND {bd} BETWEEN $1 AND $2
+                 GROUP BY 1, 2""", start, end))
+        output = rows(await c.fetch(
+            f"""SELECT {sql_business_date('pl.business_date', 'pl.created_at')} AS business_date,
+                       {sql_shift('pl.shift', 'pl.created_at')} AS shift,
+                       COUNT(*)::int AS entries, COUNT(DISTINCT pl.batch_id)::int AS batches,
+                       COUNT(DISTINCT pl.machine_id)::int AS machines
+                  FROM production_logs pl
+                 WHERE {sql_business_date('pl.business_date', 'pl.created_at')} BETWEEN $1 AND $2
+                 GROUP BY 1, 2""", start, end))
+    days = []
+    cursor = end
+    while cursor >= start:
+        day_rows = [u for u in usage if u["business_date"] == cursor]
+        day = {"business_date": cursor.isoformat(), "shifts": {}, "materials": [], "total_consumed_kg": 0.0}
+        for sh_ in SHIFTS:
+            consumed = sum(u["consumed_kg"] for u in day_rows if u["shift"] == sh_)
+            out = next((o for o in output if o["business_date"] == cursor and o["shift"] == sh_), {})
+            day["shifts"][sh_] = {
+                "consumed_kg": kg_out(consumed),
+                "moved_kg": kg_out(sum(m["moved_kg"] or 0 for m in moved
+                                       if m["business_date"] == cursor and m["shift"] == sh_)),
+                "received_kg": kg_out(sum(r_["received_kg"] or 0 for r_ in received
+                                          if r_["business_date"] == cursor and r_["shift"] == sh_)),
+                "entries": out.get("entries", 0), "batches": out.get("batches", 0),
+                "machines": out.get("machines", 0),
+            }
+        by_material: dict = {}
+        for u in day_rows:
+            item = by_material.setdefault(u["material_id"], {
+                "material_id": u["material_id"], "material_name": u["material_name"],
+                "am_kg": 0.0, "pm_kg": 0.0, "from_machine_kg": 0.0, "from_ground_floor_kg": 0.0})
+            item["am_kg" if u["shift"] == "AM" else "pm_kg"] += u["consumed_kg"]
+            item["from_machine_kg"] += u["from_machine_kg"]
+            item["from_ground_floor_kg"] += u["from_ground_floor_kg"]
+        for item in by_material.values():
+            item["total_kg"] = kg_out(item["am_kg"] + item["pm_kg"])
+            for k in ("am_kg", "pm_kg", "from_machine_kg", "from_ground_floor_kg"):
+                item[k] = kg_out(item[k])
+        day["materials"] = sorted(by_material.values(), key=lambda i: -i["total_kg"])
+        day["total_consumed_kg"] = kg_out(sum(i["total_kg"] for i in day["materials"]))
+        days.append(day)
+        cursor -= timedelta(days=1)
+    return {"date_from": start.isoformat(), "date_to": end.isoformat(), "days": days,
+            "total_consumed_kg": kg_out(sum(d["total_consumed_kg"] for d in days))}
+
+
+# ── Search across every stock document (returns included) ──
+
+@app.get("/stock/search")
+async def search_stock(q: str = "", user=Depends(get_user)):
+    term = str(q or "").strip()
+    if len(term) < 2:
+        return {"query": term, "results": []}
+    like = f"%{term}%"
+    async with pool.acquire() as c:
+        returns = rows(await c.fetch(
+            """SELECT 'RETURN' AS kind, sr.id, sr.return_no AS reference, mm.name AS material_name,
+                      sr.quantity_kg::float AS quantity_kg, sr.business_date, sr.shift,
+                      sr.location, m.name AS machine_name, sr.returned_to, sr.reason AS detail,
+                      'RETURNED' AS status, sr.created_at
+                 FROM stock_returns sr
+                 JOIN materials_master mm ON mm.id = sr.material_id
+                 LEFT JOIN machines m ON m.id = sr.machine_id
+                 LEFT JOIN production_batches pb ON pb.id = sr.production_batch_id
+                WHERE sr.return_no ILIKE $1 OR mm.name ILIKE $1 OR sr.returned_to ILIKE $1
+                   OR sr.reason ILIKE $1 OR pb.batch_no ILIKE $1
+                ORDER BY sr.id DESC LIMIT 50""", like))
+        transfers = rows(await c.fetch(
+            """SELECT 'TRANSFER' AS kind, st.id, st.transfer_no AS reference, mm.name AS material_name,
+                      st.quantity_kg::float AS quantity_kg, st.business_date, st.shift,
+                      st.from_location, st.to_location, fm.name AS from_machine_name,
+                      tm.name AS to_machine_name, st.note AS detail, st.status, st.created_at
+                 FROM stock_transfers st
+                 JOIN materials_master mm ON mm.id = st.material_id
+                 LEFT JOIN machines fm ON fm.id = st.from_machine_id
+                 LEFT JOIN machines tm ON tm.id = st.to_machine_id
+                WHERE st.transfer_no ILIKE $1 OR mm.name ILIKE $1 OR st.note ILIKE $1
+                ORDER BY st.id DESC LIMIT 50""", like))
+        batches = rows(await c.fetch(
+            """SELECT 'BATCH' AS kind, pb.id, pb.batch_no AS reference,
+                      STRING_AGG(DISTINCT COALESCE(mt.name, mat.name), ', ') AS material_name,
+                      COALESCE(SUM(pl.gross_weight - pl.tare_weight), 0)::float AS quantity_kg,
+                      pb.business_date, pb.shift, pb.note AS detail, pb.status, pb.created_at
+                 FROM production_batches pb
+                 LEFT JOIN production_logs pl ON pl.batch_id = pb.id
+                 LEFT JOIN material_types mt ON mt.id = pl.material_type_id
+                 LEFT JOIN materials_master mat ON mat.id = pl.material_id
+                WHERE pb.batch_no ILIKE $1 OR pb.note ILIKE $1 OR mt.name ILIKE $1
+                   OR mat.name ILIKE $1 OR pl.size ILIKE $1
+                GROUP BY pb.id ORDER BY pb.id DESC LIMIT 50""", like))
+        production = rows(await c.fetch(
+            f"""SELECT 'PRODUCTION' AS kind, pl.id, COALESCE(pb.batch_no, 'Entry #' || pl.id) AS reference,
+                       COALESCE(mt.name, mat.name) AS material_name,
+                       (pl.gross_weight - pl.tare_weight)::float AS quantity_kg,
+                       {sql_business_date('pl.business_date', 'pl.created_at')} AS business_date,
+                       {sql_shift('pl.shift', 'pl.created_at')} AS shift,
+                       m.name AS machine_name, pl.size AS detail, 'ACTIVE' AS status, pl.created_at
+                  FROM production_logs pl
+                  LEFT JOIN production_batches pb ON pb.id = pl.batch_id
+                  LEFT JOIN machines m ON m.id = pl.machine_id
+                  LEFT JOIN material_types mt ON mt.id = pl.material_type_id
+                  LEFT JOIN materials_master mat ON mat.id = pl.material_id
+                 WHERE COALESCE(mt.name, mat.name) ILIKE $1 OR pl.size ILIKE $1
+                    OR pl.worker_name ILIKE $1 OR m.name ILIKE $1
+                 ORDER BY pl.id DESC LIMIT 50""", like))
+        receipts = rows(await c.fetch(
+            f"""SELECT 'RECEIPT' AS kind, rb.id, 'Receipt #' || rb.id AS reference,
+                       rb.material_name, rb.quantity_kg::float AS quantity_kg,
+                       {sql_business_date('rb.business_date', 'rb.created_at')} AS business_date,
+                       {sql_shift('rb.shift', 'rb.created_at')} AS shift,
+                       rb.note AS detail, 'ACTIVE' AS status, rb.created_at
+                  FROM raw_material_batches rb
+                 WHERE rb.material_name ILIKE $1 OR rb.note ILIKE $1 OR rb.thickness ILIKE $1
+                 ORDER BY rb.id DESC LIMIT 50""", like))
+        balances = await current_location_balances(c)
+    for t in transfers:
+        t["detail"] = " → ".join([
+            describe_location(t["from_location"], t["from_machine_name"]),
+            describe_location(t["to_location"], t["to_machine_name"])]) + (
+            f" · {t['detail']}" if t["detail"] else "")
+    for r_ in returns:
+        r_["detail"] = (f"Returned from {describe_location(r_['location'], r_['machine_name'])}"
+                        + (f" to {r_['returned_to']}" if r_["returned_to"] else "")
+                        + f" · {r_['detail']}")
+    stock = []
+    for entry in balances.values():
+        if entry["material_name"] and term.lower() in entry["material_name"].lower():
+            plant = sum((entry[k] for k in LEDGER_LOCATIONS), Decimal("0"))
+            stock.append({
+                "kind": "STOCK", "id": entry["key"], "reference": entry["material_name"],
+                "material_name": entry["material_name"], "quantity_kg": kg_out(plant),
+                "detail": (f"Warehouse {kg_out(entry['WAREHOUSE'])} kg · Ground Floor "
+                           f"{kg_out(entry['GROUND_FLOOR'])} kg · First Floor "
+                           f"{kg_out(entry['FIRST_FLOOR'])} kg · Machines {kg_out(entry['MACHINES'])} kg"),
+                "status": "IN_STOCK", "business_date": None, "shift": None,
+            })
+    results = returns + stock + batches + transfers + production + receipts
+    return {"query": term, "results": results,
+            "counts": {"returns": len(returns), "stock": len(stock), "batches": len(batches),
+                       "transfers": len(transfers), "production": len(production),
+                       "receipts": len(receipts)}}
 
 
 # ── Reports ──
