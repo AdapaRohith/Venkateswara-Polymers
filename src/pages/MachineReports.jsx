@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import ProductionReportButton from '../components/ProductionReportButton'
 import useSSE from '../hooks/useSSE'
 import EditEntryModal from '../components/EditEntryModal'
 import { useToast } from '../components/Toast'
@@ -437,9 +438,12 @@ export default function MachineReports() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-text-primary tracking-tight">Machine Reports</h1>
-        <p className="text-sm text-text-secondary mt-1">Production output and production history by machine for a date range</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-text-primary tracking-tight">Machine Reports</h1>
+          <p className="text-sm text-text-secondary mt-1">Production output and production history by machine for a date range</p>
+        </div>
+        <ProductionReportButton />
       </div>
 
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm p-5">

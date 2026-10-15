@@ -65,3 +65,48 @@ export function allowedDestinations(from, machines, fromMachineId) {
 export function machinesForFloor(machines, floor) {
   return machines.filter((m) => m.floor === floor)
 }
+
+// ── Entry date / shift / time ────────────────────────────────────────────────
+// Mirrors the server: AM runs amStart–pmStart, PM runs pmStart to the next
+// morning and belongs to the business date it started on.
+
+export function shiftWindows(meta) {
+  const am = meta?.shifts?.find((s) => s.id === 'AM')
+  return {
+    amStart: am?.starts || '08:00',
+    pmStart: am?.ends || '20:00',
+    defaults: { AM: '09:00', PM: '21:00', ...(meta?.default_entry_times || {}) },
+  }
+}
+
+/** Current date and HH:MM on the plant's clock (IST), whatever the PC's time zone. */
+export function nowIST() {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(new Date()).map((p) => [p.type, p.value]),
+  )
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` }
+}
+
+export function shiftForTime(time, windows) {
+  return time >= windows.amStart && time < windows.pmStart ? 'AM' : 'PM'
+}
+
+/** The business date + shift running right now. */
+export function liveShiftContext(windows) {
+  const { date, time } = nowIST()
+  if (time < windows.amStart) return { date: shiftDate(date, -1), shift: 'PM', time }
+  return { date, shift: shiftForTime(time, windows), time }
+}
+
+/** Calendar day an entry lands on: night-shift times after midnight fall on the next day. */
+export function calendarDayFor(businessDate, time, windows) {
+  return time && time < windows.amStart ? shiftDate(businessDate, 1) : businessDate
+}
+
+/** API fields for an entry's when. A blank time lets the server pick (live clock or shift default). */
+export function entryWhenPayload({ date, shift, time }) {
+  return { business_date: date, shift, ...(time ? { entry_time: time } : {}) }
+}

@@ -1,9 +1,13 @@
-import { useId } from 'react'
-import { ArrowDown, ArrowUp, Moon, Sun } from 'lucide-react'
+import { useEffect, useId, useState } from 'react'
+import { ArrowDown, ArrowUp, Clock, Moon, Sun } from 'lucide-react'
 
+import useStockMeta from '../../hooks/useStockMeta'
 import { formatBags, formatWeight, kgToBags, toKg } from '../../utils/units'
 import { inputBase, inputClass, labelClass } from './styles'
-import { LOCATIONS, SHIFT_LABELS, TONE_CLASSES, formatBusinessDate } from '../../utils/ipms'
+import {
+  LOCATIONS, SHIFT_LABELS, TONE_CLASSES, calendarDayFor, formatBusinessDate, liveShiftContext, nowIST,
+  shiftForTime, shiftWindows,
+} from '../../utils/ipms'
 
 
 export function PageHeader({ icon: Icon, title, subtitle, actions }) {
@@ -104,17 +108,42 @@ export function StatusBadge({ status }) {
   return <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide ${TONE_CLASSES[tone]}`}>{label}</span>
 }
 
-/** Business date + AM/PM shift. Any day can be chosen; the shift says morning or night. */
-export function ShiftDatePicker({ date, shift, onChange, liveDate, liveShift, disabled = false, compact = false }) {
+/**
+ * When an entry happened: business date, AM/PM shift and clock time.
+ *
+ * The operator usually keys in yesterday's morning and night shifts the next
+ * day, so every part is editable. A blank `time` means "default": the live
+ * clock for the shift running now, otherwise the shift's standard time
+ * (09:00 AM / 21:00 PM). Typing a time moves the shift to match it; picking a
+ * shift or date resets the time to that default.
+ */
+export function ShiftDatePicker({ date, shift, time = '', onChange, disabled = false, compact = false }) {
   const dateId = useId()
-  const isLive = date === liveDate && shift === liveShift
+  const timeId = useId()
+  const meta = useStockMeta()
+  const windows = shiftWindows(meta)
+  const [live, setLive] = useState(() => liveShiftContext(windows))
+  useEffect(() => {
+    const tick = () => setLive(liveShiftContext(windows))
+    tick()
+    const id = setInterval(tick, 20_000)
+    return () => clearInterval(id)
+  }, [windows.amStart, windows.pmStart]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isLiveSlot = date === live.date && shift === live.shift
+  const shownTime = time || (isLiveSlot ? live.time : windows.defaults[shift] || '')
+  const calendarDay = calendarDayFor(date, shownTime, windows)
+  const today = nowIST()
+  const isFuture = !!date && `${calendarDay}T${shownTime}` > `${today.date}T${today.time}`
+  const emit = (patch) => onChange({ date, shift, time, ...patch })
+
   return (
     <div className={compact ? 'flex flex-wrap items-end gap-2' : 'space-y-1'}>
-      <div className={compact ? '' : ''}>
-        {!compact && <label htmlFor={dateId} className={labelClass}>Business date &amp; shift</label>}
+      <div>
+        {!compact && <label htmlFor={dateId} className={labelClass}>Date, shift &amp; time of entry</label>}
         <div className="flex flex-wrap items-center gap-2">
-          <input id={dateId} type="date" value={date || ''} max={liveDate || undefined} disabled={disabled}
-            onChange={(e) => onChange({ date: e.target.value, shift })}
+          <input id={dateId} type="date" value={date || ''} max={live.date} disabled={disabled}
+            onChange={(e) => e.target.value && emit({ date: e.target.value, time: '' })}
             className={`${inputBase} w-auto`} aria-label="Business date" />
           <div role="radiogroup" aria-label="Shift" className="inline-flex overflow-hidden rounded-lg border border-border-default">
             {['AM', 'PM'].map((s) => {
@@ -122,7 +151,7 @@ export function ShiftDatePicker({ date, shift, onChange, liveDate, liveShift, di
               const active = shift === s
               return (
                 <button key={s} type="button" role="radio" aria-checked={active} disabled={disabled}
-                  onClick={() => onChange({ date, shift: s })}
+                  onClick={() => emit({ shift: s, time: '' })}
                   className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold transition ${
                     active
                       ? s === 'AM' ? 'bg-amber-500 text-black' : 'bg-violet-600 text-white'
@@ -134,13 +163,42 @@ export function ShiftDatePicker({ date, shift, onChange, liveDate, liveShift, di
               )
             })}
           </div>
+          <div className="inline-flex items-center gap-1.5">
+            <Clock className="h-4 w-4 text-text-secondary" aria-hidden="true" />
+            <input id={timeId} type="time" value={shownTime} disabled={disabled} aria-label="Time of entry"
+              onChange={(e) => {
+                const t = e.target.value
+                if (!t) return emit({ time: '' })
+                emit({ time: t, shift: shiftForTime(t, windows) })
+              }}
+              className={`${inputBase} w-auto ${isFuture ? 'border-rose-500' : ''}`} />
+            {time && (
+              <button type="button" disabled={disabled} onClick={() => emit({ time: '' })}
+                className="text-xs font-semibold text-accent-gold hover:underline">
+                {isLiveSlot ? 'Now' : 'Default'}
+              </button>
+            )}
+          </div>
+          {!(date === live.date && shift === live.shift && !time) && (
+            <button type="button" disabled={disabled} onClick={() => onChange({ date: live.date, shift: live.shift, time: '' })}
+              className="text-xs font-semibold text-text-secondary hover:text-accent-gold hover:underline">
+              Back to now
+            </button>
+          )}
         </div>
       </div>
       {!compact && (
-        <p className="text-xs text-text-secondary">
-          {isLive
-            ? 'Live shift — the real clock time is recorded.'
-            : `Filing for ${formatBusinessDate(date)} · ${SHIFT_LABELS[shift] || ''} shift.`}
+        <p className={`text-xs ${isFuture ? 'text-rose-500' : 'text-text-secondary'}`}>
+          {isFuture
+            ? `${formatBusinessDate(calendarDay)} ${shownTime} is in the future — pick an earlier time.`
+            : isLiveSlot && !time
+              ? 'Live shift — the current time is recorded.'
+              : <>
+                  Filing for <strong className="text-text-primary">{formatBusinessDate(date)}</strong> · {SHIFT_LABELS[shift] || ''} shift ·
+                  saved at <strong className="text-text-primary">{shownTime}</strong>
+                  {calendarDay !== date && ` on ${formatBusinessDate(calendarDay, { weekday: false })} (after midnight)`}
+                  {!time && !isLiveSlot && ' (default time)'}
+                </>}
         </p>
       )}
     </div>

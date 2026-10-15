@@ -8,8 +8,9 @@ import StockImpactReceipt from '../components/StockImpactReceipt'
 import { useToast } from '../components/Toast'
 import usePersistentState from '../hooks/usePersistentState'
 import api from '../utils/api'
-import { formatDate, formatTime, todayIST } from '../utils/datetime'
-import { ShiftToggle } from '../components/ipms/Kit'
+import { formatDate, formatTime } from '../utils/datetime'
+import { ShiftDatePicker } from '../components/ipms/Kit'
+import { entryWhenPayload, liveShiftContext, shiftWindows } from '../utils/ipms'
 import { BAG_KG } from '../utils/units'
 import { previewStockAdjustment, validateStockAdjustment } from '../utils/stockAdjustment'
 import {
@@ -215,6 +216,7 @@ export default function RawMaterial({ user }) {
     setEditOperation('add')
     setEditQuantity('')
     setEditReason('')
+    setAdjustWhen(freshWhen())
   }
 
   const handleEditTotal = async () => {
@@ -237,6 +239,7 @@ export default function RawMaterial({ user }) {
         operation: editOperation,
         quantity_kg: qty,
         reason: editReason.trim(),
+        ...entryWhenPayload(adjustWhen),
       })
       setLastReceipt(impactReceiptFromResponse(data))
       toast.success(`${editOperation === 'add' ? 'Added' : 'Removed'} ${qty.toFixed(2)} kg ${editOperation === 'add' ? 'to' : 'from'} ${editTotal.materialName}. Closing stock: ${closingTotal.toFixed(2)} kg.`)
@@ -259,14 +262,14 @@ export default function RawMaterial({ user }) {
     date: '',
     quantityUnit: 'kg',
     note: '',
-    shift: '',
   })
 
   // A stock entry is often keyed in a day or two after the lorry arrived, so the
-  // date is part of the entry rather than whenever someone got to the computer.
-  // Empty means today, which is the common case.
-  const entryDate = addForm.date || todayIST()
-  const isBackdated = entryDate !== todayIST()
+  // date, shift and time are part of the entry. Kept out of the persisted form so
+  // yesterday's backfill date never silently carries over to a new day.
+  const freshWhen = () => ({ ...liveShiftContext(shiftWindows(null)), time: '' })
+  const [addWhen, setAddWhen] = useState(freshWhen)
+  const [adjustWhen, setAdjustWhen] = useState(freshWhen)
 
   const [batches, setBatches] = useState([])
   const [loadingBatches, setLoadingBatches] = useState(true)
@@ -368,14 +371,13 @@ export default function RawMaterial({ user }) {
       const { data } = await api.post('/raw-material/add', {
         material_name: addForm.material_name.trim(),
         quantity_kg: qtyInKg,
-        date: entryDate,
-        ...(addForm.shift ? { shift: addForm.shift } : {}),
+        ...entryWhenPayload(addWhen),
         note: addForm.note?.trim() || '',
       })
       setLastReceipt(impactReceiptFromResponse(data))
 
       await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
-      toast.success(`Added ${qtyInKg.toFixed(2)} kg of ${addForm.material_name.trim()} on ${formatDate(entryDate)}`)
+      toast.success(`Added ${qtyInKg.toFixed(2)} kg of ${addForm.material_name.trim()} on ${formatDate(addWhen.date)}`)
       setAddForm((previous) => ({ ...previous, quantity: '', note: '' }))
     } catch (error) {
       console.error('Failed to add raw material', error)
@@ -474,24 +476,10 @@ export default function RawMaterial({ user }) {
             </select>
           </div>
 
-          <div className="space-y-1.5">
-            <label className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
-              <Pictogram name="date" size={13} className="text-text-secondary/70" />
-              Date
-            </label>
-            <input
-              type="date"
-              name="date"
-              value={entryDate}
-              max={todayIST()}
-              onChange={handleAddChange}
-              className="w-full rounded-lg border border-gray-700 bg-bg-input px-3 py-2 text-sm text-text-primary transition-colors duration-200 focus:border-accent-gold"
-              disabled={submittingAdd}
-            />
+          <div className="md:col-span-4">
+            <ShiftDatePicker date={addWhen.date} shift={addWhen.shift} time={addWhen.time}
+              disabled={submittingAdd} onChange={setAddWhen} />
           </div>
-
-          <ShiftToggle value={addForm.shift || ''} disabled={submittingAdd}
-            onChange={(shift) => setAddForm((current) => ({ ...current, shift }))} />
 
           <div className="space-y-1.5">
             <label className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
@@ -540,12 +528,6 @@ export default function RawMaterial({ user }) {
             />
           </div>
 
-          {isBackdated && (
-              <p className="inline-flex items-center gap-1.5 text-xs text-orange-400 md:col-span-4">
-                <Pictogram name="clock" size={13} />
-                Past date — this entry will be saved at 09:00:00 am
-              </p>
-            )}
 
           <div className="flex items-end">
             <button
@@ -769,6 +751,8 @@ export default function RawMaterial({ user }) {
                   disabled={submittingEdit}
                 />
               </div>
+              <ShiftDatePicker date={adjustWhen.date} shift={adjustWhen.shift} time={adjustWhen.time}
+                disabled={submittingEdit} onChange={setAdjustWhen} />
               {previewStockAdjustment(editTotal.currentTotal, editOperation, editQuantity) !== null && (
                 <div className="flex justify-between text-sm pt-1 border-t border-border-subtle">
                   <span className="text-text-secondary">Closing Stock</span>

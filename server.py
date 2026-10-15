@@ -15,7 +15,7 @@ import asyncpg
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, ORJSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, ORJSONResponse, Response, StreamingResponse
 import bcrypt
 from jose import JWTError, jwt
 
@@ -995,12 +995,36 @@ def normalize_shift(value) -> str | None:
     return aliases[text]
 
 
+def shift_for_clock(clock: dtime) -> str:
+    return "AM" if SHIFT_AM_START <= clock < SHIFT_PM_START else "PM"
+
+
+def parse_entry_clock(value) -> dtime | None:
+    """Optional HH:MM (or HH:MM:SS) the operator typed for when the work happened."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parts = [int(p) for p in text.split(":")]
+        if len(parts) not in (2, 3):
+            raise ValueError
+        return dtime(*parts)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "entry_time must be HH:MM") from exc
+
+
 def parse_business_context(payload: dict, now: datetime | None = None):
     """(business_date, shift, created_at) for an entry.
 
     No date and no shift → the live clock decides both and created_at stays None
     so the column default records the real time. Any other day or shift gets a
     fixed clock (AM 09:00, PM 21:00) so the row reads plainly as filed later.
+
+    An explicit `entry_time` (HH:MM) stamps the entry at that clock instead. The
+    shift follows the clock, and night-shift times after midnight land on the
+    next calendar day while staying filed under the business date the shift
+    started on — the operator who keys in last night's work the next morning
+    types the times exactly as they were written on the shop-floor sheet.
     """
     payload = payload or {}
     live_date, live_shift = derive_business_context(now)
@@ -1008,6 +1032,18 @@ def parse_business_context(payload: dict, now: datetime | None = None):
                 or payload.get("entry_date") or payload.get("date"))
     business_date = parse_optional_date(raw_date) or live_date
     requested_shift = normalize_shift(payload.get("shift"))
+    clock = parse_entry_clock(payload.get("entry_time"))
+    if clock is not None:
+        clock_shift = shift_for_clock(clock)
+        if requested_shift and requested_shift != clock_shift:
+            raise HTTPException(400, (
+                f"{clock:%H:%M} falls in the {clock_shift} shift, not {requested_shift}. "
+                f"AM runs {SHIFT_AM_START:%H:%M}–{SHIFT_PM_START:%H:%M}."))
+        calendar_day = business_date + timedelta(days=1) if clock < SHIFT_AM_START else business_date
+        stamped = datetime.combine(calendar_day, clock)
+        if stamped > (now or datetime.now()) + timedelta(minutes=5):
+            raise HTTPException(400, f"{stamped:%d %b %Y %H:%M} is in the future")
+        return business_date, clock_shift, stamped
     if not requested_shift and business_date in (live_date, (now or datetime.now()).date()):
         # No shift and "today" (calendar or business): the live clock decides,
         # so a night-shift entry at 02:00 still lands on the previous day's PM.
@@ -1358,6 +1394,7 @@ def normalize_stock_adjustment(body) -> tuple[str, str, float, str]:
 
 async def apply_manual_stock_adjustment(
     conn, material_id, operation: str, quantity_kg: float, reason: str, created_by: int,
+    created_at: datetime | None = None,
 ) -> dict:
     require_tx(conn)
     material_id = int(material_id)
@@ -1374,9 +1411,9 @@ async def apply_manual_stock_adjustment(
     adjustment_id = await conn.fetchval(
         """INSERT INTO stock_adjustments
                (material_id, operation, quantity_kg, opening_quantity_kg,
-                closing_quantity_kg, reason, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id""",
-        material_id, operation, quantity_kg, opening, closing, reason, created_by,
+                closing_quantity_kg, reason, created_by, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW())) RETURNING id""",
+        material_id, operation, quantity_kg, opening, closing, reason, created_by, created_at,
     )
     return {"opening_quantity_kg": opening, "closing_quantity_kg": closing,
             "adjustment_id": adjustment_id}
@@ -1807,7 +1844,9 @@ async def add_raw_material(request: Request, user=Depends(get_user)):
 @app.post("/raw-material/adjust")
 async def adjust_raw_material(request: Request, user=Depends(get_user)):
     require_owner_or_admin(user)
-    material_name, operation, quantity_kg, reason = normalize_stock_adjustment(await request.json())
+    body = await request.json()
+    material_name, operation, quantity_kg, reason = normalize_stock_adjustment(body)
+    business_date, shift, entry_ts = parse_business_context(body)
     created_by = user_id_from_token(user)
     if not created_by:
         raise HTTPException(401, "User not authenticated properly")
@@ -1822,7 +1861,7 @@ async def adjust_raw_material(request: Request, user=Depends(get_user)):
             if not material:
                 raise HTTPException(404, "Material not found")
             result = await apply_manual_stock_adjustment(
-                c, material["id"], operation, quantity_kg, reason, created_by,
+                c, material["id"], operation, quantity_kg, reason, created_by, entry_ts,
             )
             impact_receipt, material_type_id = await warehouse_stock_receipt(
                 c, material["id"], result["opening_quantity_kg"], result["closing_quantity_kg"])
@@ -1831,7 +1870,8 @@ async def adjust_raw_material(request: Request, user=Depends(get_user)):
                 source_id=result.get("adjustment_id"),
                 correlation_id=uuid4(), material_id=material["id"],
                 material_type_id=material_type_id, quantity_kg=quantity_kg,
-                balances=impact_receipt, reason=reason, created_by=created_by)
+                balances=impact_receipt, reason=reason, created_by=created_by,
+                business_date=business_date, shift=shift)
     await broadcast("raw_material")
     return {
         "message": "Stock adjusted successfully",
@@ -2448,6 +2488,8 @@ async def get_stock_meta(user=Depends(get_user)):
              "starts": SHIFT_PM_START.isoformat(timespec="minutes"),
              "ends": SHIFT_AM_START.isoformat(timespec="minutes")},
         ],
+        # Clock stamped on a backdated entry when the operator types no time.
+        "default_entry_times": {k: v.isoformat(timespec="minutes") for k, v in SHIFT_ENTRY_TIME.items()},
         "bag_kg": float(BAG_KG),
         "live_business_date": live_date.isoformat(),
         "live_shift": live_shift,
@@ -3505,6 +3547,94 @@ async def get_reports_machines(date_from: str = None, date_to: str = None, machi
             *vals))
 
 
+PRODUCTION_REPORT_MAX_DAYS = 93
+
+
+@app.get("/reports/production.xlsx")
+async def production_report_xlsx(date_from: str = None, date_to: str = None, user=Depends(get_user)):
+    """Formatted multi-sheet Excel production report for a business-date range."""
+    # Imported here so a missing optional dependency only breaks this download.
+    from production_report import build_production_workbook
+
+    end = parse_optional_date(date_to) or derive_business_context()[0]
+    start = parse_optional_date(date_from) or end - timedelta(days=6)
+    if start > end:
+        raise HTTPException(400, "date_from must be on or before date_to")
+    if (end - start).days + 1 > PRODUCTION_REPORT_MAX_DAYS:
+        raise HTTPException(400, f"Choose at most {PRODUCTION_REPORT_MAX_DAYS} days per report")
+
+    pl_bd = sql_business_date("pl.business_date", "pl.created_at")
+    pl_sh = sql_shift("pl.shift", "pl.created_at")
+    async with pool.acquire() as c:
+        entries = rows(await c.fetch(
+            f"""SELECT pl.id, {pl_bd} AS business_date, {pl_sh} AS shift, pl.created_at,
+                       pl.machine_id, m.name AS machine_name, {MACHINE_FLOOR_SQL} AS floor,
+                       pl.batch_id, pb.batch_no, mm.name AS material_name, pl.size, pl.worker_name,
+                       pl.gross_weight, pl.tare_weight, pl.net_weight, pl.machine_consumed_kg,
+                       u.name AS entered_by, sal.occurred_at AS keyed_at
+                  FROM production_logs pl
+                  JOIN machines m ON m.id = pl.machine_id
+                  LEFT JOIN materials_master mm ON mm.id = pl.material_id
+                  LEFT JOIN production_batches pb ON pb.id = pl.batch_id
+                  LEFT JOIN users u ON u.id = pl.created_by
+                  LEFT JOIN LATERAL (
+                      SELECT occurred_at FROM stock_activity_log
+                       WHERE source_domain = 'PRODUCTION' AND source_id = pl.id AND action = 'CREATE'
+                       ORDER BY id LIMIT 1) sal ON TRUE
+                 WHERE {pl_bd} BETWEEN $1 AND $2
+                 ORDER BY 2, 3, pl.created_at, pl.id""", start, end))
+        machines = rows(await c.fetch(
+            f"SELECT id, name, type, {MACHINE_FLOOR_SQL} AS floor FROM machines ORDER BY id"))
+        batches = rows(await c.fetch(
+            """SELECT pb.*, u.name AS created_by_name FROM production_batches pb
+                 LEFT JOIN users u ON u.id = pb.created_by
+                WHERE pb.business_date BETWEEN $1 AND $2
+                ORDER BY pb.business_date, pb.shift, pb.batch_no""", start, end))
+        machine_issues = rows(await c.fetch(
+            """SELECT st.transfer_no, st.business_date, st.shift, st.created_at, st.from_location,
+                      st.quantity_kg, st.status, st.note, m.name AS machine_name,
+                      mt.name AS material_name, u.name AS created_by_name
+                 FROM stock_transfers st
+                 JOIN machines m ON m.id = st.to_machine_id
+                 LEFT JOIN material_types mt ON mt.id = st.material_type_id
+                 LEFT JOIN users u ON u.id = st.created_by
+                WHERE st.to_location = 'MACHINE' AND st.business_date BETWEEN $1 AND $2
+                ORDER BY st.business_date, st.shift, st.created_at""", start, end))
+        wastage = rows(await c.fetch(
+            """SELECT w.date, w.weight, u.name AS created_by_name FROM wastage_data w
+                 LEFT JOIN users u ON u.id = w.created_by
+                WHERE w.date BETWEEN $1 AND $2 ORDER BY w.date, w.sno""", start, end))
+        sal_bd = sql_business_date("sal.business_date", "sal.occurred_at")
+        sal_sh = sql_shift("sal.shift", "sal.occurred_at")
+        reversals = rows(await c.fetch(
+            f"""SELECT sal.occurred_at, {sal_bd} AS business_date, {sal_sh} AS shift, sal.source_id,
+                       sal.quantity_kg, sal.reason, m.name AS machine_name, mm.name AS material_name,
+                       u.name AS created_by_name
+                  FROM stock_activity_log sal
+                  LEFT JOIN machines m ON m.id = sal.machine_id
+                  LEFT JOIN materials_master mm ON mm.id = sal.material_id
+                  LEFT JOIN users u ON u.id = sal.created_by
+                 WHERE sal.source_domain = 'PRODUCTION' AND sal.action = 'REVERSE'
+                   AND {sal_bd} BETWEEN $1 AND $2
+                 ORDER BY sal.occurred_at""", start, end))
+        ledgers = [await build_day_ledger(c, start + timedelta(days=i))
+                   for i in range((end - start).days + 1)]
+        generated_by = await c.fetchval("SELECT name FROM users WHERE id = $1", user_id_from_token(user)) \
+            or user.get("name") or user.get("email") or "—"
+
+    content = build_production_workbook(
+        start=start, end=end, generated_by=generated_by, generated_at=datetime.now(),
+        entries=entries, machines=machines, batches=batches, machine_issues=machine_issues,
+        wastage=wastage, reversals=reversals, ledgers=ledgers,
+        am_start=f"{SHIFT_AM_START:%H:%M}", pm_start=f"{SHIFT_PM_START:%H:%M}")
+    filename = f"Production_Report_{start:%Y-%m-%d}_to_{end:%Y-%m-%d}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                 "Cache-Control": "no-store"})
+
+
 # ── Analytics ──
 
 @app.get("/analytics/plant-efficiency-v2")
@@ -3841,6 +3971,8 @@ async def create_wastage(request: Request, user=Depends(get_user)):
     weight = body.get("weight")
     if weight is None or float(weight) <= 0:
         raise HTTPException(400, "weight must be greater than 0")
+    # wastage_data keeps only the day; the shift/time land on the audit row.
+    business_date, shift, _ = parse_business_context({**body, "business_date": waste_date.isoformat()})
     async with pool.acquire() as c:
         async with c.transaction():
             # MAX(id)+1 outside a lock lets two simultaneous entries pick the same id
@@ -3855,7 +3987,7 @@ async def create_wastage(request: Request, user=Depends(get_user)):
                 correlation_id=uuid4(), material_id=None, material_type_id=None,
                 quantity_kg=weight, balances={},
                 reason="Reporting only — no warehouse or floor stock change",
-                created_by=user_id_from_token(user))
+                created_by=user_id_from_token(user), business_date=business_date, shift=shift)
     await broadcast("wastage")
     return AppResponse(status_code=201, content={"message": "Wastage recorded", "data": dict(r_),
                                                   "activity_id": activity["id"],

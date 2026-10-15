@@ -5,7 +5,7 @@ import { useToast } from '../components/Toast'
 import useSSE from '../hooks/useSSE'
 import useStockMeta from '../hooks/useStockMeta'
 import api from '../utils/api'
-import { apiError, formatBusinessDate, machinesForFloor, shiftDate } from '../utils/ipms'
+import { apiError, entryWhenPayload, formatBusinessDate, machinesForFloor, shiftDate } from '../utils/ipms'
 import { formatBags, formatWeight } from '../utils/units'
 import { EmptyState, PageHeader, Panel, PrimaryButton, SecondaryButton, ShiftBadge, ShiftDatePicker, StatusBadge, Weight } from '../components/ipms/Kit'
 import { inputClass, inputInline, labelClass } from '../components/ipms/styles'
@@ -26,7 +26,7 @@ export default function ProductionBatches({ user }) {
   const [overview, setOverview] = useState(null)
   const [batches, setBatches] = useState([])
   const [range, setRange] = useState({ from: '', to: '' })
-  const [form, setForm] = useState({ date: '', shift: '', note: '' })
+  const [form, setForm] = useState({ date: '', shift: '', time: '', note: '' })
   const [lines, setLines] = useState([blankLine()])
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState({})
@@ -97,7 +97,7 @@ export default function ProductionBatches({ user }) {
     setBusy(true)
     try {
       const { data } = await api.post('/production/batches', {
-        business_date: form.date, shift: form.shift, note: form.note || undefined,
+        ...entryWhenPayload(form), note: form.note || undefined,
         lines: lines.map((l) => ({
           machine_id: Number(l.machine), material_type_id: Number(l.typeId), size: l.size || undefined,
           worker_name: l.worker || user?.name || undefined,
@@ -148,8 +148,8 @@ export default function ProductionBatches({ user }) {
 
       <Panel title="New batch" subtitle="Ground Floor machines only">
         <div className="grid gap-4 lg:grid-cols-[auto_minmax(0,1fr)]">
-          <ShiftDatePicker date={form.date} shift={form.shift} liveDate={meta?.live_business_date} liveShift={meta?.live_shift}
-            onChange={({ date, shift }) => setForm((f) => ({ ...f, date, shift }))} />
+          <ShiftDatePicker date={form.date} shift={form.shift} time={form.time}
+            onChange={(when) => setForm((f) => ({ ...f, ...when }))} />
           <div>
             <label className={labelClass} htmlFor="pb-note">Batch note</label>
             <input id="pb-note" value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} className={inputClass} placeholder="Order, product, remarks (optional)" />

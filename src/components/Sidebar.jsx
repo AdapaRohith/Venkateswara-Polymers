@@ -71,16 +71,31 @@ const Icon = {
   ),
 }
 
-const stockControlItems = (isOwner) => [
-  { name: 'Stock Overview', path: '/stock', icon: Icon.stock },
+// The order a day's paperwork is keyed in: open the day, receive raw material,
+// move it Warehouse → Ground Floor → First Floor, put it on machines, log what
+// they produced, then close the day. Steps are numbered so the operator can
+// work straight down the list.
+const dailyEntrySteps = (isOwner) => [
   { name: 'Opening Stock', path: '/stock/ledger?view=opening', icon: Icon.opening },
-  { name: 'Closing Stock', short: 'Closing', path: '/stock/ledger?view=closing', icon: Icon.closing },
-  { name: 'AM / PM Shift Ledger', path: '/stock/ledger?view=shifts', icon: Icon.ledger },
-  { name: 'Stock Transfers', path: '/stock/transfers', icon: Icon.transfer },
-  { name: 'Machine Stock', path: '/stock/machines', icon: Icon.machine },
+  ...(isOwner ? [{ name: 'Raw Material In', path: '/raw-material', icon: Icon.rawMaterial }] : []),
+  { name: 'Move: Warehouse → Ground', short: 'Move', path: '/stock/transfers?from=WAREHOUSE&to=GROUND_FLOOR', icon: Icon.transfer },
+  { name: 'Move: Ground → First Floor', path: '/stock/transfers?from=GROUND_FLOOR&to=FIRST_FLOOR', icon: Icon.transfer },
+  { name: 'Send to Machine', path: '/stock/transfers?from=GROUND_FLOOR&to=MACHINE', icon: Icon.machine },
+  { name: 'Production Batches', short: 'Batches', path: '/production-batches', icon: Icon.batches },
+  { name: 'Production Log', path: '/production-log', icon: Icon.production },
+  { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
   ...(isOwner ? [{ name: 'Return Stock', path: '/stock/returns', icon: Icon.returns }] : []),
+  { name: 'Closing Stock', short: 'Closing', path: '/stock/ledger?view=closing', icon: Icon.closing },
+].map((item, index) => ({ ...item, step: index + 1 }))
+
+const stockViewItems = [
+  { name: 'Stock Overview', path: '/stock', icon: Icon.stock },
+  { name: 'Machine Stock', path: '/stock/machines', icon: Icon.machine },
+  { name: 'AM / PM Shift Ledger', path: '/stock/ledger?view=shifts', icon: Icon.ledger },
+  { name: 'All Transfers', path: '/stock/transfers', icon: Icon.transfer },
   { name: 'Day-wise Usage', path: '/stock/usage', icon: Icon.usage },
   { name: 'Search Stock', path: '/stock/search', icon: Icon.search },
+  { name: 'Stock Activity', path: '/stock-activity', icon: Icon.reports },
 ]
 
 const ownerNavGroups = [
@@ -91,36 +106,25 @@ const ownerNavGroups = [
     ],
   },
   {
-    label: 'Stock Control',
-    items: stockControlItems(true),
+    label: 'Daily Entry — in order',
+    items: dailyEntrySteps(true),
   },
   {
-    label: 'Inventory',
-    items: [
-      { name: 'Raw Material', path: '/raw-material', icon: Icon.rawMaterial },
-      { name: 'Trading', path: '/trading', icon: Icon.trading },
-    ],
+    label: 'Stock & Ledgers',
+    items: stockViewItems,
   },
   {
-    label: 'Production',
-    items: [
-      { name: 'Production Batches', short: 'Batches', path: '/production-batches', icon: Icon.batches },
-      { name: 'Production Log', path: '/production-log', icon: Icon.production },
-      { name: 'Production Orders', path: '/production-orders', icon: Icon.orders },
-      { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
-    ],
-  },
-  {
-    label: 'Fulfillment',
-    items: [
-      { name: 'Fulfillment', path: '/fulfillment', icon: Icon.fulfillment },
-    ],
-  },
-  {
-    label: 'Analytics',
+    label: 'Reports',
     items: [
       { name: 'Machine Reports', path: '/reports', icon: Icon.reports },
-      { name: 'Stock Activity', path: '/stock-activity', icon: Icon.reports },
+    ],
+  },
+  {
+    label: 'Sales & Orders',
+    items: [
+      { name: 'Production Orders', path: '/production-orders', icon: Icon.orders },
+      { name: 'Fulfillment', path: '/fulfillment', icon: Icon.fulfillment },
+      { name: 'Trading', path: '/trading', icon: Icon.trading },
     ],
   },
   {
@@ -133,17 +137,12 @@ const ownerNavGroups = [
 
 const workerNavGroups = [
   {
-    label: 'Work',
-    items: [
-      { name: 'Production Batches', short: 'Batches', path: '/production-batches', icon: Icon.batches },
-      { name: 'Production Log', path: '/production-log', icon: Icon.production },
-      { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
-      { name: 'Stock Activity', path: '/stock-activity', icon: Icon.reports },
-    ],
+    label: 'Daily Entry — in order',
+    items: dailyEntrySteps(false),
   },
   {
-    label: 'Stock Control',
-    items: stockControlItems(false),
+    label: 'Stock & Ledgers',
+    items: stockViewItems,
   },
 ]
 
@@ -186,6 +185,8 @@ export default function Sidebar({ user, onLogout }) {
     : ['/', '/stock', '/production-batches', '/stock/ledger?view=closing']
   const quickItems = quickPaths.map(p => flatItems.find(i => i.path === p)).filter(Boolean)
 
+  // Most specific match wins, so "Move: Warehouse → Ground" lights up rather
+  // than the plain "All Transfers" entry it shares a path with.
   const currentItem = [...flatItems]
     .sort((a, b) => b.path.length - a.path.length)
     .find(i => isItemActive(i, location))
@@ -322,19 +323,27 @@ export default function Sidebar({ user, onLogout }) {
                     <NavLink
                       to={item.path}
                       end={item.path === '/'}
-                      aria-current={isItemActive(item, location) ? 'page' : undefined}
+                      aria-current={item.path === currentItem?.path ? 'page' : undefined}
                       className={() =>
                         `flex items-center gap-2.5 px-2.5 py-2 text-sm rounded-md font-medium transition-all duration-150 ${
-                          isItemActive(item, location)
+                          item.path === currentItem?.path
                             ? 'bg-accent-gold-muted text-accent-gold'
                             : 'text-text-secondary hover:text-text-primary hover:bg-bg-row-hover'
                         }`
                       }
                     >
-                      <span className={isItemActive(item, location) ? 'text-accent-gold' : 'text-text-secondary/70'}>
-                        {item.icon}
-                      </span>
-                      <span>{item.name}</span>
+                      {item.step ? (
+                        <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold tabular-nums ${
+                          item.path === currentItem?.path ? 'bg-accent-gold text-white dark:text-black' : 'bg-bg-row-hover text-text-secondary'
+                        }`}>
+                          {item.step}
+                        </span>
+                      ) : (
+                        <span className={item.path === currentItem?.path ? 'text-accent-gold' : 'text-text-secondary/70'}>
+                          {item.icon}
+                        </span>
+                      )}
+                      <span className="truncate">{item.name}</span>
                     </NavLink>
                   </li>
                 ))}

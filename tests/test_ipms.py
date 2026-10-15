@@ -65,6 +65,46 @@ def test_todays_night_shift_logged_in_the_morning_is_stamped_pm():
     assert (bd, shift, ts) == (date(2026, 10, 15), "PM", datetime(2026, 10, 15, 21, 0))
 
 
+# ── Explicit entry time (yesterday's shifts keyed in the next morning) ──
+
+def test_typed_time_on_a_past_morning_shift_is_kept():
+    now = datetime(2026, 10, 15, 10, 0)
+    assert parse_business_context(
+        {"business_date": "2026-10-14", "shift": "AM", "entry_time": "11:45"}, now,
+    ) == (date(2026, 10, 14), "AM", datetime(2026, 10, 14, 11, 45))
+
+
+def test_night_shift_time_after_midnight_lands_on_next_calendar_day():
+    now = datetime(2026, 10, 15, 10, 0)
+    bd, shift, ts = parse_business_context({"business_date": "2026-10-14", "entry_time": "02:30"}, now)
+    assert (bd, shift, ts) == (date(2026, 10, 14), "PM", datetime(2026, 10, 15, 2, 30))
+
+
+def test_time_decides_shift_when_none_given():
+    now = datetime(2026, 10, 15, 22, 0)
+    assert parse_business_context({"business_date": "2026-10-15", "entry_time": "20:15"}, now)[1] == "PM"
+    assert parse_business_context({"business_date": "2026-10-15", "entry_time": "08:00"}, now)[1] == "AM"
+
+
+def test_typed_time_must_match_the_shift():
+    with pytest.raises(HTTPException) as err:
+        parse_business_context({"business_date": "2026-10-14", "shift": "AM", "entry_time": "22:00"},
+                               datetime(2026, 10, 15, 10, 0))
+    assert "PM shift" in err.value.detail
+
+
+def test_typed_time_cannot_be_in_the_future():
+    with pytest.raises(HTTPException):
+        parse_business_context({"business_date": "2026-10-15", "entry_time": "18:00"},
+                               datetime(2026, 10, 15, 10, 0))
+
+
+def test_bad_time_is_rejected():
+    with pytest.raises(HTTPException):
+        parse_business_context({"business_date": "2026-10-14", "entry_time": "25:99"},
+                               datetime(2026, 10, 15, 10, 0))
+
+
 # ── Bags ──
 
 def test_bags_convert_at_25_kg():

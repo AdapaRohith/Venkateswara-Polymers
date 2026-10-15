@@ -7,7 +7,7 @@ import useSSE from '../hooks/useSSE'
 import useStockMeta from '../hooks/useStockMeta'
 import api from '../utils/api'
 import {
-  LOCATIONS, allowedDestinations, apiError, formatBusinessDate, locationLabel, machinesForFloor,
+  LOCATIONS, allowedDestinations, apiError, entryWhenPayload, formatBusinessDate, locationLabel, machinesForFloor,
 } from '../utils/ipms'
 import { formatWeight, toKg } from '../utils/units'
 import { EmptyState, LocationBadge, PageHeader, Panel, PrimaryButton, QuantityInput, SecondaryButton, ShiftBadge, ShiftDatePicker, StatusBadge, Weight } from '../components/ipms/Kit'
@@ -40,12 +40,25 @@ export default function StockTransfers({ user }) {
     fromMachine: params.get('fromMachine') || '',
     to: params.get('to') || 'GROUND_FLOOR',
     toMachine: params.get('toMachine') || '',
-    qty: '', unit: 'kg', note: '', date: '', shift: '',
+    qty: '', unit: 'kg', note: '', date: '', shift: '', time: '',
   }))
 
   useEffect(() => {
     if (meta && !form.date) setForm((f) => ({ ...f, date: meta.live_business_date, shift: meta.live_shift }))
   }, [meta, form.date])
+
+  // The sidebar's numbered steps link here with a preset route; follow it when
+  // the operator moves from one step to the next without leaving the page.
+  const presetFrom = params.get('from')
+  const presetTo = params.get('to')
+  useEffect(() => {
+    if (!presetFrom && !presetTo) return
+    setForm((f) => ({
+      ...f,
+      from: presetFrom || f.from, fromMachine: '',
+      to: presetTo || f.to, toMachine: '',
+    }))
+  }, [presetFrom, presetTo])
 
   const load = useCallback(async () => {
     try {
@@ -95,7 +108,7 @@ export default function StockTransfers({ user }) {
         from_machine_id: form.from === 'MACHINE' ? Number(form.fromMachine) : undefined,
         to_location: to,
         to_machine_id: to === 'MACHINE' ? Number(form.toMachine) : undefined,
-        business_date: form.date, shift: form.shift, note: form.note || undefined,
+        ...entryWhenPayload(form), note: form.note || undefined,
       })
       setReceipt(data)
       set({ qty: '', note: '' })
@@ -185,8 +198,7 @@ export default function StockTransfers({ user }) {
             <QuantityInput value={form.qty} unit={form.unit} available={material ? available : undefined}
               onChange={({ value, unit }) => set({ qty: value, unit })} />
 
-            <ShiftDatePicker date={form.date} shift={form.shift} liveDate={meta?.live_business_date} liveShift={meta?.live_shift}
-              onChange={({ date, shift }) => set({ date, shift })} />
+            <ShiftDatePicker date={form.date} shift={form.shift} time={form.time} onChange={set} />
 
             <div>
               <label className={labelClass} htmlFor="tr-note">Note</label>

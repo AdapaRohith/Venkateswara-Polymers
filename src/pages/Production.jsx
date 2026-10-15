@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import useSSE from '../hooks/useSSE'
 import useFlashRows from '../hooks/useFlashRows'
-import useStockMeta from '../hooks/useStockMeta'
-import { ShiftBadge } from '../components/ipms/Kit'
+import { ShiftBadge, ShiftDatePicker } from '../components/ipms/Kit'
+import { entryWhenPayload, liveShiftContext, shiftWindows } from '../utils/ipms'
 import EditEntryModal from '../components/EditEntryModal'
+import ProductionReportButton from '../components/ProductionReportButton'
 import StockImpactReceipt from '../components/StockImpactReceipt'
 import StockOverflowDialog, { parseAvailableKg } from '../components/StockOverflowDialog'
 import Pictogram from '../components/Pictogram'
@@ -165,10 +166,6 @@ function MachinePill({ machine, isActive, onClick }) {
 /* ══════════════════════════════════════════════════════════════════════════ */
 /*  MAIN COMPONENT                                                          */
 /* ══════════════════════════════════════════════════════════════════════════ */
-function getTodayDate() {
-  return todayIST()
-}
-
 export default function Production({ user }) {
   const toast = useToast()
 
@@ -183,11 +180,9 @@ export default function Production({ user }) {
   const [grossWeight, setGrossWeight] = useState('')
   const [tareWeight, setTareWeight] = useState('')
   const [directNetWeight, setDirectNetWeight] = useState('')
-  const [productionDate, setProductionDate] = useState(getTodayDate)
-  // '' = let the live clock decide (night shift after midnight stays on the previous day's PM).
-  const [shift, setShift] = useState('')
-  const stockMeta = useStockMeta()
-  const effectiveShift = shift || (productionDate === getTodayDate() ? stockMeta?.live_shift : 'AM') || 'AM'
+  // Date, shift and time of the work. Shifts are usually keyed in the next day,
+  // so all three are editable; a blank time means live clock / shift default.
+  const [when, setWhen] = useState(() => ({ ...liveShiftContext(shiftWindows(null)), time: '' }))
   const [history, setHistory] = useState([])
   const [historyMachineFilter, setHistoryMachineFilter] = useState('')
   useFlashRows(history.length)
@@ -208,7 +203,6 @@ export default function Production({ user }) {
   const [hasLoadedMaterialsOnce, setHasLoadedMaterialsOnce] = useState(false)
   const [lastReceipt, setLastReceipt] = useState(null)
   const grossRef = useRef(null)
-  const isBackdated = productionDate !== getTodayDate()
 
   /* ── Compute available materials for production with floor stock quantities ─ */
   const materialsForProduction = useMemo(() => {
@@ -487,8 +481,7 @@ export default function Production({ user }) {
         worker_name: workerName,
         gross_weight: gross,
         tare_weight: tare,
-        production_date: productionDate || getTodayDate(),
-        ...(shift ? { shift } : {}),
+        ...entryWhenPayload(when),
       })
 
       // Find material name from assigned stock or floor stock for history display
@@ -568,7 +561,7 @@ export default function Production({ user }) {
     } finally {
       setSubmitting(false)
     }
-  }, [activeMachine, assignedStock, grossWeight, tareWeight, directNetWeight, materialId, size, workerName, isValid, materialsForProduction, toast, productionDate, shift, user])
+  }, [activeMachine, assignedStock, grossWeight, tareWeight, directNetWeight, materialId, size, workerName, isValid, materialsForProduction, toast, when, user])
 
   const openEditHistory = useCallback((row) => {
     setEditingHistoryRow(row)
@@ -676,10 +669,13 @@ export default function Production({ user }) {
   /* ══════════════════════════════════════════════════════════════════════════ */
   return (
     <div className="space-y-4">
-      <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight text-text-primary">
-        <Pictogram name="production" size={20} className="text-accent-gold" />
-        Production
-      </h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight text-text-primary">
+          <Pictogram name="production" size={20} className="text-accent-gold" />
+          Production
+        </h1>
+        <ProductionReportButton />
+      </div>
 
       {/* ── Dual Machine Selectors ───────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -729,59 +725,11 @@ export default function Production({ user }) {
                   ))}
                 </select>
               </div>
-
-              {/* Production Date */}
-              <div>
-                <label className={labelClass}>
-                  <Pictogram name="date" size={13} className="text-text-secondary/70" />
-                  Date
-                </label>
-                <div className="relative flex items-center">
-                  <input
-                    type="date"
-                    value={productionDate}
-                    onChange={e => setProductionDate(e.target.value)}
-                    max={getTodayDate()}
-                    className={`${inputClass} ${isBackdated ? 'pr-24' : ''}`}
-                  />
-                  {isBackdated && (
-                    <button
-                      type="button"
-                      onClick={() => { setProductionDate(getTodayDate()); setShift('') }}
-                      className="absolute right-10 text-[10px] font-bold uppercase tracking-wider text-orange-400 hover:text-orange-300 transition-colors"
-                    >
-                      Reset
-                    </button>
-                  )}
-                </div>
-              </div>
             </div>
 
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary">Shift</span>
-              <div role="radiogroup" aria-label="Shift" className="inline-flex overflow-hidden rounded-lg border border-border-default">
-                {['AM', 'PM'].map((s) => (
-                  <button key={s} type="button" role="radio" aria-checked={effectiveShift === s}
-                    onClick={() => setShift(s)}
-                    className={`px-3 py-1.5 text-xs font-bold transition ${
-                      effectiveShift === s
-                        ? s === 'AM' ? 'bg-amber-500 text-black' : 'bg-violet-600 text-white'
-                        : 'bg-bg-input text-text-secondary hover:text-text-primary'
-                    }`}>
-                    {s === 'AM' ? 'AM · Morning' : 'PM · Night'}
-                  </button>
-                ))}
-              </div>
-              {!shift && <span className="text-[11px] text-text-secondary">auto from clock</span>}
+            <div className="mt-3">
+              <ShiftDatePicker date={when.date} shift={when.shift} time={when.time} onChange={setWhen} disabled={submitting} />
             </div>
-
-            {(isBackdated || shift) && (
-              <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-orange-400">
-                <Pictogram name="warning" size={13} />
-                Logging for {formatDateIST(productionDate)} · <ShiftBadge shift={effectiveShift} /> shift
-                {isBackdated && ` — saved at ${effectiveShift === 'PM' ? '09:00 pm' : '09:00 am'}`}
-              </p>
-            )}
           </div>
         </div>
 
@@ -1199,10 +1147,12 @@ export default function Production({ user }) {
               await api.post('/raw-material/add', {
                 material_name: stockOverflow.materialName,
                 quantity_kg: amount,
+                ...entryWhenPayload(when),
               })
               await api.post('/floor/issue-from-raw', {
                 material_name: stockOverflow.materialName,
                 quantity_kg: amount,
+                ...entryWhenPayload(when),
               })
               setStockOverflow(null)
               handleSubmit()

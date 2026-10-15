@@ -6,6 +6,8 @@ import { useToast } from '../components/Toast'
 import api from '../utils/api'
 import { exportSingleSheet } from '../utils/exportToExcel'
 import { formatDate as formatDateIST, todayIST } from '../utils/datetime'
+import { ShiftDatePicker } from '../components/ipms/Kit'
+import { entryWhenPayload, liveShiftContext, shiftWindows } from '../utils/ipms'
 import { canModifyLocalEntry, deleteWastageEntry, updateWastageEntry } from '../utils/logActions'
 
 const ExcelIcon = () => (
@@ -70,10 +72,11 @@ export default function Wastage({ user }) {
   const [editValues, setEditValues] = useState({})
   const [lastAction, setLastAction] = useState('')
 
-  const [form, setForm] = useState({
-    date: todayIST(),
+  const [form, setForm] = useState(() => ({
+    ...liveShiftContext(shiftWindows(null)),
+    time: '',
     weight: '',
-  })
+  }))
 
   const loadWastage = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -153,6 +156,7 @@ export default function Wastage({ user }) {
     try {
       const { data } = await api.post('/wastage', {
         date: form.date,
+        ...entryWhenPayload(form),
         weight,
         wastage_generated: weight,
       })
@@ -226,16 +230,9 @@ export default function Wastage({ user }) {
       <div className="bg-bg-card rounded-2xl border border-border-default shadow-sm p-6">
         <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary/60 mb-6">Log Wastage</h2>
         <form onSubmit={handleSubmit} className="flex flex-wrap gap-4 items-end">
-          <div className="flex-1 min-w-[160px]">
-            <label className="block text-xs font-semibold uppercase tracking-widest text-text-secondary/70 mb-2">Date</label>
-            <input
-              type="date"
-              name="date"
-              value={form.date}
-              onChange={handleChange}
-              required
-              className="w-full bg-bg-input text-text-primary border border-border-default rounded-xl px-4 py-2.5 text-sm focus:border-accent-gold transition-all"
-            />
+          <div className="w-full">
+            <ShiftDatePicker date={form.date} shift={form.shift} time={form.time} disabled={submitting}
+              onChange={(when) => setForm((previous) => ({ ...previous, ...when }))} />
           </div>
 
           <div className="flex-1 min-w-[160px]">

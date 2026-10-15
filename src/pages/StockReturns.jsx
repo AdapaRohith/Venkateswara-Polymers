@@ -5,7 +5,7 @@ import { useToast } from '../components/Toast'
 import useSSE from '../hooks/useSSE'
 import useStockMeta from '../hooks/useStockMeta'
 import api from '../utils/api'
-import { LOCATIONS, apiError, formatBusinessDate } from '../utils/ipms'
+import { LOCATIONS, apiError, entryWhenPayload, formatBusinessDate } from '../utils/ipms'
 import { formatWeight, toKg } from '../utils/units'
 import { EmptyState, LocationBadge, PageHeader, Panel, PrimaryButton, QuantityInput, ShiftBadge, ShiftDatePicker, StatusBadge, Weight } from '../components/ipms/Kit'
 import { inputClass, inputInline, labelClass } from '../components/ipms/styles'
@@ -23,7 +23,7 @@ export default function StockReturns({ user }) {
   const [busy, setBusy] = useState(false)
   const [form, setForm] = useState({
     materialKey: '', location: 'GROUND_FLOOR', machine: '', qty: '', unit: 'bags',
-    returnedTo: '', reason: '', date: '', shift: '',
+    returnedTo: '', reason: '', date: '', shift: '', time: '',
   })
   const set = (patch) => setForm((f) => ({ ...f, ...patch }))
 
@@ -71,7 +71,7 @@ export default function StockReturns({ user }) {
         quantity_kg: qtyKg, location: form.location,
         machine_id: form.location === 'MACHINE' ? Number(form.machine) : undefined,
         returned_to: form.returnedTo || undefined, reason: form.reason,
-        business_date: form.date, shift: form.shift,
+        ...entryWhenPayload(form),
       })
       toast.success(`${data.return.return_no}: ${formatWeight(qtyKg)} returned`)
       set({ qty: '', reason: '', returnedTo: '' })
@@ -117,8 +117,7 @@ export default function StockReturns({ user }) {
                 </div>
               )}
               <QuantityInput value={form.qty} unit={form.unit} available={available} onChange={({ value, unit }) => set({ qty: value, unit })} />
-              <ShiftDatePicker date={form.date} shift={form.shift} liveDate={meta?.live_business_date} liveShift={meta?.live_shift}
-                onChange={({ date, shift }) => set({ date, shift })} />
+              <ShiftDatePicker date={form.date} shift={form.shift} time={form.time} onChange={set} />
               <div>
                 <label className={labelClass} htmlFor="rt-to">Returned to</label>
                 <input id="rt-to" value={form.returnedTo} onChange={(e) => set({ returnedTo: e.target.value })} className={inputClass} placeholder="Supplier / party (optional)" />
