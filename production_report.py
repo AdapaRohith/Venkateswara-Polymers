@@ -137,6 +137,10 @@ def _table(ws, row, col, headers, data, formats=None, totals=None, shift_col=Non
         previous_group = group
         for i, value in enumerate(values):
             cell = ws.cell(row=r, column=col + i, value=value)
+            # Operator names, sizes, notes and reasons are typed by users;
+            # never let one starting with "=" become a live formula.
+            if isinstance(value, str) and cell.data_type == "f":
+                cell.data_type = "s"
             cell.border = Border(left=THIN, right=THIN, bottom=THIN,
                                  top=MEDIUM if new_group else THIN)
             if r_idx % 2:

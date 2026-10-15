@@ -65,6 +65,15 @@ def test_duplicate_entries_are_flagged():
     assert all("Possible duplicate" in c for c in checks)
 
 
+def test_user_text_starting_with_equals_is_not_a_formula():
+    d1 = date(2026, 10, 13)
+    e = _entry(1, d1, "AM", 1, 30, 1)
+    e["worker_name"] = '=HYPERLINK("http://evil","x")'
+    wb = _build([e])
+    cell = wb["Production Entries"]["M5"]
+    assert cell.data_type == "s" and cell.value == '=HYPERLINK("http://evil","x")'
+
+
 def test_empty_period_still_builds():
     wb = _build([])
     assert wb["Production Entries"]["A5"].value == "No records in this period"
