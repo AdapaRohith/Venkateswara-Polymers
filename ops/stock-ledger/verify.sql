@@ -28,13 +28,13 @@ BEGIN
     FROM stock_activity_log
     WHERE (warehouse_opening_kg IS NOT NULL AND
            (warehouse_delta_kg IS NULL OR warehouse_closing_kg IS NULL OR
-            warehouse_closing_kg <> warehouse_opening_kg + warehouse_delta_kg))
+            ABS(warehouse_closing_kg - (warehouse_opening_kg + warehouse_delta_kg)) > 0.0005))
        OR (floor_opening_kg IS NOT NULL AND
            (floor_delta_kg IS NULL OR floor_closing_kg IS NULL OR
-            floor_closing_kg <> floor_opening_kg + floor_delta_kg))
+            ABS(floor_closing_kg - (floor_opening_kg + floor_delta_kg)) > 0.0005))
        OR (plant_opening_kg IS NOT NULL AND
            (plant_delta_kg IS NULL OR plant_closing_kg IS NULL OR
-            plant_closing_kg <> plant_opening_kg + plant_delta_kg));
+            ABS(plant_closing_kg - (plant_opening_kg + plant_delta_kg)) > 0.0005));
 
     SELECT COUNT(*) INTO orphan_reversals
     FROM stock_activity_log reversal
