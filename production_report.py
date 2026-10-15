@@ -31,9 +31,10 @@ FLAG_BG, FLAG_FG = "FEE2E2", "991B1B"
 OK_FG = "166534"
 
 # Weights: kg below 1,000 kg, tons from 1,000 kg (matches the app's units rule).
-KG = '[>=1000]#,##0.00," t";#,##0.0" kg"'
+KG = '[>=1000]#,##0.00," t";[=0]"–";#,##0.0" kg"'
 KG_SIGNED = '#,##0.0" kg";[Red]-#,##0.0" kg";"–"'
-INT = '#,##0'
+INT = '#,##0;-#,##0;"–"'
+COUNT = '0'
 PCT = '0.0%'
 HOURS = '0.0" h"'
 DATE = 'dd mmm yyyy'
@@ -43,6 +44,8 @@ TIME = 'hh:mm'
 THIN = Side(style="thin", color=LINE)
 MEDIUM = Side(style="medium", color=NAVY)
 BOX = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+
+TOP_SIZES = 15
 
 FLOOR_LABEL = {"GROUND_FLOOR": "Ground Floor", "FIRST_FLOOR": "First Floor"}
 LOCATION_LABEL = {"WAREHOUSE": "Warehouse", "GROUND_FLOOR": "Ground Floor",
@@ -282,14 +285,14 @@ def _summary(wb, ctx):
     _kpi(ws, 5, 7, "PM · Night", pm, KG, f"{_ratio(pm, net_total) or 0:.0%} of output", accent="7C3AED")
     _kpi(ws, 5, 9, "Wastage", wastage, KG,
          f"{_ratio(wastage, net_total) or 0:.1%} of net output", accent="E11D48")
-    _kpi(ws, 5, 11, "Entries flagged", flagged, INT, "see Checks column", accent="E11D48" if flagged else "16A34A")
+    _kpi(ws, 5, 11, "Entries flagged", flagged, COUNT, "see Checks column", accent="E11D48" if flagged else "16A34A")
 
     _kpi(ws, 9, 1, "Material consumed", consumed, KG, "booked against machines")
     _kpi(ws, 9, 3, "Process yield", _ratio(consumed_net, consumed) or 0, PCT, "net ÷ consumed (where recorded)")
     _kpi(ws, 9, 5, "Process loss", consumed - consumed_net, KG, "consumed − net output")
-    _kpi(ws, 9, 7, "Machines active", active_machines, INT, f"of {len(ctx['machines'])} machines")
-    _kpi(ws, 9, 9, "Reversed entries", len(ctx["reversals"]), INT, "deleted after entry — see Corrections")
-    _kpi(ws, 9, 11, "Production batches", len(ctx["batches"]), INT, "Ground Floor batches opened")
+    _kpi(ws, 9, 7, "Machines active", active_machines, COUNT, f"of {len(ctx['machines'])} machines")
+    _kpi(ws, 9, 9, "Reversed entries", len(ctx["reversals"]), COUNT, "deleted after entry — see Corrections")
+    _kpi(ws, 9, 11, "Production batches", len(ctx["batches"]), COUNT, "Ground Floor batches opened")
 
     row = 13
     # Daily output
@@ -346,7 +349,7 @@ def _summary(wb, ctx):
 
     # Size mix + material side by side
     top = row
-    row_l = _section(ws, top, 1, "Size mix", 5)
+    row_l = _section(ws, top, 1, f"Size mix (top {TOP_SIZES})", 5)
     sizes = defaultdict(lambda: [0, 0.0])
     for e in entries:
         s = sizes[e["size"] or "—"]
@@ -354,6 +357,10 @@ def _summary(wb, ctx):
         s[1] += _num(e["net_weight"])
     data = sorted(([k, v[0], v[1], _ratio(v[1], net_total), _ratio(v[1], v[0])] for k, v in sizes.items()),
                   key=lambda r: -r[2])
+    if len(data) > TOP_SIZES:
+        rest = data[TOP_SIZES:]
+        n, kg = sum(r[1] for r in rest), sum(r[2] for r in rest)
+        data = data[:TOP_SIZES] + [[f"Other sizes ({len(rest)})", n, kg, _ratio(kg, net_total), _ratio(kg, n)]]
     _, row_l = _table(ws, row_l, 1, ["Size", "Entries", "Net output", "Share", "Avg / entry"], data,
                       {1: INT, 2: KG, 3: PCT, 4: KG}, bar_col=2)
 
@@ -381,10 +388,9 @@ def _summary(wb, ctx):
     data = sorted(([k, v[0], v[1], _ratio(v[1], net_total), len(v[3]), ", ".join(sorted(v[2]))]
                    for k, v in ops.items()), key=lambda r: -r[2])
     _, row = _table(ws, row, 1, ["Operator", "Entries", "Net output", "Share", "Shifts worked", "Machines"],
-                    data, {1: INT, 2: KG, 3: PCT, 4: INT}, wrap_cols=(5,), bar_col=2)
+                    data, {1: INT, 2: KG, 3: PCT, 4: INT}, bar_col=2)
 
-    _widths(ws, [14, 14, 12, 14, 12, 14, 13, 14, 12, 13, 12, 13])
-    ws.column_dimensions["F"].width = 16
+    _widths(ws, [22, 14, 12, 14, 12, 16, 20, 14, 13, 13, 12, 13])
     _print_setup(ws, landscape=False)
     ws.freeze_panes = "A4"
 
@@ -471,7 +477,7 @@ def _entries_sheet(wb, ctx):
         shift_col=3, flag_col=21, group_col=1, wrap_cols=(21,))
     if data:
         ws.auto_filter.ref = f"A4:{get_column_letter(len(headers))}{first + len(data) - 1}"
-    _widths(ws, [5, 13, 6, 7, 16, 16, 8, 16, 12, 16, 18, 10, 16, 11, 10, 11, 8, 11, 12, 14, 9, 34])
+    _widths(ws, [5, 13, 6, 7, 16, 16, 8, 18, 12, 16, 18, 18, 18, 11, 10, 11, 8, 11, 12, 14, 9, 36])
     ws.freeze_panes = "E5"
     _print_setup(ws, repeat_row=4)
 
@@ -521,7 +527,7 @@ def _stock_sheet(wb, ctx):
     _table(ws, row, 1, ["Material", "Opening", "Received", "Consumed", "Returned", "Adjusted", "Closing"], data,
            {1: KG, 2: KG, 3: KG, 4: KG, 5: KG_SIGNED, 6: KG},
            totals=["TOTAL", *[sum(r[i] for r in data) for i in range(1, 7)]], bar_col=3)
-    _widths(ws, [18, 15, 13, 13, 12, 12, 15, 13, 13, 13, 13, 20])
+    _widths(ws, [22, 15, 13, 13, 12, 13, 15, 13, 13, 13, 13, 20])
     ws.freeze_panes = "B5"
     _print_setup(ws, repeat_row=4)
 
