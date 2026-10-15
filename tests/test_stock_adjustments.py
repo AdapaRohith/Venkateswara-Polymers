@@ -23,6 +23,11 @@ class FakeConnection:
     async def fetchval(self, query, *args):
         if "SELECT total_quantity_kg" in query and "FOR UPDATE" in query:
             return self.total
+        if "INSERT INTO stock_adjustments" in query:
+            if self.fail_audit:
+                raise RuntimeError("audit insert failed")
+            self.audit_args = args
+            return 77
         raise AssertionError(f"Unexpected fetchval: {query}")
 
     async def fetchrow(self, query, *args):

@@ -75,7 +75,20 @@ BEGIN
         FROM stock_activity_log activity
         WHERE activity.source_domain = source_rows.source_domain
           AND activity.source_id = source_rows.source_id
-    );
+    )
+    -- Adjustments recorded before 2026-10-15 carry no source_id on their activity
+    -- row; they are linked by material, quantity and time instead.
+    AND NOT (source_rows.source_domain = 'MANUAL_ADJUSTMENT' AND EXISTS (
+        SELECT 1
+        FROM stock_adjustments sa
+        JOIN stock_activity_log activity
+          ON activity.source_domain = 'MANUAL_ADJUSTMENT'
+         AND activity.source_id IS NULL
+         AND activity.material_id = sa.material_id
+         AND activity.quantity_kg = sa.quantity_kg
+         AND ABS(EXTRACT(EPOCH FROM activity.occurred_at - sa.created_at)) < 5
+        WHERE sa.id = source_rows.source_id
+    ));
 
     IF negative_warehouse <> 0 OR negative_floor <> 0 OR negative_machine <> 0 THEN
         RAISE EXCEPTION 'Negative stock detected (warehouse %, floor %, machine %)',

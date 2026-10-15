@@ -1410,14 +1410,15 @@ async def apply_manual_stock_adjustment(
     delta = quantity_kg if operation == "add" else -quantity_kg
     closing = opening + delta
     await adjust_raw_total(conn, material_id, delta)
-    await conn.execute(
+    adjustment_id = await conn.fetchval(
         """INSERT INTO stock_adjustments
                (material_id, operation, quantity_kg, opening_quantity_kg,
                 closing_quantity_kg, reason, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+           VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id""",
         material_id, operation, quantity_kg, opening, closing, reason, created_by,
     )
-    return {"opening_quantity_kg": opening, "closing_quantity_kg": closing}
+    return {"opening_quantity_kg": opening, "closing_quantity_kg": closing,
+            "adjustment_id": adjustment_id}
 
 
 async def mirror_floor_for_master(conn, master_id):
@@ -2031,7 +2032,8 @@ async def adjust_raw_material(request: Request, user=Depends(get_user)):
             impact_receipt, material_type_id = await warehouse_stock_receipt(
                 c, material["id"], result["opening_quantity_kg"], result["closing_quantity_kg"])
             activity = await record_stock_activity(
-                c, action="CREATE", source_domain="MANUAL_ADJUSTMENT", source_id=None,
+                c, action="CREATE", source_domain="MANUAL_ADJUSTMENT",
+                source_id=result.get("adjustment_id"),
                 correlation_id=uuid4(), material_id=material["id"],
                 material_type_id=material_type_id, quantity_kg=quantity_kg,
                 balances=impact_receipt, reason=reason, created_by=created_by)
