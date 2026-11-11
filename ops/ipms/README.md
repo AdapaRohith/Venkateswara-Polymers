@@ -1,59 +1,53 @@
-# IPMS rollout: floors, machine stock, AM/PM shifts, batches, returns, day ledger
+# IPMS: Ground Floor / 1st Floor / Roll Store / Finished Goods
 
-Migration `008_floors_shifts_batches_returns.sql` plus the matching `server.py` and
-frontend. The migration is additive and idempotent; the only existing-row write is
-filling the new `machines.floor` column (production → Ground Floor, cutting → First Floor).
+## Stock model
 
-## Model
+| Store | Holds | Fed by | Drawn by |
+| --- | --- | --- | --- |
+| Ground Floor (raw material bay) | raw material | receipts | transfers up, extrusion |
+| 1st Floor Production (running stock) | raw material, RP REGRIND | transfers, wastage | extrusion (drawn first) |
+| Roll Store | film rolls by size | extrusion net | cutting, dispatch |
+| Finished Goods Store | cut goods by size | cutting net | dispatch (order fulfillment) |
 
-| Location | Table | Notes |
-| --- | --- | --- |
-| Warehouse | `raw_material_totals` | receipts land here |
-| Ground Floor | `floor_material_balance` | the former "Floor Stock", unchanged |
-| First Floor | `first_floor_material_balance` | new, starts at 0 |
-| Machine | `machine_stock_allocations` | new, starts at 0 (replaces the old per-machine mirror, dropped in migration 009) |
+There is no Warehouse. Raw material is received straight onto a floor.
 
-* Transfers (`stock_transfers`) move stock between locations; plant total never changes.
-  Machine stock moves only through the machine's own floor.
-* Production (single entries and `production_batches`) consumes the machine's own stock
-  first, then Ground Floor. Batches accept Ground Floor machines only.
-* Returns (`stock_returns`, owner-only) remove stock from a location, are excluded from usage
-  and from the default activity feed, and stay searchable as RETURNED.
-* Every activity row carries `business_date` + `shift` (AM 08:00–20:00, PM 20:00–08:00 and
-  belonging to the day it started). Reversals are filed on the original entry's day/shift.
-* Day ledger: closing(D) = live balance − movements after D, so today's closing is the live
-  stock and every closing equals the next day's opening. `stock_day_closings` stores an owner
-  sign-off snapshot; later changes show as variance; workers cannot post into a closed day.
-* 1 bag = 25 kg. All storage and maths in kg; UI shows tons from 1,000 kg.
+* **Extrusion** (MCN-1 … MCN-5): materials used (blend lines) must add up to the gross weight.
+  Net = gross − wastage goes to the Roll Store as that roll size.
+* **Cutting** (CUTTING MCN-1 … 3): consumes rolls from the Roll Store (never resin); net goes to
+  Finished Goods. Wastage from either section goes to RP REGRIND on the 1st Floor unless unticked.
+* **Dispatch**: supplying an order item takes the goods out of their store.
+* **Corrections**: nothing is edited or deleted — an entry is reversed (opposite ledger rows on
+  the same business day and shift). A reversal is refused if the stock has already moved on.
+* **Stock alert bands**: below 10 t Reorder Warning, 10–20 t Buffer Stock, above 20 t Optimal
+  Stock (plant-wide setting, per-material overrides).
+* **Ledger**: `stock_ledger` is the truth; `stock_balances` is its running total. `GET /stock/verify`
+  must return `ok: true`.
+* Shifts: Day (AM) 08:00–20:00, Night (PM) 20:00–08:00 belonging to the day it started.
+* 1 bag = 25 kg; everything is stored in kg.
 
-## Rollout
+## Reports
+
+* Inventory Register (`/reports/inventory-register[.xlsx]?date=`) — the plant's "Polymer Raw
+  Material Inventory Register": consolidated zones, Ground Floor bay, 1st Floor production, plus
+  Roll Store and Finished Goods sheets.
+* Shift Production Report (`/reports/shift-production[.xlsx]?date=`) — Day/Night × Plant/Cutting,
+  gross − wastage = net, day & night totals.
+* Production Summary (`/reports/production-summary[.xlsx]?date_from=&date_to=`) — daily, machine-wise,
+  material usage, output by size.
+
+## Schema and deploy
+
+`schema.sql` is applied on every API start (idempotent). `migrations/010_fresh_start.sql` dropped
+the old Warehouse-model tables and zeroed all figures (Nov 2026).
 
 ```bash
-STAMP=$(date -u +%Y%m%dT%H%M%SZ); BK=/root/backups/vp-ipms-$STAMP
-install -d -m 0700 $BK
-sudo -u postgres pg_dump -Fc -d venkateswara_polymers > $BK/database.dump
-cp -a /root/backend $BK/backend && pm2 save && cp -a /root/.pm2/dump.pm2 $BK/pm2.dump
-PGHOST=localhost PGUSER=admin PGPASSWORD=… python ops/ipms/fingerprint.py capture venkateswara_polymers $BK/fingerprint-before.json
-pm2 stop vp-api
-{ printf 'SET ROLE admin;\n'; cat migrations/008_floors_shifts_batches_returns.sql; } | sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d venkateswara_polymers
-install -m 0644 server.py /root/backend/server.py
-pm2 start vp-api
-python ops/ipms/fingerprint.py verify venkateswara_polymers $BK/fingerprint-before.json   # must print OK
+cp server.py ipms_logic.py reports_xlsx.py schema.sql /root/backend/ && pm2 restart vp-api
 ```
 
-Frontend: merge to `main` and push; Cloudflare Pages builds from GitHub `main`.
+Frontend: push `main`; Cloudflare builds and deploys vp.avlokai.com.
 
 ## Verification
 
-* `python -m pytest -q tests` — unit tests (engine, shifts, bags, routes, ledger maths).
-* `tests/e2e/test_ipms_api_e2e.py` — 13-step API scenario against a disposable copy of
-  production (refuses production URLs).
-* `tests/e2e/browser_ipms.py` — 12-step Playwright walk-through of the UI against a staging
-  build (`VITE_API_URL`).
-* `npm test` — unit formatting tests (`tests/units.test.mjs`).
-
-## Rollback
-
-`pm2 stop vp-api`, restore `$BK/database.dump` into a fresh `venkateswara_polymers`
-(rename the failed one), copy `$BK/backend` back to `/root/backend`, `pm2 resurrect`,
-revert the frontend commit on `main`.
+* `python -m pytest -q tests` — rules (status bands, size codes, register maths, shift report).
+* `tests/e2e/api_flow.py` — full receive → move → extrude → cut → dispatch → reverse → count
+  scenario against a disposable API + database (refuses production).

@@ -5,7 +5,7 @@ import useStockMeta from '../../hooks/useStockMeta'
 import { formatBags, formatWeight, kgToBags, toKg } from '../../utils/units'
 import { inputBase, inputClass, labelClass } from './styles'
 import {
-  LOCATIONS, SHIFT_LABELS, TONE_CLASSES, calendarDayFor, formatBusinessDate, liveShiftContext, nowIST,
+  LOCATIONS, SHIFT_LABELS, STATUS, TONE_CLASSES, calendarDayFor, formatBusinessDate, liveShiftContext, nowIST,
   shiftForTime, shiftWindows,
 } from '../../utils/ipms'
 
@@ -301,3 +301,41 @@ export function ShiftToggle({ value, onChange, disabled = false }) {
     </div>
   )
 }
+
+/** Reorder / Buffer / Optimal stock alert, as on the inventory register. */
+export function StockStatusBadge({ status }) {
+  if (!status) return null
+  const info = STATUS[status] || { label: status, tone: 'slate' }
+  return (
+    <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-bold ${TONE_CLASSES[info.tone]}`}>
+      <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />{info.label}
+    </span>
+  )
+}
+
+/** A two-step "Reverse" button: first click arms it, second click confirms. */
+export function ReverseButton({ onConfirm, disabled = false, label = 'Reverse' }) {
+  const [armed, setArmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (!armed) return undefined
+    const t = setTimeout(() => setArmed(false), 4000)
+    return () => clearTimeout(t)
+  }, [armed])
+  return (
+    <button type="button" disabled={disabled || busy}
+      onClick={async () => {
+        if (!armed) { setArmed(true); return }
+        setBusy(true)
+        try { await onConfirm() } finally { setBusy(false); setArmed(false) }
+      }}
+      className={`rounded-md border px-2 py-1 text-xs font-semibold transition disabled:opacity-40 ${
+        armed ? 'border-rose-500 bg-rose-500 text-white' : 'border-border-default text-text-secondary hover:border-rose-400 hover:text-rose-500'
+      }`}>
+      {busy ? 'Working…' : armed ? 'Confirm reverse' : label}
+    </button>
+  )
+}
+
+export const th = 'px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-text-secondary'
+export const td = 'px-3 py-2 text-sm text-text-primary'

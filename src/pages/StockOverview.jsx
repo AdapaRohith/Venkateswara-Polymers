@@ -1,191 +1,118 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import {
-  ArrowLeftRight, Boxes, Building2, CalendarCheck2, CalendarClock, Cog, Factory, Layers, Search, Undo2, Warehouse,
-} from 'lucide-react'
+import { useState } from 'react'
+import { Boxes } from 'lucide-react'
 
-import { useToast } from '../components/Toast'
-import useSSE from '../hooks/useSSE'
 import api from '../utils/api'
+import { useToast } from '../components/Toast'
+import useLiveData from '../hooks/useLiveData'
 import { apiError, formatBusinessDate } from '../utils/ipms'
-import { formatBags } from '../utils/units'
-import { EmptyState, LocationBadge, PageHeader, Panel, PrimaryButton, SecondaryButton, ShiftBadge, StatTile, Weight } from '../components/ipms/Kit'
-import { inputInline } from '../components/ipms/styles'
+import { inputBase, labelClass } from '../components/ipms/styles'
+import {
+  EmptyState, PageHeader, Panel, PrimaryButton, ShiftBadge, StatTile, StockStatusBadge, Weight, td, th,
+} from '../components/ipms/Kit'
 
-const COLUMNS = [
-  { key: 'warehouse_kg', loc: 'WAREHOUSE' },
-  { key: 'ground_floor_kg', loc: 'GROUND_FLOOR' },
-  { key: 'first_floor_kg', loc: 'FIRST_FLOOR' },
-  { key: 'machines_kg', loc: 'MACHINES' },
-]
+const TABS = [['raw', 'Raw material'], ['rolls', 'Roll Store'], ['finished', 'Finished Goods']]
+
+function Thresholds({ value }) {
+  const toast = useToast()
+  const [low, setLow] = useState(value.reorder_below_kg / 1000)
+  const [high, setHigh] = useState(value.optimal_above_kg / 1000)
+  return (
+    <div className="flex flex-wrap items-end gap-3">
+      <div>
+        <label className={labelClass} htmlFor="thr-low">Reorder below (t)</label>
+        <input id="thr-low" type="number" min="0" step="any" value={low} onChange={(e) => setLow(e.target.value)} className={`${inputBase} w-28`} />
+      </div>
+      <div>
+        <label className={labelClass} htmlFor="thr-high">Optimal above (t)</label>
+        <input id="thr-high" type="number" min="0" step="any" value={high} onChange={(e) => setHigh(e.target.value)} className={`${inputBase} w-28`} />
+      </div>
+      <PrimaryButton onClick={async () => {
+        try {
+          await api.put('/stock/thresholds', { reorder_below_kg: Number(low) * 1000, optimal_above_kg: Number(high) * 1000 })
+          toast.success('Stock alert levels saved')
+        } catch (err) { toast.error(apiError(err)) }
+      }}>Save levels</PrimaryButton>
+      <p className="text-xs text-text-secondary">In between is buffer stock. Individual materials can override these under Raw Material.</p>
+    </div>
+  )
+}
 
 export default function StockOverview({ user }) {
-  const navigate = useNavigate()
-  const toast = useToast()
-  const isOwner = String(user?.role || '').toLowerCase() !== 'worker'
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [query, setQuery] = useState('')
-  const [focus, setFocus] = useState('')
-
-  const load = useCallback(async () => {
-    try {
-      const { data: overview } = await api.get('/stock/overview')
-      setData(overview)
-    } catch (error) {
-      toast.error(apiError(error, 'Could not load stock'))
-    } finally {
-      setLoading(false)
-    }
-  }, [toast])
-
-  useEffect(() => { load() }, [load])
-  useSSE(['stock', 'floor_stock', 'raw_material', 'production', 'material_movement'], load)
-
-  const materials = useMemo(() => {
-    const term = query.trim().toLowerCase()
-    return (data?.materials || [])
-      .filter((m) => !term || String(m.material_name || '').toLowerCase().includes(term))
-      .filter((m) => !focus || Number(m[COLUMNS.find((c) => c.loc === focus)?.key] || 0) > 0)
-  }, [data, query, focus])
-
-  const totals = data?.totals || {}
-  const machinesById = useMemo(() => {
-    const map = new Map()
-    for (const a of data?.machine_allocations || []) {
-      const entry = map.get(a.machine_id) || { machine_id: a.machine_id, machine_name: a.machine_name, floor: a.floor, items: [], total: 0 }
-      entry.items.push(a)
-      entry.total += Number(a.quantity_kg || 0)
-      map.set(a.machine_id, entry)
-    }
-    return [...map.values()]
-  }, [data])
-
-  const liveDate = data?.live_business_date
-  const goLedger = (view) => navigate(`/stock/ledger?view=${view}${liveDate ? `&date=${liveDate}` : ''}`)
+  const isOwner = String(user?.role || '').toLowerCase() === 'owner'
+  const [tab, setTab] = useState('raw')
+  const { data, error } = useLiveData(() => api.get('/stock/overview').then((r) => r.data), [])
+  if (error) return <EmptyState>{error}</EmptyState>
+  if (!data) return <EmptyState>Loading stock…</EmptyState>
+  const t = data.totals
+  const materials = data.materials.filter((m) => m.total_kg > 0 || m.active)
 
   return (
-    <div className="space-y-5">
-      <PageHeader
-        icon={Boxes}
-        title="Stock Overview"
-        subtitle="Live stock in every location. Transfers move stock between locations; production and returns are the only things that reduce the plant total."
-        actions={(
-          <>
-            <SecondaryButton onClick={() => goLedger('opening')}><CalendarClock className="h-4 w-4" />Opening Stock</SecondaryButton>
-            <SecondaryButton onClick={() => goLedger('closing')}><CalendarCheck2 className="h-4 w-4" />Closing Stock</SecondaryButton>
-            <PrimaryButton onClick={() => navigate('/stock/transfers')}><ArrowLeftRight className="h-4 w-4" />Move Stock</PrimaryButton>
-          </>
+    <div className="space-y-6">
+      <PageHeader icon={Boxes} title="Stock Overview"
+        subtitle={<>Live stock in every store · {formatBusinessDate(data.live_business_date)} <ShiftBadge shift={data.live_shift} /></>} />
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <StatTile label="Ground Floor" kg={t.ground_floor_kg} tone="emerald" hint={<StockStatusBadge status={t.ground_floor_status} />} onClick={() => setTab('raw')} />
+        <StatTile label="1st Floor Production" kg={t.first_floor_kg} tone="violet" hint={<StockStatusBadge status={t.first_floor_status} />} onClick={() => setTab('raw')} />
+        <StatTile label="Raw material total" kg={t.raw_total_kg} tone="slate" hint={<StockStatusBadge status={t.raw_total_status} />} onClick={() => setTab('raw')} />
+        <StatTile label="Roll Store" kg={t.roll_store_kg} tone="sky" hint="Extruder output" onClick={() => setTab('rolls')} active={tab === 'rolls'} />
+        <StatTile label="Finished Goods" kg={t.finished_store_kg} tone="amber" hint="Cutting output" onClick={() => setTab('finished')} active={tab === 'finished'} />
+      </div>
+
+      <Panel title="Stock by item"
+        actions={<div role="tablist" className="flex flex-wrap gap-2">
+          {TABS.map(([id, label]) => (
+            <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
+              className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${tab === id ? 'bg-accent-gold text-white dark:text-black' : 'text-text-secondary hover:text-text-primary'}`}>{label}</button>
+          ))}
+        </div>}>
+        {tab === 'raw' && (
+          !materials.length ? <EmptyState>No raw material yet.</EmptyState> : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-border-default">
+                <thead><tr>
+                  <th className={th}>Material</th><th className={th}>Brand</th>
+                  <th className={`${th} text-right`}>Ground Floor</th><th className={`${th} text-right`}>1st Floor</th>
+                  <th className={`${th} text-right`}>Total</th><th className={`${th} text-right`}>Bags</th><th className={th}>Stock alert</th>
+                </tr></thead>
+                <tbody className="divide-y divide-border-default">
+                  {materials.map((m) => (
+                    <tr key={m.id}>
+                      <td className={`${td} font-semibold`}>{m.name}</td>
+                      <td className={td}>{m.brand || '—'}</td>
+                      <td className={`${td} text-right`}><Weight kg={m.ground_floor_kg} /></td>
+                      <td className={`${td} text-right`}><Weight kg={m.first_floor_kg} /></td>
+                      <td className={`${td} text-right font-semibold`}><Weight kg={m.total_kg} /></td>
+                      <td className={`${td} text-right tabular-nums`}>{(m.total_kg / 25).toLocaleString('en-IN', { maximumFractionDigits: 1 })}</td>
+                      <td className={td}><StockStatusBadge status={m.status} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
         )}
-      />
-
-      {liveDate && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border-default bg-bg-card px-4 py-2 text-sm text-text-secondary">
-          Live business day <strong className="text-text-primary">{formatBusinessDate(liveDate)}</strong>
-          <ShiftBadge shift={data.live_shift} />
-          <span className="hidden sm:inline">· today’s closing becomes tomorrow’s opening automatically</span>
-        </div>
-      )}
-
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <StatTile label="Warehouse" tone="sky" icon={Warehouse} kg={totals.warehouse_kg}
-          onClick={() => setFocus(focus === 'WAREHOUSE' ? '' : 'WAREHOUSE')} active={focus === 'WAREHOUSE'} />
-        <StatTile label="Ground Floor" tone="emerald" icon={Factory} kg={totals.ground_floor_kg}
-          onClick={() => setFocus(focus === 'GROUND_FLOOR' ? '' : 'GROUND_FLOOR')} active={focus === 'GROUND_FLOOR'} />
-        <StatTile label="First Floor" tone="violet" icon={Building2} kg={totals.first_floor_kg}
-          onClick={() => setFocus(focus === 'FIRST_FLOOR' ? '' : 'FIRST_FLOOR')} active={focus === 'FIRST_FLOOR'} />
-        <StatTile label="On Machines" tone="amber" icon={Cog} kg={totals.machines_kg}
-          onClick={() => setFocus(focus === 'MACHINES' ? '' : 'MACHINES')} active={focus === 'MACHINES'} />
-        <StatTile label="Plant Total" tone="slate" icon={Layers} kg={totals.plant_kg}
-          hint={`${formatBags(totals.plant_kg)} across ${(data?.materials || []).length} materials`} />
-      </div>
-
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <Panel
-          title="Stock by material and location"
-          subtitle={focus ? `Showing materials held on ${focus.replace('_', ' ').toLowerCase()}` : 'Every material with stock anywhere in the plant'}
-          bodyClassName="p-0"
-          actions={(
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-text-secondary" />
-              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter materials"
-                className={`${inputInline} w-56 pl-8`} aria-label="Filter materials" />
-            </div>
-          )}
-        >
-          {loading ? <div className="p-6 text-sm text-text-secondary">Loading stock…</div>
-            : materials.length === 0 ? <div className="p-4"><EmptyState>No stock matches.</EmptyState></div> : (
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[760px] text-sm">
-                  <thead>
-                    <tr className="border-b border-border-default text-left text-[11px] uppercase tracking-wider text-text-secondary">
-                      <th className="px-4 py-2.5 font-semibold">Material</th>
-                      {COLUMNS.map((c) => <th key={c.key} className="px-4 py-2.5 text-right font-semibold"><LocationBadge location={c.loc} /></th>)}
-                      <th className="px-4 py-2.5 text-right font-semibold">Plant total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {materials.map((m) => (
-                      <tr key={m.key} className="border-b border-border-subtle hover:bg-bg-row-hover">
-                        <td className="px-4 py-2.5 font-medium text-text-primary">{m.material_name}</td>
-                        {COLUMNS.map((c) => (
-                          <td key={c.key} className="px-4 py-2.5 text-right">
-                            {Number(m[c.key]) ? <Weight kg={m[c.key]} /> : <span className="text-text-secondary/50">—</span>}
-                          </td>
-                        ))}
-                        <td className="px-4 py-2.5 text-right font-semibold text-text-primary">
-                          <Weight kg={m.plant_kg} />
-                          <div className="text-[11px] font-normal text-text-secondary">{formatBags(m.plant_kg)}</div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr className="bg-bg-row-alt font-semibold text-text-primary">
-                      <td className="px-4 py-2.5">Total</td>
-                      {COLUMNS.map((c) => <td key={c.key} className="px-4 py-2.5 text-right"><Weight kg={totals[c.key]} /></td>)}
-                      <td className="px-4 py-2.5 text-right"><Weight kg={totals.plant_kg} /></td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            )}
-        </Panel>
-
-        <div className="space-y-5">
-          <Panel title="Machine-assigned stock" subtitle="Stock handed to a machine; production uses it first"
-            actions={<SecondaryButton onClick={() => navigate('/stock/machines')}>Manage</SecondaryButton>}>
-            {machinesById.length === 0 ? <EmptyState>No stock is assigned to a machine.</EmptyState> : (
-              <ul className="space-y-3">
-                {machinesById.map((m) => (
-                  <li key={m.machine_id} className="rounded-lg border border-border-default p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-text-primary">{m.machine_name}</span>
-                      <LocationBadge location={m.floor} />
-                    </div>
-                    <ul className="mt-2 space-y-1 text-sm">
-                      {m.items.map((a) => (
-                        <li key={a.material_type_id} className="flex justify-between gap-2 text-text-secondary">
-                          <span className="truncate">{a.material_name}</span><Weight kg={a.quantity_kg} className="text-text-primary" />
-                        </li>
-                      ))}
-                    </ul>
-                  </li>
+        {tab !== 'raw' && (() => {
+          const list = (tab === 'rolls' ? data.rolls : data.finished).filter((p) => p.quantity_kg > 0)
+          return !list.length ? <EmptyState>{tab === 'rolls' ? 'The Roll Store is empty.' : 'No finished goods in store.'}</EmptyState> : (
+            <table className="min-w-full divide-y divide-border-default">
+              <thead><tr><th className={th}>Size</th><th className={`${th} text-right`}>In store</th><th className={`${th} text-right`}>Tons</th></tr></thead>
+              <tbody className="divide-y divide-border-default">
+                {list.map((p) => (
+                  <tr key={p.id}><td className={`${td} font-semibold`}>{p.code}</td><td className={`${td} text-right`}><Weight kg={p.quantity_kg} /></td>
+                    <td className={`${td} text-right tabular-nums`}>{(p.quantity_kg / 1000).toFixed(2)}</td></tr>
                 ))}
-              </ul>
-            )}
-          </Panel>
+              </tbody>
+            </table>
+          )
+        })()}
+      </Panel>
 
-          <Panel title="Quick actions">
-            <div className="grid gap-2">
-              <SecondaryButton onClick={() => navigate('/production-batches')}><Factory className="h-4 w-4" />New production batch</SecondaryButton>
-              <SecondaryButton onClick={() => navigate('/stock/usage')}><CalendarClock className="h-4 w-4" />Day-wise usage</SecondaryButton>
-              {isOwner && <SecondaryButton onClick={() => navigate('/stock/returns')}><Undo2 className="h-4 w-4" />Return stock</SecondaryButton>}
-              <SecondaryButton onClick={() => navigate('/stock/search')}><Search className="h-4 w-4" />Search stock records</SecondaryButton>
-            </div>
-          </Panel>
-        </div>
-      </div>
+      {isOwner && (
+        <Panel title="Stock alert levels" subtitle="Below the reorder level shows a Reorder Warning; above the optimal level shows Optimal Stock.">
+          <Thresholds value={data.thresholds} key={`${data.thresholds.reorder_below_kg}-${data.thresholds.optimal_above_kg}`} />
+        </Panel>
+      )}
     </div>
   )
 }

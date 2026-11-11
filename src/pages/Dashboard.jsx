@@ -1,358 +1,98 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import useSSE from '../hooks/useSSE'
-import SummaryCard from '../components/SummaryCard'
-import { SectionBarChart, TrendLineChart } from '../components/Charts'
+import { Link } from 'react-router-dom'
+import { AlertTriangle, LayoutDashboard } from 'lucide-react'
+import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+
 import api from '../utils/api'
-import { formatDate as formatDateIST, todayIST } from '../utils/datetime'
+import useLiveData from '../hooks/useLiveData'
+import { formatBusinessDate } from '../utils/ipms'
+import { EmptyState, PageHeader, Panel, ShiftBadge, StatTile, StockStatusBadge, Weight, td, th } from '../components/ipms/Kit'
 
-function toNumber(value, fallback = 0) {
-    const numericValue = Number(value)
-    return Number.isFinite(numericValue) ? numericValue : fallback
-}
+const n1 = (v) => Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 
-function firstNumber(...values) {
-    for (const value of values) {
-        const numericValue = Number(value)
-        if (Number.isFinite(numericValue)) return numericValue
-    }
-    return 0
-}
-
-function extractRows(payload) {
-    if (Array.isArray(payload)) return payload
-    if (Array.isArray(payload?.data)) return payload.data
-    if (Array.isArray(payload?.rows)) return payload.rows
-    if (Array.isArray(payload?.logs)) return payload.logs
-    if (Array.isArray(payload?.items)) return payload.items
-    if (Array.isArray(payload?.results)) return payload.results
-    if (Array.isArray(payload?.wastage)) return payload.wastage
-    if (Array.isArray(payload?.wastage_logs)) return payload.wastage_logs
-    if (Array.isArray(payload?.wastageLogs)) return payload.wastageLogs
-    return []
-}
-
-function formatDate(value) {
-    return formatDateIST(value, '-')
-}
-
-function getRowDate(row = {}) {
-    const rawDate = row.date ?? row.created_at ?? row.createdAt ?? row.transaction_date ?? row.transactionDate
-    if (!rawDate) return ''
-    return String(rawDate).slice(0, 10)
-}
-
-function getRowQuantityKg(row = {}) {
-    return firstNumber(row.quantity_kg, row.quantityKg, row.quantity_in_kg, row.quantityInKg, row.quantity, row.total_quantity_kg, row.totalQuantityKg)
-}
-
-function getProductionNetKg(row = {}) {
-    return firstNumber(row.net_weight, row.netWeight, toNumber(row.gross_weight) - toNumber(row.tare_weight))
-}
-
-function normalizeWastageRow(row = {}, index = 0) {
-    return {
-        ...row,
-        id: row.id ?? row.transactionId ?? `wastage-${index}`,
-        sno: row.sno ?? index + 1,
-        date: row.date ?? String(row.created_at ?? row.createdAt ?? '').slice(0, 10),
-        order_number: row.order_number ?? row.orderNumber ?? '',
-        grossWeight: firstNumber(row.grossWeight, row.gross_weight),
-        netWeight: firstNumber(row.netWeight, row.net_weight),
-        actualWeight: firstNumber(row.actualWeight, row.actual_weight, row.weight, row.wastage_generated, row.quantity_kg, row.quantity, row.net_weight, row.netWeight),
-    }
-}
-
-function getCurrentMonth() {
-    return todayIST().slice(0, 7)
-}
-
-function getMonthRange(month) {
-    const normalizedMonth = /^\d{4}-\d{2}$/.test(month) ? month : getCurrentMonth()
-    const [year, monthIndex] = normalizedMonth.split('-').map(Number)
-    const start = `${normalizedMonth}-01`
-    const endDate = new Date(year, monthIndex, 0)
-    const end = `${normalizedMonth}-${String(endDate.getDate()).padStart(2, '0')}`
-
-    return { start, end }
-}
-
-function formatMonthLabel(month) {
-    const [year, monthIndex] = String(month || '').split('-').map(Number)
-    if (!year || !monthIndex) return 'Selected month'
-
-    return new Date(year, monthIndex - 1, 1).toLocaleDateString('en-IN', {
-        month: 'long',
-        year: 'numeric',
-    })
-}
-
-function isRowInMonth(row, month) {
-    const date = getRowDate(row)
-    return Boolean(date && date.startsWith(month))
+function ShiftCard({ label, block }) {
+  return (
+    <div className="rounded-lg border border-border-default p-3">
+      <p className="mb-2 text-xs font-bold uppercase tracking-wider text-text-secondary">{label}</p>
+      {[['Plant (rolls)', block.plant], ['Cutting (finished)', block.cutting]].map(([name, b]) => (
+        <div key={name} className="flex items-baseline justify-between gap-2 py-0.5 text-sm">
+          <span className="text-text-secondary">{name}</span>
+          <span className="tabular-nums"><strong>{n1(b.net_kg)}</strong> kg net
+            <span className="ml-1 text-xs text-rose-500">−{n1(b.wastage_kg)} waste</span></span>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 export default function Dashboard() {
-    const navigate = useNavigate()
-    const [loading, setLoading] = useState(true)
-    const [error, setError] = useState('')
-    const [metrics, setMetrics] = useState({ totalInputKg: 0, totalOutputKg: 0 })
-    const [productionRows, setProductionRows] = useState([])
-    const [rawMaterialRows, setRawMaterialRows] = useState([])
-    const [wastageRows, setWastageRows] = useState([])
-    const [selectedMonth, setSelectedMonth] = useState(getCurrentMonth)
+  const { data, error } = useLiveData(() => api.get('/dashboard').then((r) => r.data), [], ['stock', 'production'])
+  if (error) return <EmptyState>{error}</EmptyState>
+  if (!data) return <EmptyState>Loading dashboard…</EmptyState>
+  const s = data.stock
+  const t = data.thresholds
 
-    const monthRange = useMemo(() => getMonthRange(selectedMonth), [selectedMonth])
-    const monthLabel = useMemo(() => formatMonthLabel(selectedMonth), [selectedMonth])
+  return (
+    <div className="space-y-6">
+      <PageHeader icon={LayoutDashboard} title="Dashboard"
+        subtitle={<>Live plant position · {formatBusinessDate(data.live_business_date)} <ShiftBadge shift={data.live_shift} /></>} />
 
-    const cancelledRef = useRef(false)
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <StatTile label="Ground Floor" kg={s.ground_floor_kg} tone="emerald" hint={<StockStatusBadge status={s.ground_floor_status} />} />
+        <StatTile label="1st Floor Production" kg={s.first_floor_kg} tone="violet" hint={<StockStatusBadge status={s.first_floor_status} />} />
+        <StatTile label="Raw material total" kg={s.raw_total_kg} tone="slate" hint={<StockStatusBadge status={s.raw_total_status} />} />
+        <StatTile label="Roll Store" kg={s.roll_store_kg} tone="sky" hint="Rolls waiting for cutting" />
+        <StatTile label="Finished Goods" kg={s.finished_store_kg} tone="amber" hint="Ready to dispatch" />
+      </div>
 
-    const fetchMetrics = useCallback(async (silent = false) => {
-        if (!silent) setLoading(true)
-        setError('')
+      <div className="grid gap-5 xl:grid-cols-3">
+        <Panel title="Today's production" subtitle="Gross − wastage = net, as on the shift sheet"
+          actions={<Link to="/reports?tab=shift" className="text-xs font-semibold text-accent-gold hover:underline">Shift report →</Link>}>
+          <div className="space-y-3">
+            <ShiftCard label="Day" block={data.today.AM} />
+            <ShiftCard label="Night" block={data.today.PM} />
+            <ShiftCard label="Day & night" block={data.today.day_and_night} />
+          </div>
+        </Panel>
 
-        try {
-            const params = {
-                date_from: monthRange.start,
-                date_to: monthRange.end,
-            }
-
-            const [efficiencyRes, wastageRes, productionRes, rawMaterialRes] = await Promise.allSettled([
-                api.get('/analytics/plant-efficiency-v2', { params }),
-                api.get('/wastage', { params }),
-                api.get('/production/logs', { params }),
-                api.get('/inventory/transactions', { params }),
-            ])
-
-            const efficiencyData = efficiencyRes.status === 'fulfilled' ? efficiencyRes.value?.data : null
-            const wastageDataRaw = wastageRes.status === 'fulfilled' ? wastageRes.value?.data : null
-            const productionDataRaw = productionRes.status === 'fulfilled' ? productionRes.value?.data : null
-            const rawMaterialDataRaw = rawMaterialRes.status === 'fulfilled' ? rawMaterialRes.value?.data : null
-
-            const row = efficiencyData?.data?.[0] ?? efficiencyData ?? {}
-            const wastageData = extractRows(wastageDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
-            const productionRows = extractRows(productionDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
-            const rawMaterialRows = extractRows(rawMaterialDataRaw).filter((item) => isRowInMonth(item, selectedMonth))
-
-            const computedInputKg = rawMaterialRows.reduce((sum, item) => sum + getRowQuantityKg(item), 0)
-            const computedOutputKg = productionRows.reduce(
-                (sum, item) => sum + firstNumber(item.net_weight, item.netWeight, toNumber(item.gross_weight) - toNumber(item.tare_weight)),
-                0,
-            )
-
-            const totalInputKg = rawMaterialRes.status === 'fulfilled'
-                ? computedInputKg
-                : toNumber(row.total_input_kg ?? row.total_input ?? row.totalInputKg ?? row.totalInput)
-            const totalOutputKg = productionRes.status === 'fulfilled'
-                ? computedOutputKg
-                : toNumber(row.total_output_kg ?? row.total_output ?? row.totalOutputKg ?? row.totalOutput)
-
-            if (!cancelledRef.current) {
-                setMetrics({ totalInputKg, totalOutputKg })
-                setProductionRows(productionRows)
-                setRawMaterialRows(rawMaterialRows)
-                setWastageRows(wastageData.map(normalizeWastageRow))
-                const failed = [efficiencyRes, wastageRes, productionRes, rawMaterialRes].some((result) => result.status === 'rejected')
-                setError(failed ? 'Some dashboard data could not be loaded. Check your internet connection and refresh.' : '')
-            }
-        } catch (err) {
-            console.error('Failed to load plant analytics', err)
-            if (!cancelledRef.current) setError(err?.response?.data?.error || err?.message || 'Failed to load analytics')
-        } finally {
-            if (!cancelledRef.current && !silent) setLoading(false)
-        }
-    }, [monthRange.start, monthRange.end, selectedMonth])
-
-    useSSE(['production','raw_material','floor_stock','orders','wastage','trading'], () => fetchMetrics(true))
-
-    useEffect(() => {
-        cancelledRef.current = false
-        fetchMetrics()
-        return () => {
-            cancelledRef.current = true
-        }
-    }, [fetchMetrics])
-
-    const wastageValue = useMemo(
-        () => (Array.isArray(wastageRows) ? wastageRows : []).reduce((sum, row) => sum + toNumber(row.actualWeight), 0),
-        [wastageRows],
-    )
-
-    const recentWastage = useMemo(
-        () =>
-            [...(Array.isArray(wastageRows) ? wastageRows : [])]
-                .sort((left, right) => String(right.date || '').localeCompare(String(left.date || '')))
-                .slice(0, 10),
-        [wastageRows]
-    )
-
-    const totalsChartData = useMemo(
-        () => [
-            { name: 'Total Input', value: metrics.totalInputKg },
-            { name: 'Total Output', value: metrics.totalOutputKg },
-            { name: 'Wastage', value: wastageValue },
-        ],
-        [metrics.totalInputKg, metrics.totalOutputKg, wastageValue],
-    )
-
-    const dailyOutputTrend = useMemo(() => {
-        const daily = {}
-        ;(Array.isArray(productionRows) ? productionRows : []).forEach((row) => {
-            const date = getRowDate(row)
-            if (!date) return
-            daily[date] = (daily[date] || 0) + getProductionNetKg(row)
-        })
-
-        return Object.entries(daily)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([date, value]) => ({ label: date, value: Number(toNumber(value).toFixed(2)) }))
-    }, [productionRows])
-
-    const dailyInputTrend = useMemo(() => {
-        const daily = {}
-        ;(Array.isArray(rawMaterialRows) ? rawMaterialRows : []).forEach((row) => {
-            const date = getRowDate(row)
-            if (!date) return
-            daily[date] = (daily[date] || 0) + getRowQuantityKg(row)
-        })
-
-        return Object.entries(daily)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([date, value]) => ({ label: date, value: Number(toNumber(value).toFixed(2)) }))
-    }, [rawMaterialRows])
-
-    // Plant Totals bar → target page, flash whole selected month.
-    const handleTotalsBarClick = useCallback((entry) => {
-        const route = {
-            'Total Input': '/stock/transfers',
-            'Total Output': '/production-log',
-            'Wastage': '/wastage',
-        }[entry?.name]
-        if (route) navigate(route, { state: { flashDate: selectedMonth } })
-    }, [navigate, selectedMonth])
-
-    // Daily trend point → target page, flash that single day (label is YYYY-MM-DD).
-    const handleOutputPointClick = useCallback((label) => {
-        if (label) navigate('/production-log', { state: { flashDate: label } })
-    }, [navigate])
-
-    const handleInputPointClick = useCallback((label) => {
-        if (label) navigate('/stock/transfers', { state: { flashDate: label } })
-    }, [navigate])
-
-    return (
-        <div className="space-y-6">
-            {/* Header */}
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-                <div>
-                    <h2 className="text-xl font-bold text-text-primary tracking-tight">Dashboard</h2>
-                    <p className="mt-0.5 text-sm text-text-secondary">Plant overview · {monthLabel}</p>
-                </div>
-                <div>
-                    <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-text-secondary/70">Period</label>
-                    <input
-                        type="month"
-                        value={selectedMonth}
-                        onChange={(event) => setSelectedMonth(event.target.value || getCurrentMonth())}
-                        className="bg-bg-input text-text-primary border border-border-default rounded-md px-3 py-2 text-sm focus:border-accent-gold focus:ring-1 focus:ring-accent-gold/30 transition-all cursor-pointer"
-                    />
-                </div>
+        <Panel title="Reorder warnings" className="xl:col-span-2"
+          subtitle={`Materials below ${t.reorder_below_kg / 1000} t across both floors (or their own reorder level)`}
+          actions={<Link to="/reports?tab=register" className="text-xs font-semibold text-accent-gold hover:underline">Inventory register →</Link>}>
+          {!data.reorder.length ? <EmptyState>No material is below its reorder level.</EmptyState> : (
+            <div className="max-h-80 overflow-y-auto">
+              <table className="min-w-full divide-y divide-border-default">
+                <thead><tr><th className={th}>Material</th><th className={th}>Brand</th><th className={`${th} text-right`}>Ground</th><th className={`${th} text-right`}>1st Floor</th><th className={`${th} text-right`}>Total</th><th className={th} /></tr></thead>
+                <tbody className="divide-y divide-border-default">
+                  {data.reorder.map((m) => (
+                    <tr key={m.id}>
+                      <td className={`${td} font-semibold`}><AlertTriangle className="mr-1 inline h-3.5 w-3.5 text-rose-500" />{m.name}</td>
+                      <td className={td}>{m.brand || '—'}</td>
+                      <td className={`${td} text-right`}><Weight kg={m.ground_floor_kg} /></td>
+                      <td className={`${td} text-right`}><Weight kg={m.first_floor_kg} /></td>
+                      <td className={`${td} text-right font-semibold`}><Weight kg={m.total_kg} /></td>
+                      <td className={td}><StockStatusBadge status={m.status} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
+          )}
+        </Panel>
+      </div>
 
-            {error && (
-                <div className="rounded-md border border-red-500/30 bg-red-500/8 px-4 py-3 text-sm text-red-500 flex items-center gap-2">
-                    <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.75}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-                    </svg>
-                    {error}
-                </div>
-            )}
-
-            {/* Summary Cards */}
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                <SummaryCard
-                    title="Total Input"
-                    value={metrics.totalInputKg}
-                    subtitle={loading ? 'Loading...' : `${monthLabel} raw material received (kg)`}
-                    icon={
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
-                        </svg>
-                    }
-                />
-                <SummaryCard
-                    title="Total Output"
-                    value={metrics.totalOutputKg}
-                    subtitle={loading ? 'Loading...' : `${monthLabel} production logged (kg)`}
-                    icon={
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17l-5.1-3.06a1.5 1.5 0 01-.54-2.05l4.5-7.09a1.5 1.5 0 012.36-.11l4.59 5.28a1.5 1.5 0 01-.3 2.2l-5.51 4.83z" />
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 21h18" />
-                        </svg>
-                    }
-                />
-                <SummaryCard
-                    title="Total Wastage"
-                    value={loading ? 'Loading...' : wastageValue.toFixed(2)}
-                    subtitle={loading ? 'Loading...' : `${monthLabel} logged wastage (kg)`}
-                    icon={
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.108 0 00-7.5 0" />
-                        </svg>
-                    }
-                />
-            </div>
-
-            <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-                <SectionBarChart data={totalsChartData} title={`${monthLabel} Plant Totals (kg)`} onBarClick={handleTotalsBarClick} />
-                <TrendLineChart data={dailyOutputTrend} title={`${monthLabel} Daily Output (kg)`} gradientId="gradDailyOut" onPointClick={handleOutputPointClick} />
-                <TrendLineChart data={dailyInputTrend} title={`${monthLabel} Daily Input (kg)`} color="var(--chart-bar2)" gradientId="gradDailyIn" onPointClick={handleInputPointClick} />
-            </div>
-
-            {/* Recent Wastage Logs */}
-            <div className="bg-bg-card rounded-lg border border-border-default overflow-hidden mt-2">
-                <div className="px-5 py-3.5 border-b border-border-default bg-bg-primary/40">
-                    <h3 className="text-xs font-semibold text-text-secondary tracking-widest uppercase">{monthLabel} Wastage Logs</h3>
-                </div>
-
-                <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                        <thead>
-                            <tr className="border-b border-border-default bg-bg-primary/40">
-                                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider uppercase text-text-secondary">Date</th>
-                                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider uppercase text-text-secondary">Order</th>
-                                <th className="px-5 py-3 text-right text-[11px] font-semibold tracking-wider uppercase text-text-secondary">Wastage (kg)</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-border-subtle">
-                            {!loading && recentWastage.length === 0 ? (
-                                <tr>
-                                    <td colSpan={3} className="py-14 text-center text-sm text-text-secondary/50">
-                                        No wastage entries logged yet.
-                                    </td>
-                                </tr>
-                            ) : (
-                                recentWastage.map((row, index) => (
-                                    <tr
-                                        key={row.id ?? row.transactionId ?? `${row.date}-${index}`}
-                                        style={{ backgroundColor: index % 2 !== 0 ? 'var(--bg-row-alt)' : 'transparent' }}
-                                        onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'var(--bg-row-hover)' }}
-                                        onMouseLeave={e => { e.currentTarget.style.backgroundColor = index % 2 !== 0 ? 'var(--bg-row-alt)' : 'transparent' }}
-                                        className="transition-colors duration-100"
-                                    >
-                                        <td className="px-5 py-3 text-text-primary text-sm">{formatDate(row.date)}</td>
-                                        <td className="px-5 py-3 text-text-primary text-sm">{row.order_number || '—'}</td>
-                                        <td className="px-5 py-3 text-right font-semibold text-accent-gold tabular-nums text-sm">
-                                            {toNumber(row.actualWeight).toFixed(2)}
-                                        </td>
-                                    </tr>
-                                ))
-                            )}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+      <Panel title="Last 14 days" subtitle={`Plant net ${n1(data.totals_14d.plant.net_kg)} kg (waste ${n1(data.totals_14d.plant.wastage_percent)}%) · Cutting net ${n1(data.totals_14d.cutting.net_kg)} kg (waste ${n1(data.totals_14d.cutting.wastage_percent)}%)`}>
+        <div className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={data.trend.map((d) => ({ day: d.business_date.slice(5), plant: d.plant.net_kg, cutting: d.cutting.net_kg, waste: d.plant.wastage_kg + d.cutting.wastage_kg }))}>
+              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+              <XAxis dataKey="day" fontSize={11} /><YAxis fontSize={11} />
+              <Tooltip formatter={(v) => `${n1(v)} kg`} /><Legend />
+              <Bar dataKey="plant" name="Plant net" fill="#2563eb" />
+              <Bar dataKey="cutting" name="Cutting net" fill="#d97706" />
+              <Bar dataKey="waste" name="Wastage" fill="#e11d48" />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
-    )
+      </Panel>
+    </div>
+  )
 }
-

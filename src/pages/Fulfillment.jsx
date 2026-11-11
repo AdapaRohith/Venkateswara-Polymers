@@ -395,7 +395,7 @@ export default function Fulfillment() {
                 const itemRemaining = Math.max(0, toNumber(item.required_quantity) - toNumber(item.fulfilled_quantity))
                 return (
                   <option key={item.id} value={item.id} disabled={itemRemaining === 0}>
-                    {item.item_name} — {itemRemaining.toFixed(2)} kg rem.
+                    {item.item_name} — {itemRemaining.toFixed(2)} kg rem. · {toNumber(item.in_stock_kg).toFixed(2)} kg in {item.product_kind === 'ROLL' ? 'Roll Store' : 'Finished Goods'}
                   </option>
                 )
               })}

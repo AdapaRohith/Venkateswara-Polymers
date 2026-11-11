@@ -1,15 +1,26 @@
 // Shared vocabulary for the multi-location stock screens.
 
 export const LOCATIONS = {
-  WAREHOUSE: { label: 'Warehouse', short: 'WH', tone: 'sky' },
   GROUND_FLOOR: { label: 'Ground Floor', short: 'GF', tone: 'emerald' },
-  FIRST_FLOOR: { label: 'First Floor', short: 'FF', tone: 'violet' },
-  MACHINE: { label: 'Machine', short: 'MC', tone: 'amber' },
-  MACHINES: { label: 'Machines', short: 'MC', tone: 'amber' },
-  PLANT: { label: 'Plant Total', short: 'Σ', tone: 'slate' },
+  FIRST_FLOOR: { label: '1st Floor Production', short: '1F', tone: 'violet' },
+  ROLL_STORE: { label: 'Roll Store', short: 'RS', tone: 'sky' },
+  FINISHED_STORE: { label: 'Finished Goods', short: 'FG', tone: 'amber' },
+  AUTO: { label: 'Auto (1st Floor, then Ground)', short: 'Auto', tone: 'slate' },
 }
 
-export const LEDGER_LOCATIONS = ['WAREHOUSE', 'GROUND_FLOOR', 'FIRST_FLOOR', 'MACHINES']
+export const MATERIAL_LOCATIONS = ['GROUND_FLOOR', 'FIRST_FLOOR']
+
+// Stock alert bands, as on the plant's inventory register.
+export const STATUS = {
+  REORDER: { label: 'Reorder Warning', tone: 'rose' },
+  BUFFER: { label: 'Buffer Stock', tone: 'amber' },
+  OPTIMAL: { label: 'Optimal Stock', tone: 'emerald' },
+}
+
+export const DOC_LABELS = {
+  RECEIPT: 'Received', TRANSFER: 'Moved', EXTRUSION: 'Plant production', CUTTING: 'Cutting',
+  ADJUSTMENT: 'Adjustment', DISPATCH: 'Dispatch',
+}
 
 export const TONE_CLASSES = {
   sky: 'border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300',
@@ -20,10 +31,9 @@ export const TONE_CLASSES = {
   rose: 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300',
 }
 
-export const SHIFT_LABELS = { AM: 'AM · Morning', PM: 'PM · Night' }
+export const SHIFT_LABELS = { AM: 'Day · AM', PM: 'Night · PM' }
 
-export function locationLabel(location, machineName) {
-  if (location === 'MACHINE' && machineName) return machineName
+export function locationLabel(location) {
   return LOCATIONS[location]?.label || location || '—'
 }
 
@@ -48,22 +58,6 @@ export function formatBusinessDate(isoDate, { weekday = true } = {}) {
     timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric',
     ...(weekday ? { weekday: 'short' } : {}),
   })
-}
-
-/** Which locations a material can move between, mirroring the server's rules. */
-export function allowedDestinations(from, machines, fromMachineId) {
-  const floorOf = (id) => machines.find((m) => String(m.id) === String(id))?.floor
-  switch (from) {
-    case 'WAREHOUSE': return ['GROUND_FLOOR', 'FIRST_FLOOR']
-    case 'GROUND_FLOOR': return ['WAREHOUSE', 'FIRST_FLOOR', 'MACHINE']
-    case 'FIRST_FLOOR': return ['WAREHOUSE', 'GROUND_FLOOR', 'MACHINE']
-    case 'MACHINE': return fromMachineId ? [floorOf(fromMachineId)].filter(Boolean) : []
-    default: return []
-  }
-}
-
-export function machinesForFloor(machines, floor) {
-  return machines.filter((m) => m.floor === floor)
 }
 
 // ── Entry date / shift / time ────────────────────────────────────────────────

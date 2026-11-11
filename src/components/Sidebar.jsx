@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
-  ArrowLeftRight, BarChart3, BookOpenCheck, Boxes, Bug, CalendarCheck2, CalendarClock, Cog, Factory,
-  MessageSquareWarning, Search, Undo2,
+  ArrowLeftRight, BarChart3, BookOpenCheck, Boxes, Bug, CalendarCheck2, CalendarClock, Cog,
+  MessageSquareWarning, Undo2,
 } from 'lucide-react'
 import avlokaiLogo from '../../avlokai_logo.png'
 import IssueReportDialog from './IssueReportDialog'
@@ -57,8 +57,6 @@ const Icon = {
   machine: <Cog className="w-4 h-4" />,
   returns: <Undo2 className="w-4 h-4" />,
   usage: <BarChart3 className="w-4 h-4" />,
-  search: <Search className="w-4 h-4" />,
-  batches: <Factory className="w-4 h-4" />,
   trading: (
     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.75}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
@@ -71,31 +69,28 @@ const Icon = {
   ),
 }
 
-// The order a day's paperwork is keyed in: open the day, receive raw material,
-// move it Warehouse → Ground Floor → First Floor, put it on machines, log what
-// they produced, then close the day. Steps are numbered so the operator can
-// work straight down the list.
+// The order a day's paperwork is keyed in: raw material arrives on the Ground
+// Floor, moves up to the 1st Floor, extruders turn it into rolls, cutting machines
+// turn rolls into finished goods, then the day is closed. Numbered so the
+// operator can work straight down the list.
 const dailyEntrySteps = (isOwner) => [
-  { name: 'Opening Stock', path: '/stock/ledger?view=opening', icon: Icon.opening },
-  ...(isOwner ? [{ name: 'Raw Material In', path: '/raw-material', icon: Icon.rawMaterial }] : []),
-  { name: 'Move: Warehouse → Ground', short: 'Move', path: '/stock/transfers?from=WAREHOUSE&to=GROUND_FLOOR', icon: Icon.transfer },
-  { name: 'Move: Ground → First Floor', path: '/stock/transfers?from=GROUND_FLOOR&to=FIRST_FLOOR', icon: Icon.transfer },
-  { name: 'Send to Machine', path: '/stock/transfers?from=GROUND_FLOOR&to=MACHINE', icon: Icon.machine },
-  { name: 'Production Batches', short: 'Batches', path: '/production-batches', icon: Icon.batches },
-  { name: 'Production Log', path: '/production-log', icon: Icon.production },
-  { name: 'Wastage', path: '/wastage', icon: Icon.wastage },
-  ...(isOwner ? [{ name: 'Return Stock', path: '/stock/returns', icon: Icon.returns }] : []),
-  { name: 'Closing Stock', short: 'Closing', path: '/stock/ledger?view=closing', icon: Icon.closing },
+  { name: 'Raw Material In', path: '/raw-material', icon: Icon.rawMaterial },
+  { name: 'Move Ground ⇄ 1st Floor', short: 'Move', path: '/stock/transfers', icon: Icon.transfer },
+  { name: 'Plant Production (Rolls)', short: 'Plant', path: '/production-log', icon: Icon.production },
+  { name: 'Cutting (Finished Goods)', short: 'Cutting', path: '/cutting', icon: Icon.machine },
+  ...(isOwner ? [{ name: 'Stock Count / Adjust', short: 'Adjust', path: '/stock/adjustments', icon: Icon.returns }] : []),
+  { name: 'Day Ledger & Close', short: 'Close', path: '/stock/ledger', icon: Icon.closing },
 ].map((item, index) => ({ ...item, step: index + 1 }))
 
 const stockViewItems = [
   { name: 'Stock Overview', path: '/stock', icon: Icon.stock },
-  { name: 'Machine Stock', path: '/stock/machines', icon: Icon.machine },
-  { name: 'AM / PM Shift Ledger', path: '/stock/ledger?view=shifts', icon: Icon.ledger },
-  { name: 'All Transfers', path: '/stock/transfers', icon: Icon.transfer },
-  { name: 'Day-wise Usage', path: '/stock/usage', icon: Icon.usage },
-  { name: 'Search Stock', path: '/stock/search', icon: Icon.search },
-  { name: 'Stock Activity', path: '/stock-activity', icon: Icon.reports },
+  { name: 'Stock Ledger', path: '/stock/activity', icon: Icon.ledger },
+]
+
+const reportItems = [
+  { name: 'Inventory Register', path: '/reports?tab=register', icon: Icon.reports },
+  { name: 'Shift Production Report', path: '/reports?tab=shift', icon: Icon.opening },
+  { name: 'Production Summary', path: '/reports?tab=summary', icon: Icon.usage },
 ]
 
 const ownerNavGroups = [
@@ -110,14 +105,12 @@ const ownerNavGroups = [
     items: dailyEntrySteps(true),
   },
   {
-    label: 'Stock & Ledgers',
+    label: 'Stock',
     items: stockViewItems,
   },
   {
     label: 'Reports',
-    items: [
-      { name: 'Machine Reports', path: '/reports', icon: Icon.reports },
-    ],
+    items: reportItems,
   },
   {
     label: 'Sales & Orders',
@@ -141,8 +134,12 @@ const workerNavGroups = [
     items: dailyEntrySteps(false),
   },
   {
-    label: 'Stock & Ledgers',
+    label: 'Stock',
     items: stockViewItems,
+  },
+  {
+    label: 'Reports',
+    items: reportItems,
   },
 ]
 
@@ -150,7 +147,7 @@ const workerNavGroups = [
 // "Opening Stock" and "Closing Stock" are highlighted independently.
 function isItemActive(item, location) {
   const [path, query] = item.path.split('?')
-  if (path === '/' || path === '/stock') {
+  if (path === '/' || path === '/stock' || path === '/reports') {
     if (location.pathname !== path) return false
   } else if (!location.pathname.startsWith(path)) {
     return false
@@ -159,7 +156,7 @@ function isItemActive(item, location) {
   const want = new URLSearchParams(query)
   const have = new URLSearchParams(location.search)
   for (const [key, value] of want) {
-    const current = have.get(key) || (key === 'view' ? 'shifts' : '')
+    const current = have.get(key) || (key === 'tab' ? 'register' : '')
     if (current !== value) return false
   }
   return true
@@ -181,12 +178,11 @@ export default function Sidebar({ user, onLogout }) {
   const flatItems = isWorker ? flatWorker : flatOwner
 
   const quickPaths = isWorker
-    ? ['/production-batches', '/production-log', '/stock']
-    : ['/', '/stock', '/production-batches', '/stock/ledger?view=closing']
+    ? ['/production-log', '/cutting', '/stock']
+    : ['/', '/stock', '/production-log', '/reports?tab=register']
   const quickItems = quickPaths.map(p => flatItems.find(i => i.path === p)).filter(Boolean)
 
-  // Most specific match wins, so "Move: Warehouse → Ground" lights up rather
-  // than the plain "All Transfers" entry it shares a path with.
+  // Most specific match wins.
   const currentItem = [...flatItems]
     .sort((a, b) => b.path.length - a.path.length)
     .find(i => isItemActive(i, location))

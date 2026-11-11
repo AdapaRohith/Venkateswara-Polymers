@@ -445,95 +445,6 @@ def require_entry_owner(user: dict, created_by: int | None):
         raise HTTPException(403, "You can modify only entries you created")
 
 
-def parse_activity_limit(value) -> int:
-    try:
-        return min(max(int(value), 1), 1000)
-    except (TypeError, ValueError):
-        return 200
-
-
-def build_stock_activity_filters(
-    *, date_from=None, date_to=None, material_id=None, source_domain=None,
-    action=None, operator_id=None, shift=None, location=None, include_returns=False,
-) -> tuple[str, list]:
-    conditions, values = [], []
-    business_date = sql_business_date("sal.business_date", "sal.occurred_at")
-    if date_from:
-        values.append(parse_date(date_from))
-        conditions.append(f"{business_date} >= ${len(values)}::date")
-    if date_to:
-        values.append(parse_date(date_to))
-        conditions.append(f"{business_date} <= ${len(values)}::date")
-    if material_id not in (None, ""):
-        try:
-            values.append(int(material_id))
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(400, "material_id must be a number") from exc
-        conditions.append(f"sal.material_id = ${len(values)}")
-    if source_domain:
-        values.append(str(source_domain).strip().upper())
-        conditions.append(f"sal.source_domain = ${len(values)}")
-    if action:
-        values.append(str(action).strip().upper())
-        conditions.append(f"sal.action = ${len(values)}")
-    if operator_id not in (None, ""):
-        try:
-            values.append(int(operator_id))
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(400, "operator_id must be a number") from exc
-        conditions.append(f"sal.created_by = ${len(values)}")
-    if shift:
-        values.append(normalize_shift(shift))
-        conditions.append(f"{sql_shift('sal.shift', 'sal.occurred_at')} = ${len(values)}")
-    if location:
-        loc = str(location).strip().upper()
-        column = {"WAREHOUSE": "warehouse_delta_kg", "GROUND_FLOOR": "floor_delta_kg",
-                  "FIRST_FLOOR": "first_floor_delta_kg", "MACHINE": "machine_delta_kg"}.get(loc)
-        if not column:
-            raise HTTPException(400, "Unknown location")
-        conditions.append(f"COALESCE(sal.{column}, 0) <> 0")
-    # Returned stock leaves the site as if it never existed: it stays out of the
-    # everyday feed and only shows up when asked for (or searched for).
-    if not include_returns and str(source_domain or "").strip().upper() != "STOCK_RETURN":
-        conditions.append("sal.source_domain <> 'STOCK_RETURN'")
-    return (f"WHERE {' AND '.join(conditions)}" if conditions else ""), values
-
-
-def normalize_activity_row(row: dict) -> dict:
-    item = dict(row)
-    source = str(item.get("source_domain") or "").upper()
-    action = str(item.get("action") or "").upper()
-    paths = {
-        "RAW_INPUT": "/raw-material",
-        "FLOOR_TRANSFER": "/stock/transfers",
-        "PRODUCTION": "/production-log",
-        "WASTAGE": "/wastage",
-        "MANUAL_ADJUSTMENT": "/raw-material",
-        "STOCK_TRANSFER": "/stock/transfers",
-        "STOCK_RETURN": "/stock/returns",
-    }
-    nouns = {
-        "RAW_INPUT": "Raw material",
-        "FLOOR_TRANSFER": "Warehouse → Ground Floor transfer",
-        "PRODUCTION": "Production",
-        "WASTAGE": "Wastage",
-        "MANUAL_ADJUSTMENT": "Stock adjustment",
-        "STOCK_TRANSFER": "Stock transfer",
-        "STOCK_RETURN": "Stock return",
-    }
-    verbs = {"CREATE": "recorded", "UPDATE": "updated", "REVERSE": "reversed",
-             "LEGACY": "legacy entry"}
-    item["entry_path"] = paths.get(source)
-    item["action_label"] = f"{nouns.get(source, 'Stock')} {verbs.get(action, action.lower())}"
-    item["is_legacy"] = action == "LEGACY"
-    item["is_return"] = source == "STOCK_RETURN"
-    if item.get("business_date") is None and isinstance(item.get("occurred_at"), datetime):
-        item["business_date"], derived_shift = derive_business_context(item["occurred_at"])
-        item["shift"] = item.get("shift") or derived_shift
-    item.pop("total_count", None)
-    return item
-
-
 def user_id_from_token(user: dict) -> int | None:
     raw = user.get("user_id") or user.get("id") or user.get("userId")
     try:
@@ -554,384 +465,10 @@ def parse_machine_id(value) -> int:
     return int(digits)
 
 
-def get_machine_variants(machine_id) -> list[str]:
-    raw = str(machine_id or "").strip()
-    if not raw:
-        return []
-    digits = re.sub(r"\D", "", raw)
-    variants = {raw, raw.upper()}
-    if digits:
-        nd = str(int(digits))
-        variants.update([digits, nd, f"M{nd}"])
-    return [v for v in variants if v]
+# ── Business date + AM/PM shift ──
 
-
-def normalize_order_status(s: str) -> str:
-    v = str(s or "").strip().lower()
-    if v in ("active", "completed", "cancelled"):
-        return "completed" if v == "completed" else "cancelled" if v == "cancelled" else "Active"
-    return v  # let caller validate
-
-
-def normalize_movement_type(s: str) -> str:
-    v = str(s or "").strip().upper()
-    return "ADJUSTMENT" if v == "WASTAGE" else v
-
-
-def get_expected_qty(payload: dict, actual: float, extra: list = None):
-    """The target quantity the caller declared, or None if it declared none.
-
-    Returning `actual` as a fallback made expected == actual, so deviation was always
-    0 and the tolerance check could never report a breach. None keeps that case
-    honest: the entry is recorded as not measured rather than as passing.
-    """
-    keys = list(extra or []) + [
-        "expected_quantity_kg", "expected_quantity", "expected_net_weight_kg",
-        "planned_quantity_kg", "target_quantity_kg", "required_quantity",
-    ]
-    for k in keys:
-        v = payload.get(k)
-        if v is not None:
-            f = to_num(v, None)
-            if f is not None:
-                return f
-    return None
-
-
-async def eval_tolerance(expected: float, actual: float, conn) -> dict:
-    global _tolerance_cache
-    tolerance = _tolerance_cache["value"]
-    if time.monotonic() - _tolerance_cache["fetched_at"] > 60:
-        try:
-            r = await conn.fetchrow("SELECT value FROM system_config WHERE key = 'tolerance_percent' LIMIT 1")
-            if r:
-                tolerance = to_num(r["value"], 10.0)
-            _tolerance_cache = {"value": tolerance, "fetched_at": time.monotonic()}
-        except asyncpg.UndefinedTableError:
-            _tolerance_cache["fetched_at"] = time.monotonic()
-    lower = expected * (1 - tolerance / 100)
-    upper = expected * (1 + tolerance / 100)
-    deviation = ((actual - expected) / expected * 100) if expected != 0 else 0.0
-    status = "BREACH" if (actual < lower or actual > upper) else "OK"
-    return {"tolerance_percent": tolerance, "lower_bound": lower, "upper_bound": upper,
-            "deviation_percent": deviation, "tolerance_status": status}
-
-
-async def eval_qty_tolerance(expected, actual: float, conn, ctx: dict = None) -> dict:
-    evaluated = expected is not None
-    if not evaluated:
-        expected = actual
-    info = await eval_tolerance(expected, actual, conn)
-    if not evaluated:
-        # No declared target to measure against — report it, don't pretend it passed.
-        info = {**info, "tolerance_status": "OK", "deviation_percent": 0.0}
-    elif info["tolerance_status"] == "BREACH":
-        logger.warning(f"Tolerance breach: {ctx} expected={expected} actual={actual}")
-    return {**info, "expected": expected, "actual": actual, "evaluated": evaluated}
-
-
-async def get_or_create_material(conn, name: str) -> int:
-    n = str(name or "").strip()
-    if not n:
-        raise ValueError("material_name cannot be empty")
-    key = n.lower()
-    if key in _material_cache:
-        return _material_cache[key]
-    r = await conn.fetchrow("SELECT id FROM materials_master WHERE LOWER(name) = LOWER($1) LIMIT 1", n)
-    if r:
-        _material_cache[key] = r["id"]
-        return r["id"]
-    r = await conn.fetchrow(
-        "INSERT INTO materials_master (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", n)
-    _material_cache[key] = r["id"]
-    return r["id"]
-
-
-async def get_or_create_material_type(conn, name: str) -> int:
-    n = str(name or "").strip()
-    if not n:
-        raise ValueError("material_name cannot be empty")
-    key = n.lower()
-    if key in _material_type_cache:
-        return _material_type_cache[key]
-    r = await conn.fetchrow("SELECT id FROM material_types WHERE LOWER(name) = LOWER($1) LIMIT 1", n)
-    if r:
-        _material_type_cache[key] = r["id"]
-        return r["id"]
-    r = await conn.fetchrow(
-        "INSERT INTO material_types (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", n)
-    _material_type_cache[key] = r["id"]
-    return r["id"]
-
-
-async def get_material_name(conn, material_id) -> str:
-    try:
-        pid = int(material_id)
-        if pid <= 0:
-            return ""
-    except (TypeError, ValueError):
-        return ""
-    r = await conn.fetchrow("SELECT name FROM materials_master WHERE id = $1 LIMIT 1", pid)
-    return r["name"] if r else ""
-
-
-async def resolve_material_type_id(conn, material_id, material_name: str):
-    try:
-        pid = int(material_id) if material_id is not None else 0
-    except (TypeError, ValueError):
-        pid = 0
-    if pid > 0:
-        r = await conn.fetchrow("SELECT id FROM material_types WHERE id = $1 LIMIT 1", pid)
-        if r:
-            return r["id"]
-        r = await conn.fetchrow("SELECT name FROM materials_master WHERE id = $1 LIMIT 1", pid)
-        if r:
-            return await get_or_create_material_type(conn, r["name"])
-    mname = str(material_name or "").strip()
-    if mname:
-        return await get_or_create_material_type(conn, mname)
-    return None
-
-
-def require_tx(conn):
-    """Every stock mutation must be inside a transaction — otherwise the
-    SELECT ... FOR UPDATE below releases its lock immediately and two concurrent
-    writers can both pass the 'enough stock?' check."""
-    if not conn.is_in_transaction():
-        raise RuntimeError("Stock mutations must run inside a transaction")
-
-
-async def reverse_raw_batch(conn, batch_row):
-    """Undo a raw-material batch's effect on the running total.
-
-    Refuses when the quantity is no longer in raw stock — it has since been issued
-    to the floor, or the batch predates a stock reset. Silently skipping the
-    reversal would leave the total overstating what is physically there.
-    """
-    qty = to_num(batch_row["quantity_kg"])
-    if qty <= 0:
-        return
-    available = to_num(await conn.fetchval(
-        "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
-        batch_row["material_id"]))
-    if available < qty:
-        raise HTTPException(400, (
-            f"Cannot delete this entry: only {available:.3f} kg of its {qty:.3f} kg is "
-            f"still in raw stock. The material has already been issued to the floor, "
-            f"or the entry predates the stock reset."))
-    await adjust_raw_total(conn, batch_row["material_id"], -qty)
-
-
-async def adjust_raw_total(conn, material_id, delta_kg: float):
-    require_tx(conn)
-    pid = int(material_id)
-    delta = to_num(delta_kg)
-    if pid <= 0:
-        raise ValueError("Invalid material id")
-    if not delta:
-        return
-    # Take the row lock first in both directions so concurrent writers serialise
-    # on the same row instead of racing between the check and the update.
-    r = await conn.fetchrow(
-        "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE", pid)
-    if delta > 0:
-        await conn.execute(
-            """INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at)
-               VALUES ($1, $2, NOW()) ON CONFLICT (material_id)
-               DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2, updated_at = NOW()""",
-            pid, delta)
-        return
-    available = to_num(r["total_quantity_kg"]) if r else 0.0
-    required = abs(delta)
-    if available < required:
-        raise HTTPException(400, f"Insufficient raw stock. Available: {available:.3f} kg")
-    await conn.execute(
-        "UPDATE raw_material_totals SET total_quantity_kg = total_quantity_kg - $1, updated_at = NOW() WHERE material_id = $2",
-        required, pid)
-
-
-def decimal_kg(value) -> Decimal:
-    if isinstance(value, Decimal):
-        return value
-    return Decimal(str(value or 0))
-
-
-# ── Multi-location stock engine ─────────────────────────────────────────────
-#
-# Stock for one material lives in four places:
-#   WAREHOUSE     raw_material_totals            (keyed by materials_master id)
-#   GROUND_FLOOR  floor_material_balance          (keyed by material_types id)
-#   FIRST_FLOOR   first_floor_material_balance    (keyed by material_types id)
-#   MACHINE       machine_stock_allocations       (machine id + material_types id)
-# Plant total = all four. Every writer locks them in that order, so concurrent
-# writers serialise instead of deadlocking or racing a balance check.
-
-STOCK_LOCATIONS = ("WAREHOUSE", "GROUND_FLOOR", "FIRST_FLOOR", "MACHINE")
-FLOOR_LOCATIONS = ("GROUND_FLOOR", "FIRST_FLOOR")
-LOCATION_LABELS = {
-    "WAREHOUSE": "Warehouse",
-    "GROUND_FLOOR": "Ground Floor",
-    "FIRST_FLOOR": "First Floor",
-    "MACHINE": "Machine",
-}
-SHIFTS = ("AM", "PM")
 BAG_KG = Decimal("25")
-
-
-async def lock_stock_locations(conn, material_id: int, material_type_id: int) -> dict:
-    """Lock every location row for one material in one stable order."""
-    require_tx(conn)
-    material_id = int(material_id)
-    material_type_id = int(material_type_id)
-    warehouse = await conn.fetchrow(
-        "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
-        material_id,
-    )
-    if not warehouse:
-        raise HTTPException(400, "Warehouse Stock record was not found for this material")
-    await conn.execute(
-        """INSERT INTO floor_material_balance (material_type_id, total_quantity_kg, updated_at)
-           VALUES ($1, 0, NOW()) ON CONFLICT (material_type_id) DO NOTHING""",
-        material_type_id,
-    )
-    floor = await conn.fetchrow(
-        "SELECT total_quantity_kg FROM floor_material_balance WHERE material_type_id = $1 FOR UPDATE",
-        material_type_id,
-    )
-    first_floor = await conn.fetchrow(
-        "SELECT total_quantity_kg FROM first_floor_material_balance WHERE material_type_id = $1 FOR UPDATE",
-        material_type_id,
-    )
-    machine_rows = await conn.fetch(
-        """SELECT machine_id, quantity_kg FROM machine_stock_allocations
-            WHERE material_type_id = $1 ORDER BY machine_id FOR UPDATE""",
-        material_type_id,
-    )
-    machines = {int(r["machine_id"]): decimal_kg(r["quantity_kg"]) for r in machine_rows}
-    return {
-        "warehouse_kg": decimal_kg(warehouse["total_quantity_kg"]),
-        "floor_kg": decimal_kg(floor["total_quantity_kg"] if floor else 0),
-        "first_floor_kg": decimal_kg(first_floor["total_quantity_kg"] if first_floor else 0),
-        "machines_kg": machines,
-    }
-
-
-def _shortfall(location: str, available, machine_id=None) -> HTTPException:
-    label = LOCATION_LABELS.get(location, location)
-    if location == "GROUND_FLOOR":
-        # Ground Floor is the historical "Floor Stock"; keep the old wording visible.
-        label = "Ground Floor Stock (Floor Stock)"
-    elif location == "MACHINE":
-        label = f"Machine {machine_id} stock"
-    else:
-        label = f"{label} Stock"
-    return HTTPException(400, f"Insufficient {label}. Available: {float(available):.3f} kg")
-
-
-async def apply_stock_deltas(
-    conn, *, material_id: int, material_type_id: int,
-    warehouse: float = 0, ground_floor: float = 0, first_floor: float = 0,
-    machine_id: int | None = None, machine: float = 0,
-) -> dict:
-    """Apply one atomic multi-location change and return authoritative balances.
-
-    Every check happens before any write, so an overdraw anywhere leaves every
-    location untouched.
-    """
-    opening = await lock_stock_locations(conn, material_id, material_type_id)
-    d_wh, d_gf = decimal_kg(warehouse), decimal_kg(ground_floor)
-    d_ff, d_mc = decimal_kg(first_floor), decimal_kg(machine)
-    if d_mc and machine_id is None:
-        raise HTTPException(400, "A machine is required for machine stock changes")
-    wh_open, gf_open, ff_open = opening["warehouse_kg"], opening["floor_kg"], opening["first_floor_kg"]
-    machines = opening["machines_kg"]
-    mc_open = machines.get(int(machine_id), Decimal("0")) if machine_id is not None else Decimal("0")
-    mtot_open = sum(machines.values(), Decimal("0"))
-    wh_close, gf_close, ff_close, mc_close = wh_open + d_wh, gf_open + d_gf, ff_open + d_ff, mc_open + d_mc
-    if wh_close < 0:
-        raise _shortfall("WAREHOUSE", wh_open)
-    if gf_close < 0:
-        raise _shortfall("GROUND_FLOOR", gf_open)
-    if ff_close < 0:
-        raise _shortfall("FIRST_FLOOR", ff_open)
-    if mc_close < 0:
-        raise _shortfall("MACHINE", mc_open, machine_id)
-    if d_wh:
-        await conn.execute(
-            "UPDATE raw_material_totals SET total_quantity_kg = $1, updated_at = NOW() WHERE material_id = $2",
-            wh_close, int(material_id),
-        )
-    if d_gf:
-        await conn.execute(
-            "UPDATE floor_material_balance SET total_quantity_kg = $1, updated_at = NOW() WHERE material_type_id = $2",
-            gf_close, int(material_type_id),
-        )
-    if d_ff:
-        await conn.execute(
-            """INSERT INTO first_floor_material_balance (material_type_id, total_quantity_kg, updated_at)
-               VALUES ($2, $1, NOW()) ON CONFLICT (material_type_id)
-               DO UPDATE SET total_quantity_kg = EXCLUDED.total_quantity_kg, updated_at = NOW()""",
-            ff_close, int(material_type_id),
-        )
-    if d_mc:
-        await conn.execute(
-            """INSERT INTO machine_stock_allocations (machine_id, material_type_id, quantity_kg, updated_at)
-               VALUES ($1, $2, $3, NOW()) ON CONFLICT (machine_id, material_type_id)
-               DO UPDATE SET quantity_kg = EXCLUDED.quantity_kg, updated_at = NOW()""",
-            int(machine_id), int(material_type_id), mc_close,
-        )
-    mtot_close = mtot_open + d_mc
-    plant_open = wh_open + gf_open + ff_open + mtot_open
-    plant_close = wh_close + gf_close + ff_close + mtot_close
-    balances = {
-        "warehouse_opening_kg": float(wh_open),
-        "warehouse_closing_kg": float(wh_close),
-        "floor_opening_kg": float(gf_open),
-        "floor_closing_kg": float(gf_close),
-        "first_floor_opening_kg": float(ff_open),
-        "first_floor_closing_kg": float(ff_close),
-        "machines_total_opening_kg": float(mtot_open),
-        "machines_total_closing_kg": float(mtot_close),
-        "plant_opening_kg": float(plant_open),
-        "plant_closing_kg": float(plant_close),
-    }
-    if machine_id is not None:
-        balances.update({
-            "machine_id": int(machine_id),
-            "machine_opening_kg": float(mc_open),
-            "machine_closing_kg": float(mc_close),
-        })
-    return balances
-
-
-async def apply_location_delta(
-    conn, *, material_id: int, material_type_id: int,
-    warehouse_delta: float, floor_delta: float,
-) -> dict:
-    """Warehouse / Ground Floor change (the original two-location primitive)."""
-    return await apply_stock_deltas(
-        conn, material_id=material_id, material_type_id=material_type_id,
-        warehouse=warehouse_delta, ground_floor=floor_delta,
-    )
-
-
-def location_deltas(location: str, quantity, machine_id=None) -> dict:
-    """Keyword deltas for apply_stock_deltas that add `quantity` at a location."""
-    location = str(location or "").upper()
-    if location == "WAREHOUSE":
-        return {"warehouse": quantity}
-    if location == "GROUND_FLOOR":
-        return {"ground_floor": quantity}
-    if location == "FIRST_FLOOR":
-        return {"first_floor": quantity}
-    if location == "MACHINE":
-        if machine_id is None:
-            raise HTTPException(400, "A machine is required for machine stock")
-        return {"machine": quantity, "machine_id": int(machine_id)}
-    raise HTTPException(400, f"Unknown stock location: {location}")
-
-
-# ── Business date + AM/PM shift ───────────────────────────────────────────
+SHIFTS = ("AM", "PM")
 
 # Morning (AM) shift runs from SHIFT_AM_START to SHIFT_PM_START; the night (PM)
 # shift runs from SHIFT_PM_START until the next morning and belongs to the day it
@@ -1073,1366 +610,89 @@ def parse_quantity_kg(body: dict, field: str = "quantity_kg") -> Decimal:
     return value.quantize(Decimal("0.001"))
 
 
-async def warehouse_stock_receipt(conn, material_id: int, opening_kg, closing_kg) -> tuple[dict, int | None]:
-    """Build a two-location receipt for a Warehouse-only input change."""
-    floor_row = await conn.fetchrow(
-        """SELECT mt.id AS material_type_id, fmb.total_quantity_kg
-             FROM materials_master mm
-             LEFT JOIN material_types mt ON LOWER(TRIM(mt.name)) = LOWER(TRIM(mm.name))
-             LEFT JOIN floor_material_balance fmb ON fmb.material_type_id = mt.id
-            WHERE mm.id = $1 ORDER BY mt.id LIMIT 1""",
-        int(material_id),
-    )
-    floor = decimal_kg(floor_row["total_quantity_kg"] if floor_row else 0)
-    type_id = int(floor_row["material_type_id"]) if floor_row and floor_row["material_type_id"] else None
-    first_floor = machines_total = Decimal("0")
-    if type_id:
-        first_floor = decimal_kg(await conn.fetchval(
-            "SELECT total_quantity_kg FROM first_floor_material_balance WHERE material_type_id = $1",
-            type_id) or 0)
-        machines_total = decimal_kg(await conn.fetchval(
-            "SELECT COALESCE(SUM(quantity_kg), 0) FROM machine_stock_allocations WHERE material_type_id = $1",
-            type_id) or 0)
-    opening = decimal_kg(opening_kg)
-    closing = decimal_kg(closing_kg)
-    elsewhere = floor + first_floor + machines_total
-    return ({
-        "warehouse_opening_kg": float(opening),
-        "warehouse_closing_kg": float(closing),
-        "floor_opening_kg": float(floor),
-        "floor_closing_kg": float(floor),
-        "first_floor_opening_kg": float(first_floor),
-        "first_floor_closing_kg": float(first_floor),
-        "machines_total_opening_kg": float(machines_total),
-        "machines_total_closing_kg": float(machines_total),
-        "plant_opening_kg": float(opening + elsewhere),
-        "plant_closing_kg": float(closing + elsewhere),
-    }, type_id)
-
-
-async def record_stock_activity(
-    conn, *, action: str, source_domain: str, source_id: int | None,
-    correlation_id, material_id: int, material_type_id: int | None,
-    quantity_kg: float, balances: dict, reason: str | None,
-    created_by: int, reverses_activity_id: int | None = None,
-    business_date: dt_date | None = None, shift: str | None = None,
-    from_location: str | None = None, to_location: str | None = None,
-) -> dict:
-    """Append the audit receipt; failures propagate so the stock transaction rolls back."""
-    require_tx(conn)
-    if business_date is None or shift is None:
-        live_date, live_shift = derive_business_context()
-        business_date = business_date or live_date
-        shift = shift or live_shift
-
-    def triple(prefix):
-        opening = balances.get(f"{prefix}_opening_kg")
-        closing = balances.get(f"{prefix}_closing_kg")
-        opening = decimal_kg(opening) if opening is not None else None
-        closing = decimal_kg(closing) if closing is not None else None
-        delta = (closing - opening) if opening is not None and closing is not None else None
-        return opening, delta, closing
-
-    wh, gf, pl = triple("warehouse"), triple("floor"), triple("plant")
-    ff, mc, mt = triple("first_floor"), triple("machine"), triple("machines_total")
-    row = await conn.fetchrow(
-        """INSERT INTO stock_activity_log (
-               action, source_domain, source_id, correlation_id, material_id,
-               material_type_id, quantity_kg,
-               warehouse_opening_kg, warehouse_delta_kg, warehouse_closing_kg,
-               floor_opening_kg, floor_delta_kg, floor_closing_kg,
-               plant_opening_kg, plant_delta_kg, plant_closing_kg,
-               reason, created_by, reverses_activity_id,
-               first_floor_opening_kg, first_floor_delta_kg, first_floor_closing_kg,
-               machine_id, machine_opening_kg, machine_delta_kg, machine_closing_kg,
-               machines_total_opening_kg, machines_total_delta_kg, machines_total_closing_kg,
-               business_date, shift, from_location, to_location
-           ) VALUES (
-               $1, $2, $3, $4, $5, $6, $7,
-               $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-               $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33
-           ) RETURNING *""",
-        action, source_domain, source_id, correlation_id,
-        int(material_id) if material_id is not None else None,
-        int(material_type_id) if material_type_id else None, decimal_kg(quantity_kg),
-        *wh, *gf, *pl,
-        reason, int(created_by) if created_by else None, reverses_activity_id,
-        *ff, balances.get("machine_id"), *mc, *mt,
-        business_date, shift, from_location, to_location,
-    )
-    return dict(row)
-
-
-async def apply_floor_transfer(
-    conn, *, source_id: int, material_id: int, material_type_id: int,
-    quantity_kg: float, created_by: int, correlation_id, reason: str | None = None,
-    business_date: dt_date | None = None, shift: str | None = None,
-) -> dict:
-    quantity = decimal_kg(quantity_kg)
-    if quantity <= 0:
-        raise HTTPException(400, "Quantity must be greater than zero")
-    balances = await apply_location_delta(
-        conn,
-        material_id=material_id,
-        material_type_id=material_type_id,
-        warehouse_delta=-quantity,
-        floor_delta=quantity,
-    )
-    activity = await record_stock_activity(
-        conn,
-        action="CREATE",
-        source_domain="FLOOR_TRANSFER",
-        source_id=source_id,
-        correlation_id=correlation_id,
-        material_id=material_id,
-        material_type_id=material_type_id,
-        quantity_kg=quantity,
-        balances=balances,
-        reason=reason,
-        created_by=created_by,
-        business_date=business_date, shift=shift,
-        from_location="WAREHOUSE", to_location="GROUND_FLOOR",
-    )
-    return {**balances, "activity_id": activity["id"]}
-
-
-async def reverse_floor_transfer(conn, movement_row: dict, created_by: int) -> dict:
-    quantity = decimal_kg(movement_row.get("quantity_kg"))
-    try:
-        balances = await apply_location_delta(
-            conn,
-            material_id=int(movement_row["material_id"]),
-            material_type_id=int(movement_row["material_type_id"]),
-            warehouse_delta=quantity,
-            floor_delta=-quantity,
-        )
-    except HTTPException as exc:
-        if exc.status_code == 400 and "Floor Stock" in str(exc.detail):
-            match = re.search(r"Available:\s*([0-9.]+)", str(exc.detail))
-            available = float(match.group(1)) if match else 0.0
-            used = max(float(quantity) - available, 0.0)
-            raise HTTPException(400, (
-                f"Cannot delete this transfer: only {available:.3f} kg of its "
-                f"{float(quantity):.3f} kg remains on the floor; {used:.3f} kg "
-                "has already been used."
-            )) from exc
-        raise
-    activity = await record_stock_activity(
-        conn,
-        action="REVERSE",
-        source_domain="FLOOR_TRANSFER",
-        source_id=int(movement_row["id"]),
-        correlation_id=movement_row.get("correlation_id") or uuid4(),
-        material_id=int(movement_row["material_id"]),
-        material_type_id=int(movement_row["material_type_id"]),
-        quantity_kg=quantity,
-        balances=balances,
-        reason=movement_row.get("note"),
-        created_by=created_by,
-        reverses_activity_id=movement_row.get("activity_id"),
-        business_date=row_business_context(movement_row)[0],
-        shift=row_business_context(movement_row)[1],
-        from_location="GROUND_FLOOR", to_location="WAREHOUSE",
-    )
-    return {**balances, "activity_id": activity["id"]}
-
-
-async def apply_production_consumption(
-    conn, *, log_id: int, material_id: int, material_type_id: int,
-    net_kg: float, machine_id: int, created_by: int, correlation_id,
-    action: str = "CREATE", reverses_activity_id: int | None = None,
-    business_date: dt_date | None = None, shift: str | None = None,
-    batch_no: str | None = None,
-) -> dict:
-    """Consume production weight: the machine's own stock first, then Ground Floor.
-
-    Warehouse and First Floor are never touched. `machine_consumed_kg` in the
-    result is what reversal must give back to the machine.
-    """
-    quantity = decimal_kg(net_kg)
-    if quantity <= 0:
-        raise HTTPException(400, "Net weight must be greater than zero")
-    machine_available = Decimal("0")
-    if machine_id is not None:
-        machine_available = decimal_kg(await conn.fetchval(
-            """SELECT quantity_kg FROM machine_stock_allocations
-                WHERE machine_id = $1 AND material_type_id = $2""",
-            int(machine_id), int(material_type_id)) or 0)
-    from_machine = min(machine_available, quantity)
-    from_floor = quantity - from_machine
-    if from_machine > 0:
-        balances = await apply_stock_deltas(
-            conn, material_id=material_id, material_type_id=material_type_id,
-            ground_floor=-from_floor, machine_id=int(machine_id), machine=-from_machine,
-        )
-    else:
-        balances = await apply_location_delta(
-            conn,
-            material_id=material_id,
-            material_type_id=material_type_id,
-            warehouse_delta=0,
-            floor_delta=-quantity,
-        )
-    reason = f"Production on machine {machine_id}"
-    if batch_no:
-        reason = f"{reason} · batch {batch_no}"
-    activity = await record_stock_activity(
-        conn,
-        action=action,
-        source_domain="PRODUCTION",
-        source_id=log_id,
-        correlation_id=correlation_id,
-        material_id=material_id,
-        material_type_id=material_type_id,
-        quantity_kg=quantity,
-        balances=balances,
-        reason=reason,
-        created_by=created_by,
-        reverses_activity_id=reverses_activity_id,
-        business_date=business_date, shift=shift,
-        from_location="MACHINE" if from_machine > 0 else "GROUND_FLOOR",
-    )
-    return {**balances, "activity_id": activity["id"],
-            "machine_consumed_kg": float(from_machine),
-            "floor_consumed_kg": float(from_floor)}
-
-
-async def reverse_production_consumption(
-    conn, movement_row: dict, created_by: int,
-) -> dict:
-    """Restore exactly the quantity recorded by the linked consumption movement,
-    to the same places it was taken from."""
-    quantity = decimal_kg(movement_row.get("quantity_kg"))
-    if quantity <= 0 or not movement_row.get("material_type_id"):
-        raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
-    to_machine = min(decimal_kg(movement_row.get("machine_consumed_kg") or 0), quantity)
-    to_floor = quantity - to_machine
-    if to_machine > 0:
-        balances = await apply_stock_deltas(
-            conn, material_id=int(movement_row["material_id"]),
-            material_type_id=int(movement_row["material_type_id"]),
-            ground_floor=to_floor, machine_id=int(movement_row["machine_id"]),
-            machine=to_machine,
-        )
-    else:
-        balances = await apply_location_delta(
-            conn,
-            material_id=int(movement_row["material_id"]),
-            material_type_id=int(movement_row["material_type_id"]),
-            warehouse_delta=0,
-            floor_delta=quantity,
-        )
-    activity = await record_stock_activity(
-        conn,
-        action="REVERSE",
-        source_domain="PRODUCTION",
-        source_id=int(movement_row["id"]),
-        correlation_id=movement_row.get("correlation_id") or uuid4(),
-        material_id=int(movement_row["material_id"]),
-        material_type_id=int(movement_row["material_type_id"]),
-        quantity_kg=quantity,
-        balances=balances,
-        reason=f"Reverse production on machine {movement_row.get('machine_id')}",
-        created_by=created_by,
-        reverses_activity_id=movement_row.get("activity_id"),
-        business_date=movement_row.get("business_date"),
-        shift=movement_row.get("shift"),
-        to_location="MACHINE" if to_machine > 0 else "GROUND_FLOOR",
-    )
-    return {**balances, "activity_id": activity["id"]}
-
-
-async def update_production_consumption(
-    conn, movement_row: dict, *, new_material_id: int,
-    new_material_type_id: int, new_net_kg: float, new_machine_id: int,
-    created_by: int,
-) -> dict:
-    """Restore the recorded old effect before applying the edited consumption."""
-    reversal = await reverse_production_consumption(conn, movement_row, created_by)
-    receipt = await apply_production_consumption(
-        conn,
-        log_id=int(movement_row["id"]),
-        material_id=new_material_id,
-        material_type_id=new_material_type_id,
-        net_kg=new_net_kg,
-        machine_id=new_machine_id,
-        created_by=created_by,
-        correlation_id=movement_row.get("correlation_id") or uuid4(),
-        action="UPDATE",
-        reverses_activity_id=reversal["activity_id"],
-        business_date=movement_row.get("business_date"),
-        shift=movement_row.get("shift"),
-    )
-    return {**receipt, "reversal_receipt": reversal}
-
-
-async def latest_activity_link(conn, source_domain: str, source_id: int):
-    return await conn.fetchrow(
-        """SELECT id AS activity_id, correlation_id, action AS activity_action
-             FROM stock_activity_log
-            WHERE source_domain = $1 AND source_id = $2
-            ORDER BY id DESC LIMIT 1""",
-        source_domain, int(source_id),
-    )
-
-
-def normalize_stock_adjustment(body) -> tuple[str, str, float, str]:
-    material_name = str(body.get("material_name") or "").strip()
-    operation = str(body.get("operation") or "").strip().lower()
-    quantity_kg = to_num(body.get("quantity_kg"))
-    reason = str(body.get("reason") or "").strip()
-    if not material_name:
-        raise HTTPException(400, "Material name is required")
-    if operation not in {"add", "remove"}:
-        raise HTTPException(400, "Operation must be add or remove")
-    if quantity_kg <= 0:
-        raise HTTPException(400, "Quantity must be greater than zero")
-    if not reason:
-        raise HTTPException(400, "Reason is required")
-    return material_name, operation, quantity_kg, reason
-
-
-async def apply_manual_stock_adjustment(
-    conn, material_id, operation: str, quantity_kg: float, reason: str, created_by: int,
-    created_at: datetime | None = None,
-) -> dict:
-    require_tx(conn)
-    material_id = int(material_id)
-    quantity_kg = to_num(quantity_kg)
-    opening = to_num(await conn.fetchval(
-        "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
-        material_id,
-    ))
-    if operation == "remove" and quantity_kg > opening:
-        raise HTTPException(400, f"Insufficient raw stock. Available: {opening:.3f} kg")
-    delta = quantity_kg if operation == "add" else -quantity_kg
-    closing = opening + delta
-    await adjust_raw_total(conn, material_id, delta)
-    adjustment_id = await conn.fetchval(
-        """INSERT INTO stock_adjustments
-               (material_id, operation, quantity_kg, opening_quantity_kg,
-                closing_quantity_kg, reason, created_by, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW())) RETURNING id""",
-        material_id, operation, quantity_kg, opening, closing, reason, created_by, created_at,
-    )
-    return {"opening_quantity_kg": opening, "closing_quantity_kg": closing,
-            "adjustment_id": adjustment_id}
-
-
-async def master_id_for_type(conn, material_type_id) -> int:
-    """materials_master id matching a material_types row, matched by name.
-
-    `materials_master` and `material_types` are separate id spaces. Movements are
-    recorded in the materials_master space; floor balances in the material_types
-    space. Mixing them corrupts unrelated materials, so translate explicitly.
-    """
-    try:
-        pid = int(material_type_id)
-    except (TypeError, ValueError):
-        return 0
-    if pid <= 0:
-        return 0
-    r = await conn.fetchrow("SELECT name FROM material_types WHERE id = $1 LIMIT 1", pid)
-    if not r:
-        return 0
-    return await get_or_create_material(conn, r["name"])
-
-
-async def consumption_movement_for_log(conn, log_id: int):
-    return await conn.fetchrow(
-        """SELECT id, quantity_kg, material_id, material_type_id
-             FROM material_movements
-            WHERE movement_type = 'CONSUMPTION' AND reference_id = $1
-            ORDER BY id DESC LIMIT 1""",
-        log_id)
-
-
-async def upsert_consumption_movement(conn, log_id: int, payload: dict):
-    """Record (or correct) the consumption ledger row for a production log.
-
-    The row is the receipt for the floor deduction: reversal reads it back, so the
-    quantity and the material type stored here must match what was actually taken.
-    """
-    qty = to_num(payload.get("net_weight"))
-    try:
-        mt_id = int(payload.get("material_type_id") or 0)
-    except (TypeError, ValueError):
-        mt_id = 0
-    if log_id <= 0:
-        return
-    existing = await consumption_movement_for_log(conn, log_id)
-    if qty <= 0 or mt_id <= 0:
-        if existing:
-            await conn.execute("DELETE FROM material_movements WHERE id = $1", existing["id"])
-        return
-    master_id = await master_id_for_type(conn, mt_id)
-    if master_id <= 0:
-        if existing:
-            await conn.execute("DELETE FROM material_movements WHERE id = $1", existing["id"])
-        return
-    note = f"Production consumption from machine {payload.get('machine_id')}"
-    if existing:
-        await conn.execute(
-            """UPDATE material_movements
-                  SET material_id = $1, material_type_id = $2, quantity_kg = $3,
-                      direction = 'OUT', movement_type = 'CONSUMPTION', note = $4
-                WHERE id = $5""",
-            master_id, mt_id, qty, note, existing["id"])
-    else:
-        await conn.execute(
-            """INSERT INTO material_movements
-                   (material_id, material_type_id, quantity_kg, direction, movement_type, reference_id, note)
-               VALUES ($1, $2, $3, 'OUT', 'CONSUMPTION', $4, $5)""",
-            master_id, mt_id, qty, log_id, note)
-
-
-async def fetch_order_items(conn, order_id: int) -> list:
-    rs = await conn.fetch(
-        """SELECT oi.id, oi.order_id, oi.item_name,
-               oi.required_quantity::float AS required_quantity,
-               COALESCE(oi.unit_price, 0)::float AS unit_price,
-               (oi.required_quantity * COALESCE(oi.unit_price, 0))::float AS total_amount,
-               COALESCE(SUM(fr.supplied_quantity), 0)::float AS fulfilled_quantity,
-               GREATEST(oi.required_quantity - COALESCE(SUM(fr.supplied_quantity), 0), 0)::float AS remaining_quantity,
-               oi.created_at
-           FROM order_items oi
-           LEFT JOIN fulfillment_records fr ON fr.order_item_id = oi.id
-           WHERE oi.order_id = $1
-           GROUP BY oi.id, oi.order_id, oi.item_name, oi.required_quantity, oi.unit_price, oi.created_at
-           ORDER BY oi.created_at ASC, oi.id ASC""",
-        order_id)
-    return rows(rs)
-
-
-async def hydrate_orders(conn, orders: list) -> list:
-    result = []
-    for o in orders:
-        items = await fetch_order_items(conn, o["id"])
-        result.append({**o, "items": items})
-    return result
-
-
-async def sync_order_status(conn, order_id: int):
-    o = await conn.fetchrow("SELECT status FROM orders WHERE id = $1 FOR UPDATE", order_id)
-    if not o or o["status"] == "cancelled":
-        return o["status"] if o else None
-    summary = await conn.fetchrow(
-        """SELECT COUNT(*)::int AS total_items,
-               COUNT(*) FILTER (WHERE COALESCE(fr.fulfilled_quantity, 0) >= oi.required_quantity)::int AS completed_items
-           FROM order_items oi
-           LEFT JOIN (SELECT order_item_id, COALESCE(SUM(supplied_quantity), 0) AS fulfilled_quantity
-                      FROM fulfillment_records GROUP BY order_item_id) fr ON fr.order_item_id = oi.id
-           WHERE oi.order_id = $1""",
-        order_id)
-    total = summary["total_items"] if summary else 0
-    completed = summary["completed_items"] if summary else 0
-    next_status = "completed" if total > 0 and total == completed else "Active"
-    await conn.execute("UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2", next_status, order_id)
-    return next_status
-
-
-# ─────────────────────────── Routes ───────────────────────────
-
 @app.get("/")
 async def health():
     return "API running"
 
+# ═══════════════════════════ IPMS stock engine ═══════════════════════════
+#
+# Raw material lives on the Ground Floor (receiving bay) and the 1st Floor
+# (production running stock). Extruders turn a resin blend into film rolls
+# (Roll Store); cutting machines turn rolls into finished goods (Finished Goods
+# Store). Dispatches take goods out of either store. Every change is a row in
+# stock_ledger; stock_balances is its running total.
 
-@app.get("/stock/activity")
-async def get_stock_activity(
-    date_from: str = None, date_to: str = None, material_id: str = None,
-    source_domain: str = None, action: str = None, operator_id: str = None,
-    shift: str = None, location: str = None, include_returns: str = None,
-    limit: str = "200", offset: str = "0", user=Depends(get_user),
-):
-    """One immutable, filterable explanation of every stock change."""
-    parsed_limit = parse_activity_limit(limit)
-    try:
-        parsed_offset = max(int(offset), 0)
-    except (TypeError, ValueError):
-        parsed_offset = 0
-    where, values = build_stock_activity_filters(
-        date_from=date_from, date_to=date_to, material_id=material_id,
-        source_domain=source_domain, action=action, operator_id=operator_id,
-        shift=shift, location=location,
-        include_returns=str(include_returns or "").lower() in ("1", "true", "yes"),
-    )
-    values.extend([parsed_limit, parsed_offset])
-    async with pool.acquire() as c:
-        result = await c.fetch(
-            f"""SELECT sal.*, m.name AS material_name, u.name AS created_by_name,
-                       mc.name AS machine_name,
-                       COUNT(*) OVER()::int AS total_count
-                  FROM stock_activity_log sal
-                  LEFT JOIN materials_master m ON m.id = sal.material_id
-                  LEFT JOIN users u ON u.id = sal.created_by
-                  LEFT JOIN machines mc ON mc.id = sal.machine_id
-                {where}
-                 ORDER BY sal.occurred_at DESC, sal.id DESC
-                 LIMIT ${len(values) - 1} OFFSET ${len(values)}""",
-            *values,
-        )
-    total = int(result[0]["total_count"]) if result else 0
-    return {
-        "items": [normalize_activity_row(dict(row)) for row in result],
-        "pagination": {"limit": parsed_limit, "offset": parsed_offset, "total": total},
-    }
+from ipms_logic import (  # noqa: E402
+    ALL_LOCATIONS, FINISHED_STORE, LOCATION_LABELS, MATERIAL_LOCATIONS, PRODUCT_STORE,
+    REGRIND_BRAND, REGRIND_LOCATION, REGRIND_MATERIAL, ROLL_STORE, STATUS_LABELS,
+    allocate_auto, day_register, location_accepts, merge_lines, normalize_material_name,
+    normalize_product_code, shift_report, stock_status,
+)
+
+DOC_TABLES = {
+    "RECEIPT": ("stock_receipts", "RC"),
+    "TRANSFER": ("stock_transfers", "TR"),
+    "EXTRUSION": ("production_entries", "EX"),
+    "CUTTING": ("production_entries", "CT"),
+    "ADJUSTMENT": ("stock_adjustments", "AD"),
+}
+QTY_EPS = Decimal("0.001")
 
 
-# ── Materials ──
-
-@app.get("/materials")
-async def get_materials(user=Depends(get_user)):
-    async with pool.acquire() as c:
-        return rows(await c.fetch("SELECT id, name FROM materials_master ORDER BY name"))
+def require_tx(conn):
+    """Stock writes must run inside a transaction so row locks hold until commit."""
+    if not conn.is_in_transaction():
+        raise RuntimeError("Stock mutations must run inside a transaction")
 
 
-@app.post("/materials")
-async def post_materials(request: Request, user=Depends(get_user)):
-    body = await request.json()
-    name = str(body.get("name") or "").strip()
-    if not name:
-        raise HTTPException(400, "Material name is required")
-    async with pool.acquire() as c:
-        r = await c.fetchrow("SELECT id, name FROM materials_master WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1", name)
-        material = dict(r) if r else dict(await c.fetchrow("INSERT INTO materials_master (name) VALUES ($1) RETURNING id, name", name))
-        all_mats = rows(await c.fetch("SELECT id, name FROM materials_master ORDER BY name ASC"))
-    await broadcast("raw_material")
-    return {"selected": material, "materials": all_mats}
+def decimal_kg(value) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value or 0))
 
-
-# ── Raw material totals ──
-
-@app.get("/raw-material/totals")
-async def get_raw_totals(user=Depends(get_user)):
-    async with pool.acquire() as c:
-        try:
-            return rows(await c.fetch(
-                "SELECT mm.name AS material_name, rmt.total_quantity_kg, rmt.updated_at FROM raw_material_totals rmt JOIN materials_master mm ON mm.id = rmt.material_id ORDER BY mm.name"))
-        except asyncpg.UndefinedTableError:
-            pass
-        try:
-            return rows(await c.fetch("SELECT material_name, total_quantity_kg, updated_at FROM raw_material_totals ORDER BY material_name"))
-        except Exception as e:
-            raise HTTPException(500, str(e))
-
-
-# ── Raw material batches ──
-
-@app.get("/raw-material/batches")
-async def get_batches(date_from: str = None, date_to: str = None, user=Depends(get_user)):
-    async with pool.acquire() as c:
-        vals = []
-        where = build_date_where(date_from, date_to, vals, "rb.created_at")
-        vals.append(500)
-        return rows(await c.fetch(
-            f"""SELECT rb.*, u.name AS created_by_name,
-                       sal.id AS activity_id, sal.correlation_id,
-                       (sal.action = 'LEGACY') AS is_legacy
-                  FROM raw_material_batches rb
-                  LEFT JOIN users u ON u.id = rb.created_by
-                  LEFT JOIN LATERAL (
-                      SELECT id, correlation_id, action FROM stock_activity_log
-                       WHERE source_domain = 'RAW_INPUT' AND source_id = rb.id
-                       ORDER BY id DESC LIMIT 1
-                  ) sal ON TRUE
-                {where} ORDER BY rb.created_at DESC LIMIT ${len(vals)}""",
-            *vals))
-
-
-@app.put("/raw-material/batches/{batch_id}")
-async def update_batch(batch_id: int, request: Request, user=Depends(get_user)):
-    require_owner_or_admin(user)
-    body = await request.json()
-    next_qty = to_num(body.get("quantity_kg"))
-    next_name = str(body.get("material_name") or "").strip()
-    next_note = body.get("note")
-    next_thickness = str(body.get("thickness") or "").strip() or None
-    if batch_id <= 0:
-        raise HTTPException(400, "Invalid batch id")
-    if not next_name or next_qty <= 0:
-        raise HTTPException(400, "material_name and quantity_kg are required")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            cur = await c.fetchrow(
-                "SELECT id, material_id, material_name, quantity_kg, note, thickness, created_by, created_at, business_date, shift FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
-            if not cur:
-                raise HTTPException(404, "Batch not found")
-            link = await latest_activity_link(c, "RAW_INPUT", batch_id)
-            if not link or link["activity_action"] == "LEGACY":
-                raise HTTPException(400, "Legacy raw material entries cannot be changed automatically")
-            cur_qty = to_num(cur["quantity_kg"])
-            next_mat_id = await get_or_create_material(c, next_name)
-            if int(cur["material_id"]) == next_mat_id:
-                opening = to_num(await c.fetchval(
-                    "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
-                    next_mat_id))
-                await adjust_raw_total(c, next_mat_id, next_qty - cur_qty)
-                closing = opening + next_qty - cur_qty
-                impact_receipt, material_type_id = await warehouse_stock_receipt(
-                    c, next_mat_id, opening, closing)
-                activity = await record_stock_activity(
-                    c, action="UPDATE", source_domain="RAW_INPUT", source_id=batch_id,
-                    correlation_id=link["correlation_id"], material_id=next_mat_id,
-                    material_type_id=material_type_id, quantity_kg=next_qty,
-                    balances=impact_receipt, reason=next_note, created_by=user.get("id"),
-                    reverses_activity_id=link["activity_id"],
-                    business_date=row_business_context(cur)[0], shift=row_business_context(cur)[1])
-            else:
-                old_opening = to_num(await c.fetchval(
-                    "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
-                    cur["material_id"]))
-                await adjust_raw_total(c, cur["material_id"], -cur_qty)
-                old_receipt, old_type_id = await warehouse_stock_receipt(
-                    c, cur["material_id"], old_opening, old_opening - cur_qty)
-                reversed_activity = await record_stock_activity(
-                    c, action="REVERSE", source_domain="RAW_INPUT", source_id=batch_id,
-                    correlation_id=link["correlation_id"], material_id=cur["material_id"],
-                    material_type_id=old_type_id, quantity_kg=cur_qty,
-                    balances=old_receipt, reason=cur["note"], created_by=user.get("id"),
-                    reverses_activity_id=link["activity_id"],
-                    business_date=row_business_context(cur)[0], shift=row_business_context(cur)[1])
-                new_opening = to_num(await c.fetchval(
-                    "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
-                    next_mat_id))
-                await adjust_raw_total(c, next_mat_id, next_qty)
-                impact_receipt, material_type_id = await warehouse_stock_receipt(
-                    c, next_mat_id, new_opening, new_opening + next_qty)
-                activity = await record_stock_activity(
-                    c, action="UPDATE", source_domain="RAW_INPUT", source_id=batch_id,
-                    correlation_id=link["correlation_id"], material_id=next_mat_id,
-                    material_type_id=material_type_id, quantity_kg=next_qty,
-                    balances=impact_receipt, reason=next_note, created_by=user.get("id"),
-                    reverses_activity_id=reversed_activity["id"],
-                    business_date=row_business_context(cur)[0], shift=row_business_context(cur)[1])
-            updated = await c.fetchrow(
-                "UPDATE raw_material_batches SET material_id=$1, material_name=$2, quantity_kg=$3, note=$4, thickness=$5 WHERE id=$6 RETURNING *",
-                next_mat_id, next_name, next_qty, next_note, next_thickness, batch_id)
-            tol = await eval_qty_tolerance(get_expected_qty(body, next_qty), next_qty, c,
-                                           {"op": "batch_update", "batch_id": batch_id})
-            if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
-                raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
-    await broadcast("raw_material")
-    return {"success": True, "data": dict(updated), "tolerance": tol,
-            "impact_receipt": impact_receipt, "activity_id": activity["id"]}
-
-
-@app.delete("/raw-material/batches/{batch_id}")
-async def delete_batch(batch_id: int, user=Depends(get_user)):
-    require_owner_or_admin(user)
-    if batch_id <= 0:
-        raise HTTPException(400, "Invalid batch id")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            cur = await c.fetchrow("SELECT id, material_id, quantity_kg, note, created_at, business_date, shift FROM raw_material_batches WHERE id = $1 FOR UPDATE", batch_id)
-            if not cur:
-                raise HTTPException(404, "Batch not found")
-            link = await latest_activity_link(c, "RAW_INPUT", batch_id)
-            if not link or link["activity_action"] == "LEGACY":
-                raise HTTPException(400, "Legacy raw material entries cannot be deleted automatically")
-            opening = to_num(await c.fetchval(
-                "SELECT total_quantity_kg FROM raw_material_totals WHERE material_id = $1 FOR UPDATE",
-                cur["material_id"]))
-            await reverse_raw_batch(c, cur)
-            impact_receipt, material_type_id = await warehouse_stock_receipt(
-                c, cur["material_id"], opening, opening - to_num(cur["quantity_kg"]))
-            activity = await record_stock_activity(
-                c, action="REVERSE", source_domain="RAW_INPUT", source_id=batch_id,
-                correlation_id=link["correlation_id"], material_id=cur["material_id"],
-                material_type_id=material_type_id, quantity_kg=cur["quantity_kg"],
-                balances=impact_receipt, reason=cur["note"], created_by=user.get("id"),
-                reverses_activity_id=link["activity_id"],
-                business_date=row_business_context(cur)[0], shift=row_business_context(cur)[1])
-            await c.execute("DELETE FROM raw_material_batches WHERE id = $1", batch_id)
-    await broadcast("raw_material")
-    return {"success": True, "impact_receipt": impact_receipt,
-            "activity_id": activity["id"]}
-
-
-@app.post("/raw-material/batches/bulk-delete")
-async def bulk_delete_batches(request: Request, user=Depends(get_user)):
-    require_owner_or_admin(user)
-    body = await request.json()
-    ids = [int(v) for v in (body.get("ids") or []) if str(v).lstrip("-").isdigit() and int(v) > 0]
-    if not ids:
-        raise HTTPException(400, "ids array is required")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            rs_ = await c.fetch(
-                "SELECT id, material_id, quantity_kg FROM raw_material_batches WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE", ids)
-            if len(rs_) != len(ids):
-                raise HTTPException(404, "One or more batches were not found")
-            for r_ in rs_:
-                await reverse_raw_batch(c, r_)
-            await c.execute("DELETE FROM raw_material_batches WHERE id = ANY($1::int[])", ids)
-    await broadcast("raw_material")
-    return {"success": True, "deleted": len(ids)}
-
-
-@app.get("/raw-material/options")
-async def get_raw_options(user=Depends(get_user)):
-    async with pool.acquire() as c:
-        return rows(await c.fetch(
-            "SELECT id, name AS material_name FROM materials_master WHERE name IS NOT NULL AND TRIM(name) <> '' ORDER BY name ASC"))
-
-
-@app.post("/raw-material/options")
-async def add_raw_option(request: Request, user=Depends(get_user)):
-    body = await request.json()
-    normalized = str(body.get("material_name") or "").strip()
-    if not normalized:
-        raise HTTPException(400, "material_name cannot be empty")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            await c.execute("INSERT INTO materials_master (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", normalized)
-            await c.execute("INSERT INTO material_name_mapping (material_name) VALUES ($1) ON CONFLICT DO NOTHING", normalized)
-    return {"message": "Material added to options", "material_name": normalized}
-
-
-@app.post("/raw-material/add")
-async def add_raw_material(request: Request, user=Depends(get_user)):
-    body = await request.json()
-    mat_name = str(body.get("material_name") or "").strip()
-    qty = to_num(body.get("quantity_kg"))
-    if qty <= 0 and body.get("quantity_bags") not in (None, ""):
-        qty = float(parse_quantity_kg(body))
-    note = body.get("note")
-    thickness = str(body.get("thickness") or "").strip() or None
-    if not mat_name or qty <= 0:
-        raise HTTPException(400, "Invalid input")
-    if not user.get("id"):
-        raise HTTPException(401, "User not authenticated properly")
-    # Stock is often keyed in after the lorry has gone, so the operator can name
-    # the day it actually arrived. Absent or today -> the column default stands.
-    business_date, shift, entry_ts = parse_business_context(body)
-    async with pool.acquire() as c:
-        async with c.transaction():
-            await guard_closed_day(c, user, business_date)
-            mat_id = await get_or_create_material(c, mat_name)
-            upsert = await c.fetchrow(
-                """INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at)
-                   VALUES ($1, $2, NOW()) ON CONFLICT (material_id)
-                   DO UPDATE SET total_quantity_kg = raw_material_totals.total_quantity_kg + $2, updated_at = NOW()
-                   RETURNING total_quantity_kg, updated_at""",
-                mat_id, qty)
-            batch = await c.fetchrow(
-                """INSERT INTO raw_material_batches
-                       (material_id, material_name, quantity_kg, created_by, note, thickness, created_at,
-                        business_date, shift)
-                   VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()), $8, $9) RETURNING *""",
-                mat_id, mat_name, qty, user["id"], note or None, thickness, entry_ts,
-                business_date, shift)
-            opening = decimal_kg(upsert["total_quantity_kg"]) - decimal_kg(qty)
-            impact_receipt, material_type_id = await warehouse_stock_receipt(
-                c, mat_id, opening, upsert["total_quantity_kg"])
-            activity = await record_stock_activity(
-                c, action="CREATE", source_domain="RAW_INPUT", source_id=batch["id"],
-                correlation_id=uuid4(), material_id=mat_id,
-                material_type_id=material_type_id, quantity_kg=qty,
-                balances=impact_receipt, reason=note, created_by=user["id"],
-                business_date=business_date, shift=shift, to_location="WAREHOUSE")
-            tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "raw_add", "mat": mat_name})
-            if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
-                raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
-    await broadcast("raw_material")
-    return {"message": "Raw material added successfully",
-            "data": {"id": batch["id"], "material_name": mat_name, "total_quantity_kg": upsert["total_quantity_kg"]},
-            "impact_receipt": impact_receipt, "activity_id": activity["id"],
-            "tolerance": tol}
-
-
-@app.post("/raw-material/adjust")
-async def adjust_raw_material(request: Request, user=Depends(get_user)):
-    require_owner_or_admin(user)
-    body = await request.json()
-    material_name, operation, quantity_kg, reason = normalize_stock_adjustment(body)
-    business_date, shift, entry_ts = parse_business_context(body)
-    created_by = user_id_from_token(user)
-    if not created_by:
-        raise HTTPException(401, "User not authenticated properly")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            material = await c.fetchrow(
-                """SELECT id, name FROM materials_master
-                   WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))
-                   ORDER BY id LIMIT 1 FOR SHARE""",
-                material_name,
-            )
-            if not material:
-                raise HTTPException(404, "Material not found")
-            result = await apply_manual_stock_adjustment(
-                c, material["id"], operation, quantity_kg, reason, created_by, entry_ts,
-            )
-            impact_receipt, material_type_id = await warehouse_stock_receipt(
-                c, material["id"], result["opening_quantity_kg"], result["closing_quantity_kg"])
-            activity = await record_stock_activity(
-                c, action="CREATE", source_domain="MANUAL_ADJUSTMENT",
-                source_id=result.get("adjustment_id"),
-                correlation_id=uuid4(), material_id=material["id"],
-                material_type_id=material_type_id, quantity_kg=quantity_kg,
-                balances=impact_receipt, reason=reason, created_by=created_by,
-                business_date=business_date, shift=shift)
-    await broadcast("raw_material")
-    return {
-        "message": "Stock adjusted successfully",
-        "data": {
-            "material_name": material["name"],
-            "operation": operation,
-            "quantity_kg": quantity_kg,
-            **result,
-        },
-        "impact_receipt": impact_receipt,
-        "activity_id": activity["id"],
-    }
-
-
-@app.get("/raw-material/adjustments")
-async def get_raw_material_adjustments(user=Depends(get_user)):
-    require_owner_or_admin(user)
-    async with pool.acquire() as c:
-        return rows(await c.fetch(
-            """SELECT sa.id, mm.name AS material_name, sa.operation, sa.quantity_kg,
-                      sa.opening_quantity_kg, sa.closing_quantity_kg, sa.reason,
-                      sa.created_at, u.name AS created_by_name
-               FROM stock_adjustments sa
-               JOIN materials_master mm ON mm.id = sa.material_id
-               LEFT JOIN users u ON u.id = sa.created_by
-               ORDER BY sa.created_at DESC, sa.id DESC
-               LIMIT 500"""
-        ))
-
-
-# ── Floor stock ──
-
-@app.get("/floor/stock")
-async def get_floor_stock(user=Depends(get_user)):
-    async with pool.acquire() as c:
-        return rows(await c.fetch(
-            "SELECT mt.id AS material_type_id, mt.name AS material_name, fmb.total_quantity_kg FROM floor_material_balance fmb JOIN material_types mt ON mt.id = fmb.material_type_id ORDER BY mt.name"))
-
-
-@app.post("/floor/issue-from-raw")
-async def issue_from_raw(request: Request, user=Depends(get_user)):
-    body = await request.json()
-    mat_name = str(body.get("material_name") or "").strip()
-    qty = to_num(body.get("quantity_kg"))
-    if not mat_name or qty <= 0:
-        raise HTTPException(400, "Invalid material_name or quantity_kg")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            mat_id = await get_or_create_material(c, mat_name)
-            mt_id = await get_or_create_material_type(c, mat_name)
-            business_date, shift, entry_ts = parse_business_context(body)
-            await guard_closed_day(c, user, business_date)
-            movement = await c.fetchrow(
-                """INSERT INTO material_movements
-                       (material_id, material_type_id, quantity_kg, direction,
-                        movement_type, reference_id, note, created_by, created_at,
-                        business_date, shift)
-                   VALUES ($1, $2, $3, 'OUT', 'FLOOR_TRANSFER', NULL, $4, $5,
-                           COALESCE($6, NOW()), $7, $8) RETURNING *""",
-                mat_id, mt_id, qty, "Issued to Ground Floor",
-                user.get("id"), entry_ts, business_date, shift)
-            receipt = await apply_floor_transfer(
-                c, source_id=movement["id"], material_id=mat_id,
-                material_type_id=mt_id, quantity_kg=qty, created_by=user.get("id"),
-                correlation_id=uuid4(), reason=movement["note"],
-                business_date=business_date, shift=shift,
-            )
-            tol = await eval_qty_tolerance(get_expected_qty(body, qty), qty, c, {"op": "floor_issue", "mat": mat_name})
-            if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
-                raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
-    await broadcast("floor_stock")
-    return {"message": "Material issued to Ground Floor",
-            "data": {"material_name": mat_name, "quantity_kg": qty, "material_type_id": mt_id, "movement_id": movement["id"]},
-            "impact_receipt": receipt, "activity_id": receipt["activity_id"], "tolerance": tol}
-
-
-@app.get("/machines/{machine_id}/assigned-stock")
-async def get_assigned_stock(machine_id: str, user=Depends(get_user)):
-    """Stock a machine can use: its own assigned stock, then the Ground Floor pool."""
-    mid = parse_machine_id(machine_id)
-    async with pool.acquire() as c:
-        rs_ = rows(await c.fetch(
-            """SELECT $1::int AS machine_id, mt.id AS material_type_id, mt.name AS material_name,
-                      COALESCE(msa.quantity_kg, 0)::float AS quantity_kg, msa.updated_at AS assigned_at,
-                      (COALESCE(msa.quantity_kg, 0) + COALESCE(fmb.total_quantity_kg, 0))::float
-                          AS available_quantity_kg
-                 FROM material_types mt
-                 LEFT JOIN machine_stock_allocations msa
-                        ON msa.material_type_id = mt.id AND msa.machine_id = $1
-                 LEFT JOIN floor_material_balance fmb ON fmb.material_type_id = mt.id
-                WHERE COALESCE(msa.quantity_kg, 0) > 0 OR COALESCE(fmb.total_quantity_kg, 0) > 0
-                ORDER BY (COALESCE(msa.quantity_kg, 0) > 0) DESC, mt.name""",
-            mid))
-    return {"machine_id": machine_id, "assigned_materials": rs_,
-            "total_assigned_kg": sum(r_["quantity_kg"] for r_ in rs_),
-            "total_available_kg": sum(r_["available_quantity_kg"] for r_ in rs_)}
-
-
-# ── Material movements ──
-
-# ── Floor transactions ──
-
-@app.delete("/floor/transactions/{mv_id}")
-async def delete_floor_tx(mv_id: int, user=Depends(get_user)):
-    if mv_id <= 0:
-        raise HTTPException(400, "Invalid transaction id")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            cur = await c.fetchrow("SELECT mm.*, m.name AS material_name FROM material_movements mm LEFT JOIN materials_master m ON m.id = mm.material_id WHERE mm.id = $1 FOR UPDATE OF mm", mv_id)
-            if not cur:
-                raise HTTPException(404, "Transaction not found")
-            require_entry_owner(user, cur["created_by"])
-            await guard_closed_day(c, user, row_business_context(cur)[0])
-            if normalize_movement_type(cur["movement_type"]) != "FLOOR_TRANSFER":
-                raise HTTPException(400, "Only floor-transfer entries can be deleted here")
-            link = await latest_activity_link(c, "FLOOR_TRANSFER", mv_id)
-            current = {**dict(cur), **(dict(link) if link else {})}
-            if (not current.get("material_type_id")
-                    or current.get("activity_action") == "LEGACY"):
-                raise HTTPException(400, "Legacy floor entries cannot be reversed automatically")
-            receipt = await reverse_floor_transfer(c, current, user.get("id"))
-            await c.execute("DELETE FROM material_movements WHERE id = $1", mv_id)
-    await broadcast("material_movement")
-    await broadcast("floor_stock")
-    await broadcast("raw_material")
-    return {"success": True, "impact_receipt": receipt,
-            "activity_id": receipt["activity_id"]}
-
-
-# ── Production logs ──
-
-async def resolve_production_material(c, machine_id, explicit_type_id, explicit_material_id):
-    """Work out which floor material a production entry consumes.
-
-    Returns (material_type_id, material_master_id). Preference order: the type id the
-    client sent, then any id it sent (disambiguated across both id spaces), then the
-    material assigned to that machine.
-    """
-    mt_id = None
-    if explicit_type_id:
-        mt_id = await resolve_material_type_id(c, explicit_type_id, "")
-    if not mt_id and explicit_material_id:
-        mt_id = await resolve_material_type_id(c, explicit_material_id, "")
-    if not mt_id:
-        assigned = await c.fetchrow(
-            """SELECT material_type_id FROM machine_stock_allocations
-                WHERE machine_id = $1 AND quantity_kg > 0 ORDER BY updated_at DESC LIMIT 1""",
-            parse_machine_id(machine_id))
-        if assigned:
-            mt_id = assigned["material_type_id"]
-    if not mt_id:
-        return None, 0
-    return int(mt_id), await master_id_for_type(c, mt_id)
-
-
-async def insert_production_log(c, *, machine_id, material_type_id, material_master_id,
-                                size, worker_name, gross, tare, created_at, created_by,
-                                returning="*", business_date=None, shift=None,
-                                batch_id=None, batch_no=None):
-    """Insert one production log and deduct exactly its net weight from production stock.
-
-    Deduction and insert share one transaction, and the consumption movement written
-    here is the receipt the reversal path reads back.
-    """
-    net = gross - tare
-    if business_date is None or shift is None:
-        live_date, live_shift = derive_business_context()
-        business_date = business_date or live_date
-        shift = shift or live_shift
-    log_row = await c.fetchrow(
-        """INSERT INTO production_logs
-                (machine_id, material_id, material_type_id, size, worker_name,
-                 gross_weight, tare_weight, created_at, created_by,
-                 business_date, shift, batch_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()), $9, $10, $11, $12)
-            RETURNING id""",
-        machine_id, material_master_id, material_type_id, size, worker_name,
-        gross, tare, created_at, created_by, business_date, shift, batch_id)
-    await upsert_consumption_movement(c, log_row["id"], {
-        "machine_id": machine_id,
-        "material_type_id": material_type_id,
-        "net_weight": net,
-    })
-    receipt = await apply_production_consumption(
-        c,
-        log_id=log_row["id"],
-        material_id=material_master_id,
-        material_type_id=material_type_id,
-        net_kg=net,
-        machine_id=machine_id,
-        created_by=created_by,
-        correlation_id=uuid4(),
-        business_date=business_date, shift=shift, batch_no=batch_no,
-    )
-    log_row = await c.fetchrow(
-        f"""UPDATE production_logs SET machine_consumed_kg = $1 WHERE id = $2
-            RETURNING {returning}""",
-        receipt["machine_consumed_kg"], log_row["id"])
-    return log_row, receipt
-
-
-@app.post("/production/logs")
-async def create_production_log(request: Request, user=Depends(get_user)):
-    body = await request.json()
-    machines_list = body.get("machines")
-    business_date, shift, entry_ts = parse_business_context(body)
-    async with pool.acquire() as c:
-        async with c.transaction():
-            await guard_closed_day(c, user, business_date)
-            if machines_list and isinstance(machines_list, list):
-                logs = []
-                tolerances = []
-                for m in machines_list:
-                    if not m.get("machine_id"):
-                        continue
-                    gw = to_num(m.get("gross_weight"))
-                    tw = to_num(m.get("tare_weight"))
-                    if gw < tw:
-                        raise HTTPException(400, f"Machine {m['machine_id']}: Gross weight must be >= tare weight")
-                    net = gw - tw
-                    if net <= 0:
-                        raise HTTPException(400, f"Machine {m['machine_id']}: Net weight must be > 0")
-                    machine_no = parse_machine_id(m["machine_id"])
-                    mt_id, master_id = await resolve_production_material(
-                        c, machine_no, m.get("material_type_id"), m.get("material_id"))
-                    if not mt_id or master_id <= 0:
-                        raise HTTPException(
-                            400, f"Machine {m['machine_id']}: no material selected or assigned")
-                    log_row, receipt = await insert_production_log(
-                        c,
-                        machine_id=machine_no, material_type_id=mt_id,
-                        material_master_id=master_id, size=m.get("size"),
-                        worker_name=(f"User {body.get('entered_by')}" if body.get("entered_by")
-                                     else m.get("worker_name")),
-                        gross=gw, tare=tw,
-                        created_at=entry_ts,
-                        created_by=user.get("id"),
-                        business_date=business_date, shift=shift,
-                        returning=("id, machine_id, material_id, size, worker_name, "
-                                   "gross_weight, tare_weight, created_at"))
-                    tol = await eval_qty_tolerance(get_expected_qty(m, net, ["expected_net_weight_kg"]), net, c, {"op": "batch_log", "machine": m["machine_id"]})
-                    if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
-                        raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
-                    logs.append({**dict(log_row), "tolerance": tol,
-                                 "stock_receipt": receipt,
-                                 "activity_id": receipt["activity_id"]})
-                    tolerances.append(tol)
-                # Every entry was skipped for a missing machine_id. Reporting 200 here
-                # let the floor believe a shift was logged when nothing was written.
-                if not logs:
-                    raise HTTPException(400, "No production entries logged: every machine entry was missing machine_id")
-                batch_id = f"BATCH_{int(time.time() * 1000)}"
-                result = {"message": f"Batch logged: {len(logs)} production entries", "batch_id": batch_id,
-                          "inserted": len(logs), "data": logs, "tolerance": tolerances}
-            else:
-                machine_id = body.get("machine_id")
-                if not machine_id:
-                    raise HTTPException(400, "machine_id is required")
-                machine_id = parse_machine_id(machine_id)
-                gw = to_num(body.get("gross_weight"))
-                tw = to_num(body.get("tare_weight"))
-                if gw < tw:
-                    raise HTTPException(400, "Gross weight must be >= tare weight")
-                net = gw - tw
-                if net <= 0:
-                    raise HTTPException(400, "Net weight must be greater than zero")
-                mt_id, master_id = await resolve_production_material(
-                    c, machine_id, body.get("material_type_id"), body.get("material_id"))
-                if not mt_id or master_id <= 0:
-                    raise HTTPException(400, "No material selected or assigned to this machine")
-                log_row, receipt = await insert_production_log(
-                    c,
-                    machine_id=machine_id, material_type_id=mt_id, material_master_id=master_id,
-                    size=body.get("size"), worker_name=body.get("worker_name"),
-                    gross=gw, tare=tw, created_at=entry_ts,
-                    created_by=user.get("id"),
-                    business_date=business_date, shift=shift)
-                tol = await eval_qty_tolerance(get_expected_qty(body, net, ["expected_net_weight_kg"]), net, c, {"op": "production_log", "machine": machine_id})
-                if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
-                    raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
-                if body.get("worker_name"):
-                    await c.execute("INSERT INTO machine_state (machine_id, current_worker) VALUES ($1, $2) ON CONFLICT (machine_id) DO UPDATE SET current_worker = EXCLUDED.current_worker, updated_at = NOW()", machine_id, body["worker_name"])
-                result = {"message": "Production logged and pooled floor stock deducted",
-                          "data": dict(log_row), "tolerance": tol,
-                          "stock_receipt": receipt,
-                          "activity_id": receipt["activity_id"]}
-    # Broadcast only once the transaction has committed, so listeners never refetch
-    # state that is about to be rolled back.
-    await broadcast("production")
-    return result
-
-
-@app.get("/production/logs")
-async def get_production_logs(machine_id: str = None, date_from: str = None, date_to: str = None, limit: str = "500", user=Depends(get_user)):
-    async with pool.acquire() as c:
-        conds, vals = [], []
-        if machine_id:
-            vals.append(parse_machine_id(machine_id))
-            conds.append(f"pl.machine_id = ${len(vals)}")
-        if date_from:
-            vals.append(parse_date(date_from))
-            conds.append(f"pl.created_at >= ${len(vals)}::date")
-        if date_to:
-            vals.append(parse_date(date_to))
-            conds.append(f"pl.created_at < (${len(vals)}::date + INTERVAL '1 day')")
-        parsed_limit = min(max(int(limit) if limit.isdigit() else 500, 1), 1000)
-        vals.append(parsed_limit)
-        where = f"WHERE {' AND '.join(conds)}" if conds else ""
-        rs_ = await c.fetch(
-            f"""SELECT pl.id, pl.machine_id, pl.material_id, pl.material_type_id, pl.size,
-                       pl.worker_name, pl.gross_weight, pl.tare_weight, pl.created_at,
-                       pl.created_by, pl.batch_id, pb.batch_no, pl.machine_consumed_kg,
-                       {sql_business_date("pl.business_date", "pl.created_at")} AS business_date,
-                       {sql_shift("pl.shift", "pl.created_at")} AS shift,
-                       m.name AS machine_name,
-                       COALESCE(mt.name, mat.name) AS material_name,
-                       (sal.action = 'LEGACY' OR sal.id IS NULL) AS is_legacy
-                  FROM production_logs pl
-                  LEFT JOIN machines m ON m.id = pl.machine_id
-                  LEFT JOIN production_batches pb ON pb.id = pl.batch_id
-                  LEFT JOIN material_types mt ON mt.id = pl.material_type_id
-                  LEFT JOIN materials_master mat ON mat.id = pl.material_id
-                  LEFT JOIN LATERAL (
-                      SELECT id, action FROM stock_activity_log
-                       WHERE source_domain = 'PRODUCTION' AND source_id = pl.id
-                       ORDER BY id DESC LIMIT 1
-                  ) sal ON TRUE
-                {where} ORDER BY pl.created_at DESC LIMIT ${len(vals)}""",
-            *vals)
-        return [{**dict(r_), "net_weight": to_num(r_["gross_weight"]) - to_num(r_["tare_weight"])} for r_ in rs_]
-
-
-@app.put("/production/logs/{log_id}")
-async def update_production_log(log_id: int, request: Request, user=Depends(get_user)):
-    body = await request.json()
-    machine_id_val = int(to_num(body.get("machine_id")))
-    gw = to_num(body.get("gross_weight"))
-    tw = to_num(body.get("tare_weight"))
-    if log_id <= 0:
-        raise HTTPException(400, "Invalid production log id")
-    if machine_id_val <= 0:
-        raise HTTPException(400, "machine_id is required")
-    if gw <= 0 or tw < 0 or gw < tw:
-        raise HTTPException(400, "Gross weight must be greater than or equal to tare weight")
-    net = gw - tw
-    if net <= 0:
-        raise HTTPException(400, "Net weight must be greater than zero")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            cur = await c.fetchrow(
-                """SELECT pl.*, COALESCE(mt.name, mat.name) AS material_name
-                     FROM production_logs pl
-                     LEFT JOIN material_types mt ON mt.id = pl.material_type_id
-                     LEFT JOIN materials_master mat ON mat.id = pl.material_id
-                    WHERE pl.id = $1 FOR UPDATE OF pl""",
-                log_id)
-            if not cur:
-                raise HTTPException(404, "Production log not found")
-            require_entry_owner(user, cur["created_by"])
-            await guard_closed_day(c, user, row_business_context(cur)[0])
-            movement = await consumption_movement_for_log(c, log_id)
-            link = await latest_activity_link(c, "PRODUCTION", log_id)
-            if (not movement or not movement["material_type_id"]
-                    or (link and link["activity_action"] == "LEGACY")):
-                raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
-            recorded = {
-                **dict(movement),
-                "id": log_id,
-                "machine_id": cur["machine_id"],
-                "machine_consumed_kg": cur["machine_consumed_kg"],
-                "business_date": row_business_context(cur)[0],
-                "shift": row_business_context(cur)[1],
-                **(dict(link) if link else {}),
-            }
-            next_mt_id = await resolve_material_type_id(
-                c, body.get("material_type_id") or body.get("material_id"), cur["material_name"])
-            if not next_mt_id:
-                raise HTTPException(400, "Unable to resolve material for this production log")
-            next_master_id = await master_id_for_type(c, next_mt_id)
-            if next_master_id <= 0:
-                raise HTTPException(400, "Unable to resolve material for this production log")
-            # Give back exactly what the old ledger movement took, then consume
-            # the edited quantity. Both legs share this transaction.
-            receipt = await update_production_consumption(
-                c,
-                recorded,
-                new_material_id=next_master_id,
-                new_material_type_id=next_mt_id,
-                new_net_kg=net,
-                new_machine_id=machine_id_val,
-                created_by=user.get("id"),
-            )
-            updated = await c.fetchrow(
-                """UPDATE production_logs
-                      SET machine_id=$1, material_id=$2, material_type_id=$3, size=$4,
-                          worker_name=$5, gross_weight=$6, tare_weight=$7,
-                          machine_consumed_kg=$9
-                    WHERE id=$8 RETURNING *""",
-                machine_id_val, next_master_id, next_mt_id, body.get("size"),
-                body.get("worker_name"), gw, tw, log_id, receipt["machine_consumed_kg"])
-            await upsert_consumption_movement(c, log_id, {
-                "machine_id": machine_id_val,
-                "material_type_id": next_mt_id,
-                "net_weight": net,
-            })
-            tol = await eval_qty_tolerance(get_expected_qty(body, net, ["expected_net_weight_kg"]), net, c, {"op": "log_update", "log_id": log_id})
-            if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
-                raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
-    await broadcast("production")
-    return {"success": True, "data": dict(updated), "tolerance": tol,
-            "stock_receipt": receipt, "activity_id": receipt["activity_id"]}
-
-
-@app.delete("/production/logs/{log_id}")
-async def delete_production_log(log_id: int, user=Depends(get_user)):
-    if log_id <= 0:
-        raise HTTPException(400, "Invalid production log id")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            cur = await c.fetchrow("SELECT pl.*, mat.name AS material_name FROM production_logs pl LEFT JOIN materials_master mat ON mat.id = pl.material_id WHERE pl.id = $1 FOR UPDATE OF pl", log_id)
-            if not cur:
-                raise HTTPException(404, "Production log not found")
-            require_entry_owner(user, cur["created_by"])
-            await guard_closed_day(c, user, row_business_context(cur)[0])
-            movement = await consumption_movement_for_log(c, log_id)
-            link = await latest_activity_link(c, "PRODUCTION", log_id)
-            if (not movement or not movement["material_type_id"]
-                    or (link and link["activity_action"] == "LEGACY")):
-                raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
-            recorded = {
-                **dict(movement),
-                "id": log_id,
-                "machine_id": cur["machine_id"],
-                "machine_consumed_kg": cur["machine_consumed_kg"],
-                "business_date": row_business_context(cur)[0],
-                "shift": row_business_context(cur)[1],
-                **(dict(link) if link else {}),
-            }
-            receipt = await reverse_production_consumption(c, recorded, user.get("id"))
-            await c.execute("DELETE FROM material_movements WHERE movement_type = 'CONSUMPTION' AND reference_id = $1", log_id)
-            await c.execute("DELETE FROM production_logs WHERE id = $1", log_id)
-    await broadcast("production")
-    return {"success": True, "stock_receipt": receipt,
-            "activity_id": receipt["activity_id"]}
-
-
-@app.post("/production/logs/bulk-delete")
-async def bulk_delete_production_logs(request: Request, user=Depends(get_user)):
-    body = await request.json()
-    ids = [int(v) for v in (body.get("ids") or []) if str(v).lstrip("-").isdigit() and int(v) > 0]
-    if not ids:
-        raise HTTPException(400, "ids array is required")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            rs_ = await c.fetch("SELECT pl.*, mat.name AS material_name FROM production_logs pl LEFT JOIN materials_master mat ON mat.id = pl.material_id WHERE pl.id = ANY($1::int[]) ORDER BY pl.id FOR UPDATE OF pl", ids)
-            if len(rs_) != len(ids):
-                raise HTTPException(404, "One or more production logs were not found")
-            for r_ in rs_:
-                require_entry_owner(user, r_["created_by"])
-                await guard_closed_day(c, user, row_business_context(r_)[0])
-            receipts = []
-            for r_ in rs_:
-                movement = await consumption_movement_for_log(c, r_["id"])
-                link = await latest_activity_link(c, "PRODUCTION", r_["id"])
-                if (not movement or not movement["material_type_id"]
-                        or (link and link["activity_action"] == "LEGACY")):
-                    raise HTTPException(400, "Legacy production entries cannot be reversed automatically")
-                recorded = {
-                    **dict(movement),
-                    "id": r_["id"],
-                    "machine_id": r_["machine_id"],
-                    "machine_consumed_kg": r_["machine_consumed_kg"],
-                    "business_date": row_business_context(r_)[0],
-                    "shift": row_business_context(r_)[1],
-                    **(dict(link) if link else {}),
-                }
-                receipts.append(await reverse_production_consumption(
-                    c, recorded, user.get("id")))
-            await c.execute("DELETE FROM material_movements WHERE movement_type = 'CONSUMPTION' AND reference_id = ANY($1::int[])", ids)
-            await c.execute("DELETE FROM production_logs WHERE id = ANY($1::int[])", ids)
-    await broadcast("production")
-    return {"success": True, "deleted": len(ids), "stock_receipts": receipts}
-
-
-# ── IPMS: locations, transfers, machine stock, batches, returns, day ledger ──
 
 def kg_out(value) -> float:
     return round(float(value or 0), 3)
 
 
-async def resolve_stock_material(c, body: dict) -> tuple[int, int, str]:
-    """(materials_master id, material_types id, name) for a stock operation.
-
-    Accepts material_type_id, material_id or material_name. A material that has
-    never been in the Warehouse gets a zero Warehouse row so every location for
-    it can be locked in the same order as everything else.
-    """
-    body = body or {}
-    name = str(body.get("material_name") or "").strip()
-    if body.get("material_type_id") not in (None, ""):
-        r_ = await c.fetchrow("SELECT name FROM material_types WHERE id = $1", int(to_num(body["material_type_id"])))
-        if not r_:
-            raise HTTPException(404, "Material not found")
-        name = r_["name"]
-    elif body.get("material_id") not in (None, ""):
-        r_ = await c.fetchrow("SELECT name FROM materials_master WHERE id = $1", int(to_num(body["material_id"])))
-        if not r_:
-            raise HTTPException(404, "Material not found")
-        name = r_["name"]
-    if not name:
-        raise HTTPException(400, "Material is required")
-    master = await c.fetchrow(
-        "SELECT id, name FROM materials_master WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) ORDER BY id LIMIT 1",
-        name)
-    if not master:
-        raise HTTPException(404, f"Material '{name}' was not found")
-    type_id = await get_or_create_material_type(c, master["name"])
-    await c.execute(
-        """INSERT INTO raw_material_totals (material_id, total_quantity_kg, updated_at)
-           VALUES ($1, 0, NOW()) ON CONFLICT (material_id) DO NOTHING""",
-        master["id"])
-    return int(master["id"]), int(type_id), master["name"]
+def floatify(value):
+    if isinstance(value, dict):
+        return {k: floatify(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [floatify(v) for v in value]
+    if isinstance(value, Decimal):
+        return kg_out(value)
+    return value
 
 
-def machine_floor_sql(alias: str = "") -> str:
-    prefix = f"{alias}." if alias else ""
-    return (f"COALESCE({prefix}floor, CASE WHEN {prefix}type = 'cutting' THEN 'FIRST_FLOOR' "
-            "ELSE 'GROUND_FLOOR' END)")
+def parse_kg(value, field: str, *, allow_zero: bool = False) -> Decimal:
+    try:
+        q = Decimal(str(value))
+    except Exception as exc:
+        raise HTTPException(400, f"{field} must be a number") from exc
+    if not q.is_finite() or q < 0 or (q == 0 and not allow_zero):
+        raise HTTPException(400, f"{field} must be greater than zero")
+    return q.quantize(QTY_EPS)
 
 
-MACHINE_FLOOR_SQL = machine_floor_sql()
+async def get_thresholds(c) -> tuple[Decimal, Decimal]:
+    cfg = {r["key"]: r["value"] for r in await c.fetch(
+        "SELECT key, value FROM system_config WHERE key IN ('reorder_below_kg', 'optimal_above_kg')")}
+    return (decimal_kg(cfg.get("reorder_below_kg", 10000)), decimal_kg(cfg.get("optimal_above_kg", 20000)))
 
 
-async def fetch_machine(c, machine_id) -> dict:
-    mid = parse_machine_id(machine_id)
-    r_ = await c.fetchrow(
-        f"SELECT id, name, type, {MACHINE_FLOOR_SQL} AS floor FROM machines WHERE id = $1", mid)
-    if not r_:
-        raise HTTPException(404, f"Machine {mid} was not found")
-    return dict(r_)
-
-
-async def next_document_no(c, prefix: str, table: str, column: str,
-                           business_date: dt_date, shift: str | None = None) -> str:
-    """Sequential, human-readable document number, e.g. PB-20261015-AM-001."""
+async def next_document_no(c, prefix: str, table: str, business_date: dt_date) -> str:
+    """Sequential human-readable number per day, e.g. EX-20261111-004."""
     await c.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"vp-docno-{prefix}")
-    stem = f"{prefix}-{business_date:%Y%m%d}" + (f"-{shift}" if shift else "")
-    count = await c.fetchval(f"SELECT COUNT(*) FROM {table} WHERE {column} LIKE $1", stem + "-%")
+    stem = f"{prefix}-{business_date:%Y%m%d}"
+    count = await c.fetchval(f"SELECT COUNT(*) FROM {table} WHERE doc_no LIKE $1", stem + "-%")
     return f"{stem}-{int(count) + 1:03d}"
 
 
 async def guard_closed_day(c, user: dict, business_date) -> None:
-    """A closed day is signed off: only an owner may still post into it.
-
-    Workers get a clear refusal instead of silently changing figures the owner
-    has already closed; owner corrections show up as variance on the closing.
-    """
+    """A closed day is signed off: only an owner may still post into it."""
     if business_date is None or is_owner_or_admin(user):
         return
-    # Shared with every other writer, exclusive for the day close, so a close
-    # cannot slip in between this check and the write that follows it.
     await c.execute("SELECT pg_advisory_xact_lock_shared(hashtext('vp-day-close'))")
     if await c.fetchval("SELECT 1 FROM stock_day_closings WHERE business_date = $1", business_date):
         raise HTTPException(403, (
@@ -2440,1244 +700,1034 @@ async def guard_closed_day(c, user: dict, business_date) -> None:
             "entries for a closed day."))
 
 
-def validate_transfer_route(from_loc: str, from_machine: dict | None,
-                            to_loc: str, to_machine: dict | None):
-    if from_loc not in STOCK_LOCATIONS or to_loc not in STOCK_LOCATIONS:
-        raise HTTPException(400, "Locations must be WAREHOUSE, GROUND_FLOOR, FIRST_FLOOR or MACHINE")
-    if from_loc == to_loc and from_loc != "MACHINE":
-        raise HTTPException(400, "Choose two different locations")
-    if from_loc == "MACHINE" and to_loc == "MACHINE":
-        raise HTTPException(400, "Release machine stock to its floor before assigning it to another machine")
-    if "WAREHOUSE" in (from_loc, to_loc) and "MACHINE" in (from_loc, to_loc):
-        raise HTTPException(400, "Machine stock moves through the machine's floor, not straight from the Warehouse")
-    if to_loc == "MACHINE" and to_machine["floor"] != from_loc:
-        raise HTTPException(400, (
-            f"{to_machine['name']} is on the {LOCATION_LABELS[to_machine['floor']]}; "
-            f"assign it stock from the {LOCATION_LABELS[to_machine['floor']]}"))
-    if from_loc == "MACHINE" and from_machine["floor"] != to_loc:
-        raise HTTPException(400, (
-            f"{from_machine['name']} is on the {LOCATION_LABELS[from_machine['floor']]}; "
-            f"release its stock back to the {LOCATION_LABELS[from_machine['floor']]}"))
+async def item_label(c, item_kind: str, item_id: int) -> str:
+    if item_kind == "MATERIAL":
+        return await c.fetchval("SELECT name FROM materials WHERE id = $1", item_id) or f"Material {item_id}"
+    r_ = await c.fetchrow("SELECT kind, code FROM products WHERE id = $1", item_id)
+    if not r_:
+        return f"Product {item_id}"
+    return f"{'Roll' if r_['kind'] == 'ROLL' else 'Finished'} {r_['code']}"
 
 
-def transfer_deltas(from_loc, from_machine_id, to_loc, to_machine_id, quantity) -> dict:
-    deltas = location_deltas(from_loc, -quantity, from_machine_id)
-    deltas.update(location_deltas(to_loc, quantity, to_machine_id))
-    return deltas
+async def post_ledger(c, *, doc_type: str, doc_id: int, doc_no: str | None, business_date: dt_date,
+                      shift: str, lines, created_by, note: str | None = None,
+                      is_reversal: bool = False, occurred_at: datetime | None = None) -> list[dict]:
+    """Apply stock lines atomically and append them to the ledger.
+
+    Every balance row is locked in one stable order before anything is checked, so
+    concurrent writers serialise; any line that would go negative aborts the whole
+    document and nothing is written.
+    """
+    require_tx(c)
+    merged = merge_lines(lines)
+    if not merged:
+        return []
+    product_kinds = {}
+    product_ids = [k[1] for k in merged if k[0] == "PRODUCT"]
+    if product_ids:
+        product_kinds = {r_["id"]: r_["kind"] for r_ in await c.fetch(
+            "SELECT id, kind FROM products WHERE id = ANY($1::int[])", product_ids)}
+    for item_kind, item_id, location in merged:
+        if not location_accepts(item_kind, product_kinds.get(item_id), location):
+            raise HTTPException(400, f"{await item_label(c, item_kind, item_id)} cannot be stored in "
+                                     f"{LOCATION_LABELS.get(location, location)}")
+    keys = sorted(merged)
+    for item_kind, item_id, location in keys:
+        await c.execute(
+            """INSERT INTO stock_balances (item_kind, item_id, location, qty_kg)
+               VALUES ($1, $2, $3, 0) ON CONFLICT DO NOTHING""", item_kind, item_id, location)
+    opening = {}
+    for item_kind, item_id, location in keys:
+        opening[(item_kind, item_id, location)] = decimal_kg(await c.fetchval(
+            """SELECT qty_kg FROM stock_balances
+                WHERE item_kind = $1 AND item_id = $2 AND location = $3 FOR UPDATE""",
+            item_kind, item_id, location))
+    for key in keys:
+        if opening[key] + merged[key] < 0:
+            item_kind, item_id, location = key
+            raise HTTPException(400, (
+                f"Not enough {await item_label(c, item_kind, item_id)} in "
+                f"{LOCATION_LABELS.get(location, location)}: needs {float(-merged[key]):,.3f} kg, "
+                f"available {float(opening[key]):,.3f} kg"))
+    receipt = []
+    for key in keys:
+        item_kind, item_id, location = key
+        closing = opening[key] + merged[key]
+        await c.execute(
+            """UPDATE stock_balances SET qty_kg = $4, updated_at = NOW()
+                WHERE item_kind = $1 AND item_id = $2 AND location = $3""",
+            item_kind, item_id, location, closing)
+        await c.execute(
+            """INSERT INTO stock_ledger (occurred_at, business_date, shift, doc_type, doc_id, doc_no,
+                       item_kind, item_id, location, delta_kg, balance_after_kg, is_reversal, note, created_by)
+               VALUES (COALESCE($1, NOW()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)""",
+            occurred_at, business_date, shift, doc_type, doc_id, doc_no, item_kind, item_id, location,
+            merged[key], closing, is_reversal, note, created_by)
+        receipt.append({"item_kind": item_kind, "item_id": item_id, "item_name": await item_label(c, item_kind, item_id),
+                        "location": location, "location_label": LOCATION_LABELS[location],
+                        "opening_kg": kg_out(opening[key]), "delta_kg": kg_out(merged[key]),
+                        "closing_kg": kg_out(closing)})
+    return receipt
 
 
-def describe_location(location: str, machine_name: str | None = None) -> str:
-    if location == "MACHINE":
-        return machine_name or "Machine"
-    return LOCATION_LABELS.get(location, location)
+async def reverse_document(c, *, doc_type: str, doc_id: int, user: dict) -> list[dict]:
+    """Post the exact opposite of a document's ledger rows, filed on its own day and shift."""
+    table, _ = DOC_TABLES.get(doc_type, ("fulfillment_records", None))
+    if doc_type == "DISPATCH":
+        doc = await c.fetchrow("SELECT * FROM fulfillment_records WHERE id = $1 FOR UPDATE", doc_id)
+    else:
+        doc = await c.fetchrow(f"SELECT * FROM {table} WHERE id = $1 FOR UPDATE", doc_id)
+    if not doc:
+        raise HTTPException(404, "Entry not found")
+    require_entry_owner(user, doc["created_by"])
+    if doc_type != "DISPATCH" and doc["status"] != "ACTIVE":
+        raise HTTPException(400, f"{doc['doc_no']} has already been reversed")
+    await guard_closed_day(c, user, doc["business_date"])
+    posted = await c.fetch(
+        """SELECT item_kind, item_id, location, SUM(delta_kg) AS delta, MIN(business_date) AS bd,
+                  MIN(shift) AS shift, MIN(doc_no) AS doc_no
+             FROM stock_ledger WHERE doc_type = $1 AND doc_id = $2
+            GROUP BY 1, 2, 3""", doc_type, doc_id)
+    lines = [(p["item_kind"], p["item_id"], p["location"], -decimal_kg(p["delta"])) for p in posted]
+    if not posted:
+        return []
+    try:
+        receipt = await post_ledger(
+            c, doc_type=doc_type, doc_id=doc_id, doc_no=posted[0]["doc_no"],
+            business_date=posted[0]["bd"], shift=posted[0]["shift"], lines=lines,
+            created_by=user_id_from_token(user), note="Reversal", is_reversal=True)
+    except HTTPException as exc:
+        raise HTTPException(400, f"Cannot reverse this entry — its stock has already moved on. {exc.detail}") from exc
+    if doc_type != "DISPATCH":
+        await c.execute(
+            f"UPDATE {table} SET status = 'REVERSED', reversed_by = $1, reversed_at = NOW() WHERE id = $2",
+            user_id_from_token(user), doc_id)
+    return receipt
+
+
+# ── Masters: materials, products, machines ──
+
+async def resolve_material(c, body: dict, *, create: bool = False) -> dict:
+    mid = body.get("material_id")
+    if mid not in (None, ""):
+        r_ = await c.fetchrow("SELECT * FROM materials WHERE id = $1", int(to_num(mid)))
+        if not r_:
+            raise HTTPException(404, "Material not found")
+        return dict(r_)
+    name = normalize_material_name(body.get("material_name"))
+    if not name:
+        raise HTTPException(400, "Choose a material")
+    r_ = await c.fetchrow("SELECT * FROM materials WHERE LOWER(BTRIM(name)) = LOWER($1)", name)
+    if r_:
+        return dict(r_)
+    if not create:
+        raise HTTPException(404, f"Material '{name}' not found — add it under Raw Material first")
+    brand = normalize_material_name(body.get("brand")).upper()
+    return dict(await c.fetchrow(
+        "INSERT INTO materials (name, brand) VALUES ($1, $2) RETURNING *", name, brand))
+
+
+async def regrind_material_id(c) -> int:
+    r_ = await c.fetchrow("SELECT id FROM materials WHERE LOWER(BTRIM(name)) = LOWER($1)", REGRIND_MATERIAL)
+    if r_:
+        return r_["id"]
+    return await c.fetchval(
+        "INSERT INTO materials (name, brand) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
+        REGRIND_MATERIAL, REGRIND_BRAND) or await c.fetchval(
+        "SELECT id FROM materials WHERE LOWER(BTRIM(name)) = LOWER($1)", REGRIND_MATERIAL)
+
+
+async def get_or_create_product(c, kind: str, code_or_id, *, create: bool = True) -> dict:
+    if kind not in PRODUCT_STORE:
+        raise HTTPException(400, "Product kind must be ROLL or FINISHED")
+    code =normalize_product_code(code_or_id)
+    if not code:
+        raise HTTPException(400, "Size is required")
+    r_ = await c.fetchrow("SELECT * FROM products WHERE kind = $1 AND code = $2", kind, code)
+    if r_:
+        return dict(r_)
+    if not create:
+        raise HTTPException(404, f"No {kind.lower()} stock item '{code}'")
+    return dict(await c.fetchrow(
+        """INSERT INTO products (kind, code) VALUES ($1, $2)
+           ON CONFLICT (kind, code) DO UPDATE SET code = EXCLUDED.code RETURNING *""", kind, code))
+
+
+async def product_by_id(c, product_id, kind: str | None = None) -> dict:
+    r_ = await c.fetchrow("SELECT * FROM products WHERE id = $1", int(to_num(product_id)))
+    if not r_ or (kind and r_["kind"] != kind):
+        raise HTTPException(404, "Stock item not found")
+    return dict(r_)
+
+
+async def fetch_machine(c, machine_id) -> dict:
+    r_ = await c.fetchrow("SELECT id, name, type FROM machines WHERE id = $1", parse_machine_id(machine_id))
+    if not r_:
+        raise HTTPException(404, "Machine not found")
+    return dict(r_)
+
+
+async def balances_map(c) -> dict:
+    return {(r_["item_kind"], r_["item_id"], r_["location"]): decimal_kg(r_["qty_kg"])
+            for r_ in await c.fetch("SELECT item_kind, item_id, location, qty_kg FROM stock_balances")}
+
+
+async def material_rows(c) -> list[dict]:
+    low, high = await get_thresholds(c)
+    bal = await balances_map(c)
+    out = []
+    for m in await c.fetch("SELECT * FROM materials ORDER BY LOWER(name)"):
+        gf = bal.get(("MATERIAL", m["id"], "GROUND_FLOOR"), Decimal("0"))
+        ff = bal.get(("MATERIAL", m["id"], "FIRST_FLOOR"), Decimal("0"))
+        m_low = m["reorder_below_kg"] if m["reorder_below_kg"] is not None else low
+        m_high = m["optimal_above_kg"] if m["optimal_above_kg"] is not None else high
+        out.append({
+            "id": m["id"], "name": m["name"], "brand": m["brand"], "active": m["active"],
+            "reorder_below_kg": kg_out(m["reorder_below_kg"]) if m["reorder_below_kg"] is not None else None,
+            "optimal_above_kg": kg_out(m["optimal_above_kg"]) if m["optimal_above_kg"] is not None else None,
+            "ground_floor_kg": kg_out(gf), "first_floor_kg": kg_out(ff), "total_kg": kg_out(gf + ff),
+            "status": stock_status(gf + ff, m_low, m_high),
+            "ground_floor_status": stock_status(gf, m_low, m_high),
+            "first_floor_status": stock_status(ff, m_low, m_high),
+        })
+    return out
+
+
+async def product_rows(c, kind: str | None = None) -> list[dict]:
+    bal = await balances_map(c)
+    q = "SELECT * FROM products" + (" WHERE kind = $1" if kind else "") + " ORDER BY kind, code"
+    out = []
+    for p in await c.fetch(q, *([kind] if kind else [])):
+        qty = bal.get(("PRODUCT", p["id"], PRODUCT_STORE[p["kind"]]), Decimal("0"))
+        out.append({"id": p["id"], "kind": p["kind"], "code": p["code"], "description": p["description"],
+                    "active": p["active"], "location": PRODUCT_STORE[p["kind"]], "quantity_kg": kg_out(qty)})
+    return out
 
 
 @app.get("/stock/meta")
 async def get_stock_meta(user=Depends(get_user)):
     live_date, live_shift = derive_business_context()
     async with pool.acquire() as c:
-        machines = rows(await c.fetch(
-            f"SELECT id, name, type, {MACHINE_FLOOR_SQL} AS floor FROM machines ORDER BY id"))
+        machines = rows(await c.fetch("SELECT id, name, type FROM machines ORDER BY type DESC, id"))
+        low, high = await get_thresholds(c)
     return {
         "locations": [{"id": k, "label": v} for k, v in LOCATION_LABELS.items()],
+        "material_locations": list(MATERIAL_LOCATIONS),
         "shifts": [
-            {"id": "AM", "label": "AM · Morning shift",
-             "starts": SHIFT_AM_START.isoformat(timespec="minutes"),
+            {"id": "AM", "label": "Day · AM", "starts": SHIFT_AM_START.isoformat(timespec="minutes"),
              "ends": SHIFT_PM_START.isoformat(timespec="minutes")},
-            {"id": "PM", "label": "PM · Night shift",
-             "starts": SHIFT_PM_START.isoformat(timespec="minutes"),
+            {"id": "PM", "label": "Night · PM", "starts": SHIFT_PM_START.isoformat(timespec="minutes"),
              "ends": SHIFT_AM_START.isoformat(timespec="minutes")},
         ],
-        # Clock stamped on a backdated entry when the operator types no time.
         "default_entry_times": {k: v.isoformat(timespec="minutes") for k, v in SHIFT_ENTRY_TIME.items()},
         "bag_kg": float(BAG_KG),
+        "thresholds": {"reorder_below_kg": kg_out(low), "optimal_above_kg": kg_out(high)},
+        "status_labels": STATUS_LABELS,
+        "regrind_material": REGRIND_MATERIAL,
         "live_business_date": live_date.isoformat(),
         "live_shift": live_shift,
         "machines": machines,
     }
 
 
-# ── Current balances across every location ──
-
-async def current_location_balances(c) -> dict:
-    """{material key: {material_id, material_type_id, material_name, WAREHOUSE, ...}}"""
-    result = await c.fetch(
-        """WITH type_master AS (
-               SELECT mt.id AS type_id, mt.name AS type_name,
-                      (SELECT mm.id FROM materials_master mm
-                        WHERE LOWER(TRIM(mm.name)) = LOWER(TRIM(mt.name))
-                        ORDER BY mm.id LIMIT 1) AS master_id
-                 FROM material_types mt)
-           SELECT 'WAREHOUSE' AS loc, rmt.material_id AS master_id, NULL::bigint AS type_id,
-                  rmt.total_quantity_kg AS qty
-             FROM raw_material_totals rmt WHERE rmt.material_id IS NOT NULL
-           UNION ALL
-           SELECT 'GROUND_FLOOR', tm.master_id, fmb.material_type_id, fmb.total_quantity_kg
-             FROM floor_material_balance fmb JOIN type_master tm ON tm.type_id = fmb.material_type_id
-           UNION ALL
-           SELECT 'FIRST_FLOOR', tm.master_id, ffb.material_type_id, ffb.total_quantity_kg
-             FROM first_floor_material_balance ffb JOIN type_master tm ON tm.type_id = ffb.material_type_id
-           UNION ALL
-           SELECT 'MACHINES', tm.master_id, msa.material_type_id, SUM(msa.quantity_kg)
-             FROM machine_stock_allocations msa JOIN type_master tm ON tm.type_id = msa.material_type_id
-            GROUP BY tm.master_id, msa.material_type_id""")
-    names = {int(r_["id"]): r_["name"] for r_ in await c.fetch("SELECT id, name FROM materials_master")}
-    type_names = {int(r_["id"]): r_["name"] for r_ in await c.fetch("SELECT id, name FROM material_types")}
-    balances: dict = {}
-    for r_ in result:
-        key = f"m{r_['master_id']}" if r_["master_id"] is not None else f"t{r_['type_id']}"
-        entry = balances.setdefault(key, {
-            "key": key,
-            "material_id": int(r_["master_id"]) if r_["master_id"] is not None else None,
-            "material_type_id": None,
-            "material_name": names.get(r_["master_id"]) if r_["master_id"] is not None
-            else type_names.get(r_["type_id"]),
-            "WAREHOUSE": Decimal("0"), "GROUND_FLOOR": Decimal("0"),
-            "FIRST_FLOOR": Decimal("0"), "MACHINES": Decimal("0"),
-        })
-        if r_["type_id"] is not None:
-            entry["material_type_id"] = int(r_["type_id"])
-        entry[r_["loc"]] += decimal_kg(r_["qty"])
-    # Fill type ids for warehouse-only materials so the UI can transfer them.
-    for entry in balances.values():
-        if entry["material_type_id"] is None and entry["material_name"]:
-            tid = next((i for i, n in type_names.items()
-                        if n.strip().lower() == entry["material_name"].strip().lower()), None)
-            entry["material_type_id"] = tid
-    return balances
-
-
-@app.get("/stock/overview")
-async def get_stock_overview(user=Depends(get_user)):
-    live_date, live_shift = derive_business_context()
-    async with pool.acquire() as c:
-        balances = await current_location_balances(c)
-        allocations = rows(await c.fetch(
-            f"""SELECT msa.machine_id, m.name AS machine_name, {machine_floor_sql('m')} AS floor,
-                       msa.material_type_id, mt.name AS material_name, msa.quantity_kg::float AS quantity_kg,
-                       msa.updated_at
-                  FROM machine_stock_allocations msa
-                  JOIN machines m ON m.id = msa.machine_id
-                  JOIN material_types mt ON mt.id = msa.material_type_id
-                 WHERE msa.quantity_kg > 0
-                 ORDER BY msa.machine_id, mt.name"""))
-        machines = rows(await c.fetch(
-            f"SELECT id, name, type, {MACHINE_FLOOR_SQL} AS floor FROM machines ORDER BY id"))
-    materials = []
-    totals = {k: Decimal("0") for k in ("WAREHOUSE", "GROUND_FLOOR", "FIRST_FLOOR", "MACHINES", "PLANT")}
-    for entry in balances.values():
-        plant = entry["WAREHOUSE"] + entry["GROUND_FLOOR"] + entry["FIRST_FLOOR"] + entry["MACHINES"]
-        if plant == 0:
-            continue
-        for k in ("WAREHOUSE", "GROUND_FLOOR", "FIRST_FLOOR", "MACHINES"):
-            totals[k] += entry[k]
-        totals["PLANT"] += plant
-        materials.append({
-            "key": entry["key"], "material_id": entry["material_id"],
-            "material_type_id": entry["material_type_id"], "material_name": entry["material_name"],
-            "warehouse_kg": kg_out(entry["WAREHOUSE"]), "ground_floor_kg": kg_out(entry["GROUND_FLOOR"]),
-            "first_floor_kg": kg_out(entry["FIRST_FLOOR"]), "machines_kg": kg_out(entry["MACHINES"]),
-            "plant_kg": kg_out(plant),
-        })
-    materials.sort(key=lambda m: (m["material_name"] or "").lower())
-    return {
-        "live_business_date": live_date.isoformat(), "live_shift": live_shift,
-        "materials": materials,
-        "totals": {k.lower() + "_kg": kg_out(v) for k, v in totals.items()},
-        "machine_allocations": allocations,
-        "machines": machines,
-    }
-
-
-# ── Stock transfers between locations ──
-
-@app.post("/stock/transfers")
-async def create_stock_transfer(request: Request, user=Depends(get_user)):
-    body = await request.json()
-    quantity = parse_quantity_kg(body)
-    from_loc = str(body.get("from_location") or "").strip().upper()
-    to_loc = str(body.get("to_location") or "").strip().upper()
-    business_date, shift, entry_ts = parse_business_context(body)
-    note = str(body.get("note") or "").strip() or None
-    async with pool.acquire() as c:
-        async with c.transaction():
-            from_machine = await fetch_machine(c, body.get("from_machine_id")) if from_loc == "MACHINE" else None
-            to_machine = await fetch_machine(c, body.get("to_machine_id")) if to_loc == "MACHINE" else None
-            validate_transfer_route(from_loc, from_machine, to_loc, to_machine)
-            await guard_closed_day(c, user, business_date)
-            material_id, type_id, material_name = await resolve_stock_material(c, body)
-            transfer_no = await next_document_no(c, "ST", "stock_transfers", "transfer_no", business_date)
-            transfer = await c.fetchrow(
-                """INSERT INTO stock_transfers
-                       (transfer_no, material_id, material_type_id, quantity_kg,
-                        from_location, from_machine_id, to_location, to_machine_id,
-                        business_date, shift, note, created_by, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13, NOW()))
-                   RETURNING *""",
-                transfer_no, material_id, type_id, quantity, from_loc,
-                from_machine["id"] if from_machine else None, to_loc,
-                to_machine["id"] if to_machine else None, business_date, shift, note,
-                user_id_from_token(user), entry_ts)
-            balances = await apply_stock_deltas(
-                c, material_id=material_id, material_type_id=type_id,
-                **transfer_deltas(from_loc, from_machine["id"] if from_machine else None,
-                                  to_loc, to_machine["id"] if to_machine else None, quantity))
-            route = (f"{describe_location(from_loc, from_machine and from_machine['name'])} → "
-                     f"{describe_location(to_loc, to_machine and to_machine['name'])}")
-            activity = await record_stock_activity(
-                c, action="CREATE", source_domain="STOCK_TRANSFER", source_id=transfer["id"],
-                correlation_id=uuid4(), material_id=material_id, material_type_id=type_id,
-                quantity_kg=quantity, balances=balances,
-                reason=f"{transfer_no} · {route}" + (f" · {note}" if note else ""),
-                created_by=user_id_from_token(user), business_date=business_date, shift=shift,
-                from_location=from_loc, to_location=to_loc)
-    await broadcast("stock")
-    await broadcast("floor_stock")
-    await broadcast("raw_material")
-    return {"success": True, "transfer": {**dict(transfer), "material_name": material_name, "route": route},
-            "impact_receipt": balances, "activity_id": activity["id"]}
-
-
-@app.get("/stock/transfers")
-async def list_stock_transfers(date_from: str = None, date_to: str = None, shift: str = None,
-                               location: str = None, limit: str = "500", user=Depends(get_user)):
-    conds, vals = [], []
-    if date_from:
-        vals.append(parse_date(date_from)); conds.append(f"st.business_date >= ${len(vals)}")
-    if date_to:
-        vals.append(parse_date(date_to)); conds.append(f"st.business_date <= ${len(vals)}")
-    if shift:
-        vals.append(normalize_shift(shift)); conds.append(f"st.shift = ${len(vals)}")
-    if location:
-        vals.append(str(location).upper())
-        conds.append(f"(st.from_location = ${len(vals)} OR st.to_location = ${len(vals)})")
-    vals.append(min(max(int(to_num(limit, 500)), 1), 1000))
-    where = f"WHERE {' AND '.join(conds)}" if conds else ""
-    async with pool.acquire() as c:
-        result = rows(await c.fetch(
-            f"""SELECT st.*, mm.name AS material_name, fm.name AS from_machine_name,
-                       tm.name AS to_machine_name, u.name AS created_by_name,
-                       ru.name AS reversed_by_name
-                  FROM stock_transfers st
-                  JOIN materials_master mm ON mm.id = st.material_id
-                  LEFT JOIN machines fm ON fm.id = st.from_machine_id
-                  LEFT JOIN machines tm ON tm.id = st.to_machine_id
-                  LEFT JOIN users u ON u.id = st.created_by
-                  LEFT JOIN users ru ON ru.id = st.reversed_by
-                {where} ORDER BY st.business_date DESC, st.shift DESC, st.id DESC LIMIT ${len(vals)}""",
-            *vals))
-    for t in result:
-        t["kind"] = "STOCK_TRANSFER"
-        t["reversible"] = t["status"] == "ACTIVE"
-        t["route"] = (f"{describe_location(t['from_location'], t['from_machine_name'])} → "
-                      f"{describe_location(t['to_location'], t['to_machine_name'])}")
-    # Warehouse → Ground Floor issues recorded before stock transfers existed
-    # ("Send to Floor"). They still reverse through /floor/transactions/{id}.
-    if not location or str(location).upper() in ("WAREHOUSE", "GROUND_FLOOR"):
-        bd = sql_business_date("mm.business_date", "mm.created_at")
-        sh = sql_shift("mm.shift", "mm.created_at")
-        fconds, fvals = ["mm.movement_type = 'FLOOR_TRANSFER'"], []
-        if date_from:
-            fvals.append(parse_date(date_from)); fconds.append(f"{bd} >= ${len(fvals)}")
-        if date_to:
-            fvals.append(parse_date(date_to)); fconds.append(f"{bd} <= ${len(fvals)}")
-        if shift:
-            fvals.append(normalize_shift(shift)); fconds.append(f"{sh} = ${len(fvals)}")
-        async with pool.acquire() as c:
-            legacy = rows(await c.fetch(
-                f"""SELECT mm.id, 'FT-' || mm.id AS transfer_no, mm.material_id, mm.material_type_id,
-                           mm.quantity_kg, 'WAREHOUSE' AS from_location, 'GROUND_FLOOR' AS to_location,
-                           {bd} AS business_date, {sh} AS shift, mm.note, mm.created_by, mm.created_at,
-                           'ACTIVE' AS status, m.name AS material_name, u.name AS created_by_name,
-                           (mm.material_type_id IS NOT NULL AND sal.id IS NOT NULL
-                            AND sal.action <> 'LEGACY') AS reversible
-                      FROM material_movements mm
-                      LEFT JOIN materials_master m ON m.id = mm.material_id
-                      LEFT JOIN users u ON u.id = mm.created_by
-                      LEFT JOIN LATERAL (
-                          SELECT id, action FROM stock_activity_log
-                           WHERE source_domain = 'FLOOR_TRANSFER' AND source_id = mm.id
-                           ORDER BY id DESC LIMIT 1) sal ON TRUE
-                     WHERE {' AND '.join(fconds)}""", *fvals))
-        for t in legacy:
-            t.update(kind="FLOOR_TRANSFER", from_machine_name=None, to_machine_name=None,
-                     route="Warehouse → Ground Floor")
-        result = sorted(result + legacy,
-                        key=lambda t: (t["business_date"], t["shift"], t["created_at"]), reverse=True)
-    return result
-
-
-@app.delete("/stock/transfers/{transfer_id}")
-async def reverse_stock_transfer(transfer_id: int, user=Depends(get_user)):
-    async with pool.acquire() as c:
-        async with c.transaction():
-            t = await c.fetchrow("SELECT * FROM stock_transfers WHERE id = $1 FOR UPDATE", transfer_id)
-            if not t:
-                raise HTTPException(404, "Transfer not found")
-            require_entry_owner(user, t["created_by"])
-            if t["status"] != "ACTIVE":
-                raise HTTPException(400, "This transfer has already been reversed")
-            await guard_closed_day(c, user, t["business_date"])
-            quantity = decimal_kg(t["quantity_kg"])
-            try:
-                balances = await apply_stock_deltas(
-                    c, material_id=t["material_id"], material_type_id=t["material_type_id"],
-                    **transfer_deltas(t["to_location"], t["to_machine_id"],
-                                      t["from_location"], t["from_machine_id"], quantity))
-            except HTTPException as exc:
-                if exc.status_code == 400 and "Insufficient" in str(exc.detail):
-                    raise HTTPException(400, (
-                        f"Cannot reverse {t['transfer_no']}: the destination no longer holds "
-                        f"{float(quantity):.3f} kg. {exc.detail}")) from exc
-                raise
-            link = await latest_activity_link(c, "STOCK_TRANSFER", transfer_id)
-            activity = await record_stock_activity(
-                c, action="REVERSE", source_domain="STOCK_TRANSFER", source_id=transfer_id,
-                correlation_id=link["correlation_id"] if link else uuid4(),
-                material_id=t["material_id"], material_type_id=t["material_type_id"],
-                quantity_kg=quantity, balances=balances,
-                reason=f"{t['transfer_no']} reversed", created_by=user_id_from_token(user),
-                reverses_activity_id=link["activity_id"] if link else None,
-                business_date=t["business_date"], shift=t["shift"],
-                from_location=t["to_location"], to_location=t["from_location"])
-            await c.execute(
-                "UPDATE stock_transfers SET status = 'REVERSED', reversed_by = $1, reversed_at = NOW() WHERE id = $2",
-                user_id_from_token(user), transfer_id)
-    await broadcast("stock")
-    await broadcast("floor_stock")
-    await broadcast("raw_material")
-    return {"success": True, "impact_receipt": balances, "activity_id": activity["id"]}
-
-
-# ── Machine stock ──
-
-@app.get("/stock/machines")
-async def get_machine_stock(user=Depends(get_user)):
-    async with pool.acquire() as c:
-        machines = rows(await c.fetch(
-            f"SELECT id, name, type, {MACHINE_FLOOR_SQL} AS floor FROM machines ORDER BY id"))
-        allocations = rows(await c.fetch(
-            """SELECT msa.machine_id, msa.material_type_id, mt.name AS material_name,
-                      msa.quantity_kg::float AS quantity_kg, msa.updated_at
-                 FROM machine_stock_allocations msa
-                 JOIN material_types mt ON mt.id = msa.material_type_id
-                WHERE msa.quantity_kg > 0 ORDER BY mt.name"""))
-        live_date, _ = derive_business_context()
-        consumed = rows(await c.fetch(
-            f"""SELECT machine_id, {sql_shift('shift', 'created_at')} AS shift,
-                       SUM(gross_weight - tare_weight)::float AS net_kg, COUNT(*)::int AS entries
-                  FROM production_logs
-                 WHERE {sql_business_date('business_date', 'created_at')} = $1
-                 GROUP BY 1, 2""", live_date))
-    for m in machines:
-        m["allocations"] = [a for a in allocations if a["machine_id"] == m["id"]]
-        m["allocated_kg"] = kg_out(sum(a["quantity_kg"] for a in m["allocations"]))
-        m["today"] = {r_["shift"]: {"net_kg": kg_out(r_["net_kg"]), "entries": r_["entries"]}
-                      for r_ in consumed if r_["machine_id"] == m["id"]}
-    return {"machines": machines, "business_date": live_date.isoformat()}
-
-
-# ── Production batches (Ground Floor stock only) ──
-
-async def build_batch_lines(c, lines: list) -> list:
-    prepared = []
-    for index, line in enumerate(lines or [], start=1):
-        if not isinstance(line, dict) or not line.get("machine_id"):
-            raise HTTPException(400, f"Line {index}: machine is required")
-        machine = await fetch_machine(c, line["machine_id"])
-        if machine["floor"] != "GROUND_FLOOR":
-            raise HTTPException(400, (
-                f"Line {index}: {machine['name']} is on the First Floor. Production batches "
-                "draw only Ground Floor stock — use Ground Floor machines."))
-        if line.get("gross_weight") in (None, "") and line.get("net_weight") not in (None, ""):
-            gross, tare = to_num(line.get("net_weight")), 0.0
-        else:
-            gross, tare = to_num(line.get("gross_weight")), to_num(line.get("tare_weight"))
-        if line.get("bags") not in (None, "") and not gross:
-            gross, tare = float(Decimal(str(line["bags"])) * BAG_KG), 0.0
-        if gross < tare:
-            raise HTTPException(400, f"Line {index}: gross weight must be at least the tare weight")
-        if gross - tare <= 0:
-            raise HTTPException(400, f"Line {index}: net weight must be greater than zero")
-        if line.get("material_name") and not (line.get("material_type_id") or line.get("material_id")):
-            master_id, type_id, _ = await resolve_stock_material(c, line)
-        else:
-            type_id, master_id = await resolve_production_material(
-                c, machine["id"], line.get("material_type_id"), line.get("material_id"))
-        if not type_id or master_id <= 0:
-            raise HTTPException(400, f"Line {index}: choose the material this machine used")
-        prepared.append({"machine": machine, "type_id": type_id, "master_id": master_id,
-                         "gross": gross, "tare": tare, "size": line.get("size"),
-                         "worker_name": line.get("worker_name")})
-    if not prepared:
-        raise HTTPException(400, "Add at least one machine line to the batch")
-    return prepared
-
-
-async def fetch_batches(c, where: str, vals: list) -> list:
-    batches = rows(await c.fetch(
-        f"""SELECT pb.*, u.name AS created_by_name, ru.name AS reversed_by_name
-              FROM production_batches pb
-              LEFT JOIN users u ON u.id = pb.created_by
-              LEFT JOIN users ru ON ru.id = pb.reversed_by
-            {where} ORDER BY pb.business_date DESC, pb.shift DESC, pb.id DESC LIMIT 300""", *vals))
-    if not batches:
-        return []
-    lines = rows(await c.fetch(
-        """SELECT pl.id, pl.batch_id, pl.machine_id, m.name AS machine_name, pl.material_type_id,
-                  COALESCE(mt.name, mat.name) AS material_name, pl.size, pl.worker_name,
-                  pl.gross_weight::float AS gross_weight, pl.tare_weight::float AS tare_weight,
-                  (pl.gross_weight - pl.tare_weight)::float AS net_weight,
-                  COALESCE(pl.machine_consumed_kg, 0)::float AS machine_consumed_kg
-             FROM production_logs pl
-             LEFT JOIN machines m ON m.id = pl.machine_id
-             LEFT JOIN material_types mt ON mt.id = pl.material_type_id
-             LEFT JOIN materials_master mat ON mat.id = pl.material_id
-            WHERE pl.batch_id = ANY($1::bigint[]) ORDER BY pl.id""",
-        [b["id"] for b in batches]))
-    for b in batches:
-        b["lines"] = [ln for ln in lines if ln["batch_id"] == b["id"]]
-        b["total_net_kg"] = kg_out(sum(ln["net_weight"] for ln in b["lines"]))
-        b["from_machine_kg"] = kg_out(sum(ln["machine_consumed_kg"] for ln in b["lines"]))
-        b["from_ground_floor_kg"] = kg_out(b["total_net_kg"] - b["from_machine_kg"])
-        b["machine_count"] = len({ln["machine_id"] for ln in b["lines"]})
-    return batches
-
-
-@app.post("/production/batches")
-async def create_production_batch(request: Request, user=Depends(get_user)):
-    body = await request.json()
-    business_date, shift, entry_ts = parse_business_context(body)
-    note = str(body.get("note") or "").strip() or None
-    created_by = user_id_from_token(user)
-    async with pool.acquire() as c:
-        async with c.transaction():
-            await guard_closed_day(c, user, business_date)
-            prepared = await build_batch_lines(c, body.get("lines"))
-            batch_no = await next_document_no(
-                c, "PB", "production_batches", "batch_no", business_date, shift)
-            batch = await c.fetchrow(
-                """INSERT INTO production_batches (batch_no, business_date, shift, note, created_by)
-                   VALUES ($1, $2, $3, $4, $5) RETURNING *""",
-                batch_no, business_date, shift, note, created_by)
-            receipts = []
-            for line in prepared:
-                log_row, receipt = await insert_production_log(
-                    c, machine_id=line["machine"]["id"], material_type_id=line["type_id"],
-                    material_master_id=line["master_id"], size=line["size"],
-                    worker_name=line["worker_name"], gross=line["gross"], tare=line["tare"],
-                    created_at=entry_ts, created_by=created_by, returning="id",
-                    business_date=business_date, shift=shift,
-                    batch_id=batch["id"], batch_no=batch_no)
-                receipts.append({"log_id": log_row["id"], **receipt})
-            result = await fetch_batches(c, "WHERE pb.id = $1", [batch["id"]])
-    await broadcast("production")
-    await broadcast("stock")
-    return {"success": True, "batch": result[0], "stock_receipts": receipts}
-
-
-@app.get("/production/batches")
-async def list_production_batches(date_from: str = None, date_to: str = None, shift: str = None,
-                                  status: str = None, user=Depends(get_user)):
-    conds, vals = [], []
-    if date_from:
-        vals.append(parse_date(date_from)); conds.append(f"pb.business_date >= ${len(vals)}")
-    if date_to:
-        vals.append(parse_date(date_to)); conds.append(f"pb.business_date <= ${len(vals)}")
-    if shift:
-        vals.append(normalize_shift(shift)); conds.append(f"pb.shift = ${len(vals)}")
-    if status:
-        vals.append(str(status).upper()); conds.append(f"pb.status = ${len(vals)}")
-    where = f"WHERE {' AND '.join(conds)}" if conds else ""
-    async with pool.acquire() as c:
-        return await fetch_batches(c, where, vals)
-
-
-@app.delete("/production/batches/{batch_id}")
-async def reverse_production_batch(batch_id: int, user=Depends(get_user)):
-    async with pool.acquire() as c:
-        async with c.transaction():
-            batch = await c.fetchrow("SELECT * FROM production_batches WHERE id = $1 FOR UPDATE", batch_id)
-            if not batch:
-                raise HTTPException(404, "Batch not found")
-            require_entry_owner(user, batch["created_by"])
-            if batch["status"] != "ACTIVE":
-                raise HTTPException(400, "This batch has already been reversed")
-            await guard_closed_day(c, user, batch["business_date"])
-            logs = await c.fetch(
-                "SELECT * FROM production_logs WHERE batch_id = $1 ORDER BY id FOR UPDATE", batch_id)
-            receipts = []
-            for log in logs:
-                movement = await consumption_movement_for_log(c, log["id"])
-                link = await latest_activity_link(c, "PRODUCTION", log["id"])
-                if not movement or not movement["material_type_id"]:
-                    raise HTTPException(400, "Batch line has no stock receipt and cannot be reversed")
-                recorded = {
-                    **dict(movement), "id": log["id"], "machine_id": log["machine_id"],
-                    "machine_consumed_kg": log["machine_consumed_kg"],
-                    "business_date": row_business_context(log)[0],
-                    "shift": row_business_context(log)[1],
-                    **(dict(link) if link else {}),
-                }
-                receipts.append(await reverse_production_consumption(c, recorded, user_id_from_token(user)))
-            ids = [log["id"] for log in logs]
-            if ids:
-                await c.execute(
-                    "DELETE FROM material_movements WHERE movement_type = 'CONSUMPTION' AND reference_id = ANY($1::bigint[])", ids)
-                await c.execute("DELETE FROM production_logs WHERE id = ANY($1::bigint[])", ids)
-            await c.execute(
-                """UPDATE production_batches
-                      SET status = 'REVERSED', reversed_by = $1, reversed_at = NOW(),
-                          note = CONCAT_WS(' · ', note, $3::text)
-                    WHERE id = $2""",
-                user_id_from_token(user), batch_id,
-                f"Reversed {len(ids)} line(s), "
-                f"{sum(float(log['gross_weight'] - log['tare_weight']) for log in logs):.3f} kg restored")
-    await broadcast("production")
-    await broadcast("stock")
-    return {"success": True, "reversed_lines": len(ids), "stock_receipts": receipts}
-
-
-# ── Stock returns ──
-
-@app.post("/stock/returns")
-async def create_stock_return(request: Request, user=Depends(get_user)):
-    # A return removes stock from the site and keeps it out of the everyday feed,
-    # so like a manual adjustment it is an owner decision.
+@app.put("/stock/thresholds")
+async def update_thresholds(request: Request, user=Depends(get_user)):
     require_owner_or_admin(user)
     body = await request.json()
+    low = parse_kg(body.get("reorder_below_kg"), "Reorder level")
+    high = parse_kg(body.get("optimal_above_kg"), "Optimal level")
+    if high < low:
+        raise HTTPException(400, "Optimal level must be at or above the reorder level")
+    async with pool.acquire() as c:
+        await c.execute(
+            """INSERT INTO system_config (key, value) VALUES ('reorder_below_kg', $1), ('optimal_above_kg', $2)
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""", low, high)
+    await broadcast("stock")
+    return {"reorder_below_kg": kg_out(low), "optimal_above_kg": kg_out(high)}
+
+
+@app.get("/materials")
+async def list_materials(user=Depends(get_user)):
+    async with pool.acquire() as c:
+        return await material_rows(c)
+
+
+@app.post("/materials")
+async def create_material(request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
+    body = await request.json()
+    name = normalize_material_name(body.get("name") or body.get("material_name"))
+    if not name:
+        raise HTTPException(400, "Material name is required")
+    async with pool.acquire() as c:
+        if await c.fetchval("SELECT 1 FROM materials WHERE LOWER(BTRIM(name)) = LOWER($1)", name):
+            raise HTTPException(400, f"'{name}' already exists")
+        low = parse_kg(body["reorder_below_kg"], "Reorder level") if body.get("reorder_below_kg") not in (None, "") else None
+        high = parse_kg(body["optimal_above_kg"], "Optimal level") if body.get("optimal_above_kg") not in (None, "") else None
+        r_ = await c.fetchrow(
+            "INSERT INTO materials (name, brand, reorder_below_kg, optimal_above_kg) VALUES ($1, $2, $3, $4) RETURNING *",
+            name, normalize_material_name(body.get("brand")).upper(), low, high)
+    await broadcast("stock")
+    return dict(r_)
+
+
+@app.put("/materials/{material_id}")
+async def update_material(material_id: int, request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
+    body = await request.json()
+    async with pool.acquire() as c:
+        cur = await c.fetchrow("SELECT * FROM materials WHERE id = $1", material_id)
+        if not cur:
+            raise HTTPException(404, "Material not found")
+        name = normalize_material_name(body.get("name", cur["name"]))
+        if not name:
+            raise HTTPException(400, "Material name is required")
+        if await c.fetchval("SELECT 1 FROM materials WHERE LOWER(BTRIM(name)) = LOWER($1) AND id <> $2", name, material_id):
+            raise HTTPException(400, f"'{name}' already exists")
+        def thr(key, label):
+            if key not in body:
+                return cur[key]
+            return parse_kg(body[key], label) if body[key] not in (None, "") else None
+        r_ = await c.fetchrow(
+            """UPDATE materials SET name = $1, brand = $2, reorder_below_kg = $3, optimal_above_kg = $4,
+                      active = $5 WHERE id = $6 RETURNING *""",
+            name, normalize_material_name(body.get("brand", cur["brand"])).upper(),
+            thr("reorder_below_kg", "Reorder level"), thr("optimal_above_kg", "Optimal level"),
+            bool(body.get("active", cur["active"])), material_id)
+    await broadcast("stock")
+    return dict(r_)
+
+
+@app.get("/products")
+async def list_products(kind: str = None, user=Depends(get_user)):
+    async with pool.acquire() as c:
+        return await product_rows(c, kind.upper() if kind else None)
+
+
+@app.post("/products")
+async def create_product(request: Request, user=Depends(get_user)):
+    body = await request.json()
+    kind = str(body.get("kind") or "").upper()
+    async with pool.acquire() as c:
+        async with c.transaction():
+            p = await get_or_create_product(c, kind, body.get("code"))
+            if body.get("description") is not None:
+                p = dict(await c.fetchrow("UPDATE products SET description = $1 WHERE id = $2 RETURNING *",
+                                          str(body["description"]).strip(), p["id"]))
+    await broadcast("stock")
+    return p
+
+
+@app.post("/machines")
+async def create_machine(request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    mtype = str(body.get("type") or "").strip().lower()
+    if not name or mtype not in ("production", "cutting"):
+        raise HTTPException(400, "Machine name and type (production or cutting) are required")
+    async with pool.acquire() as c:
+        r_ = await c.fetchrow("INSERT INTO machines (name, type) VALUES ($1, $2) RETURNING id, name, type", name, mtype)
+    await broadcast("stock")
+    return dict(r_)
+
+
+@app.put("/machines/{machine_id}")
+async def rename_machine(machine_id: int, request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Machine name is required")
+    async with pool.acquire() as c:
+        r_ = await c.fetchrow("UPDATE machines SET name = $1 WHERE id = $2 RETURNING id, name, type", name, machine_id)
+    if not r_:
+        raise HTTPException(404, "Machine not found")
+    await broadcast("stock")
+    return dict(r_)
+
+
+# ── Receipts: raw material arriving at a floor ──
+
+@app.post("/receipts")
+async def create_receipt(request: Request, user=Depends(get_user)):
+    body = await request.json()
     quantity = parse_quantity_kg(body)
-    location = str(body.get("location") or "").strip().upper()
-    if location not in STOCK_LOCATIONS:
-        raise HTTPException(400, "Choose the location the stock is returned from")
-    reason = str(body.get("reason") or "").strip()
-    if not reason:
-        raise HTTPException(400, "A reason is required for every return")
-    returned_to = str(body.get("returned_to") or "").strip() or None
+    location = str(body.get("location") or "GROUND_FLOOR").upper()
+    if location not in MATERIAL_LOCATIONS:
+        raise HTTPException(400, "Receive into the Ground Floor or the 1st Floor")
     business_date, shift, entry_ts = parse_business_context(body)
     async with pool.acquire() as c:
         async with c.transaction():
-            machine = await fetch_machine(c, body.get("machine_id")) if location == "MACHINE" else None
-            material_id, type_id, material_name = await resolve_stock_material(c, body)
-            batch_id = body.get("production_batch_id")
-            if batch_id not in (None, ""):
-                batch_id = int(to_num(batch_id))
-                if not await c.fetchval("SELECT 1 FROM production_batches WHERE id = $1", batch_id):
-                    raise HTTPException(404, "Production batch not found")
-            else:
-                batch_id = None
-            return_no = await next_document_no(c, "RT", "stock_returns", "return_no", business_date)
-            ret = await c.fetchrow(
-                """INSERT INTO stock_returns
-                       (return_no, material_id, material_type_id, quantity_kg, location, machine_id,
-                        production_batch_id, business_date, shift, returned_to, reason,
-                        created_by, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13, NOW()))
-                   RETURNING *""",
-                return_no, material_id, type_id, quantity, location,
-                machine["id"] if machine else None, batch_id, business_date, shift,
-                returned_to, reason, user_id_from_token(user), entry_ts)
-            balances = await apply_stock_deltas(
-                c, material_id=material_id, material_type_id=type_id,
-                **location_deltas(location, -quantity, machine["id"] if machine else None))
-            activity = await record_stock_activity(
-                c, action="CREATE", source_domain="STOCK_RETURN", source_id=ret["id"],
-                correlation_id=uuid4(), material_id=material_id, material_type_id=type_id,
-                quantity_kg=quantity, balances=balances,
-                reason=f"{return_no} · returned" + (f" to {returned_to}" if returned_to else "")
-                       + f" · {reason}",
-                created_by=user_id_from_token(user), business_date=business_date, shift=shift,
-                from_location=location)
+            await guard_closed_day(c, user, business_date)
+            material = await resolve_material(c, body, create=is_owner_or_admin(user))
+            doc_no = await next_document_no(c, "RC", "stock_receipts", business_date)
+            doc = await c.fetchrow(
+                """INSERT INTO stock_receipts (doc_no, material_id, location, quantity_kg, batch_no, supplier, note,
+                       business_date, shift, entered_at, created_by)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()), $11) RETURNING *""",
+                doc_no, material["id"], location, quantity,
+                str(body.get("batch_no") or "").strip() or None, str(body.get("supplier") or "").strip() or None,
+                str(body.get("note") or "").strip() or None, business_date, shift, entry_ts, user_id_from_token(user))
+            receipt = await post_ledger(
+                c, doc_type="RECEIPT", doc_id=doc["id"], doc_no=doc_no, business_date=business_date, shift=shift,
+                lines=[("MATERIAL", material["id"], location, quantity)], created_by=user_id_from_token(user),
+                note=doc["batch_no"], occurred_at=entry_ts)
     await broadcast("stock")
-    await broadcast("floor_stock")
-    await broadcast("raw_material")
-    return {"success": True,
-            "return": {**dict(ret), "material_name": material_name,
-                       "location_label": describe_location(location, machine and machine["name"])},
-            "impact_receipt": balances, "activity_id": activity["id"]}
+    return {"success": True, "receipt": {**dict(doc), "material_name": material["name"]}, "stock_receipt": receipt}
 
 
-@app.get("/stock/returns")
-async def list_stock_returns(q: str = None, date_from: str = None, date_to: str = None,
-                             user=Depends(get_user)):
+@app.get("/receipts")
+async def list_receipts(date_from: str = None, date_to: str = None, user=Depends(get_user)):
     conds, vals = [], []
-    if q:
-        vals.append(f"%{q.strip()}%")
-        conds.append(f"""(sr.return_no ILIKE ${len(vals)} OR mm.name ILIKE ${len(vals)}
-                          OR sr.returned_to ILIKE ${len(vals)} OR sr.reason ILIKE ${len(vals)}
-                          OR pb.batch_no ILIKE ${len(vals)})""")
     if date_from:
-        vals.append(parse_date(date_from)); conds.append(f"sr.business_date >= ${len(vals)}")
+        vals.append(parse_date(date_from)); conds.append(f"r.business_date >= ${len(vals)}")
     if date_to:
-        vals.append(parse_date(date_to)); conds.append(f"sr.business_date <= ${len(vals)}")
+        vals.append(parse_date(date_to)); conds.append(f"r.business_date <= ${len(vals)}")
     where = f"WHERE {' AND '.join(conds)}" if conds else ""
     async with pool.acquire() as c:
+        return rows(await c.fetch(
+            f"""SELECT r.*, m.name AS material_name, m.brand, u.name AS created_by_name
+                  FROM stock_receipts r JOIN materials m ON m.id = r.material_id
+                  LEFT JOIN users u ON u.id = r.created_by
+                {where} ORDER BY r.business_date DESC, r.id DESC LIMIT 500""", *vals))
+
+
+@app.delete("/receipts/{doc_id}")
+async def reverse_receipt(doc_id: int, user=Depends(get_user)):
+    async with pool.acquire() as c:
+        async with c.transaction():
+            receipt = await reverse_document(c, doc_type="RECEIPT", doc_id=doc_id, user=user)
+    await broadcast("stock")
+    return {"success": True, "stock_receipt": receipt}
+
+
+# ── Transfers between Ground Floor and 1st Floor ──
+
+@app.post("/transfers")
+async def create_transfer(request: Request, user=Depends(get_user)):
+    body = await request.json()
+    quantity = parse_quantity_kg(body)
+    src = str(body.get("from_location") or "").upper()
+    dst = str(body.get("to_location") or "").upper()
+    if src not in MATERIAL_LOCATIONS or dst not in MATERIAL_LOCATIONS or src == dst:
+        raise HTTPException(400, "Move material between the Ground Floor and the 1st Floor")
+    business_date, shift, entry_ts = parse_business_context(body)
+    async with pool.acquire() as c:
+        async with c.transaction():
+            await guard_closed_day(c, user, business_date)
+            material = await resolve_material(c, body)
+            doc_no = await next_document_no(c, "TR", "stock_transfers", business_date)
+            doc = await c.fetchrow(
+                """INSERT INTO stock_transfers (doc_no, material_id, from_location, to_location, quantity_kg, note,
+                       business_date, shift, entered_at, created_by)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()), $10) RETURNING *""",
+                doc_no, material["id"], src, dst, quantity, str(body.get("note") or "").strip() or None,
+                business_date, shift, entry_ts, user_id_from_token(user))
+            receipt = await post_ledger(
+                c, doc_type="TRANSFER", doc_id=doc["id"], doc_no=doc_no, business_date=business_date, shift=shift,
+                lines=[("MATERIAL", material["id"], src, -quantity), ("MATERIAL", material["id"], dst, quantity)],
+                created_by=user_id_from_token(user), occurred_at=entry_ts)
+    await broadcast("stock")
+    return {"success": True, "transfer": {**dict(doc), "material_name": material["name"]}, "stock_receipt": receipt}
+
+
+@app.get("/transfers")
+async def list_transfers(date_from: str = None, date_to: str = None, user=Depends(get_user)):
+    conds, vals = [], []
+    if date_from:
+        vals.append(parse_date(date_from)); conds.append(f"t.business_date >= ${len(vals)}")
+    if date_to:
+        vals.append(parse_date(date_to)); conds.append(f"t.business_date <= ${len(vals)}")
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    async with pool.acquire() as c:
+        return rows(await c.fetch(
+            f"""SELECT t.*, m.name AS material_name, u.name AS created_by_name
+                  FROM stock_transfers t JOIN materials m ON m.id = t.material_id
+                  LEFT JOIN users u ON u.id = t.created_by
+                {where} ORDER BY t.business_date DESC, t.id DESC LIMIT 500""", *vals))
+
+
+@app.delete("/transfers/{doc_id}")
+async def reverse_transfer(doc_id: int, user=Depends(get_user)):
+    async with pool.acquire() as c:
+        async with c.transaction():
+            receipt = await reverse_document(c, doc_type="TRANSFER", doc_id=doc_id, user=user)
+    await broadcast("stock")
+    return {"success": True, "stock_receipt": receipt}
+
+
+# ── Production: extrusion (resin → rolls) and cutting (rolls → finished goods) ──
+
+def parse_output(body: dict) -> tuple[Decimal, Decimal, bool]:
+    gross = parse_kg(body.get("gross_kg", body.get("gross_weight")), "Gross weight")
+    wastage = parse_kg(body.get("wastage_kg") or 0, "Wastage", allow_zero=True)
+    if wastage >= gross:
+        raise HTTPException(400, "Wastage must be less than the gross weight")
+    to_regrind = body.get("wastage_to_regrind", True) not in (False, "false", 0, "0")
+    return gross, wastage, to_regrind
+
+
+async def wastage_lines(c, wastage: Decimal, to_regrind: bool) -> list:
+    if wastage > 0 and to_regrind:
+        return [("MATERIAL", await regrind_material_id(c), REGRIND_LOCATION, wastage)]
+    return []
+
+
+@app.post("/production/extrusion")
+async def create_extrusion(request: Request, user=Depends(get_user)):
+    body = await request.json()
+    gross, wastage, to_regrind = parse_output(body)
+    business_date, shift, entry_ts = parse_business_context(body)
+    async with pool.acquire() as c:
+        async with c.transaction():
+            await guard_closed_day(c, user, business_date)
+            machine = await fetch_machine(c, body.get("machine_id"))
+            if machine["type"] != "production":
+                raise HTTPException(400, f"{machine['name']} is a cutting machine — log it under Cutting")
+            roll = await get_or_create_product(c, "ROLL", body.get("output_size") or body.get("size"))
+            raw_inputs = body.get("inputs") or []
+            if not raw_inputs and (body.get("material_id") or body.get("material_name")):
+                raw_inputs = [{"material_id": body.get("material_id"), "material_name": body.get("material_name"),
+                               "location": body.get("location") or "AUTO", "quantity_kg": str(gross)}]
+            if not raw_inputs:
+                raise HTTPException(400, "Add the materials this roll was made from")
+            bal = await balances_map(c)
+            inputs = []
+            for i, line in enumerate(raw_inputs, start=1):
+                material = await resolve_material(c, line)
+                qty = parse_kg(line.get("quantity_kg"), f"Material line {i} quantity")
+                loc = str(line.get("location") or "AUTO").upper()
+                if loc == "AUTO":
+                    parts = allocate_auto(qty, bal.get(("MATERIAL", material["id"], "FIRST_FLOOR"), 0),
+                                          bal.get(("MATERIAL", material["id"], "GROUND_FLOOR"), 0))
+                elif loc in MATERIAL_LOCATIONS:
+                    parts = [(loc, qty)]
+                else:
+                    raise HTTPException(400, f"Material line {i}: choose Ground Floor, 1st Floor or Auto")
+                for part_loc, part_qty in parts:
+                    inputs.append((material, part_loc, part_qty))
+                    key = ("MATERIAL", material["id"], part_loc)
+                    bal[key] = bal.get(key, Decimal("0")) - part_qty
+            used = sum((q for _, _, q in inputs), Decimal("0"))
+            if abs(used - gross) > QTY_EPS:
+                raise HTTPException(400, (
+                    f"Materials used ({float(used):,.3f} kg) must add up to the gross weight "
+                    f"({float(gross):,.3f} kg) — the gross is everything the machine consumed."))
+            doc_no = await next_document_no(c, "EX", "production_entries", business_date)
+            doc = await c.fetchrow(
+                """INSERT INTO production_entries (doc_no, kind, machine_id, output_product_id, gross_kg, wastage_kg,
+                       wastage_to_regrind, worker_name, note, business_date, shift, entered_at, created_by)
+                   VALUES ($1, 'EXTRUSION', $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()), $12)
+                   RETURNING *""",
+                doc_no, machine["id"], roll["id"], gross, wastage, to_regrind,
+                str(body.get("worker_name") or "").strip() or None, str(body.get("note") or "").strip() or None,
+                business_date, shift, entry_ts, user_id_from_token(user))
+            for material, loc, qty in inputs:
+                await c.execute(
+                    "INSERT INTO production_inputs (entry_id, material_id, location, quantity_kg) VALUES ($1, $2, $3, $4)",
+                    doc["id"], material["id"], loc, qty)
+            lines = [("MATERIAL", m["id"], loc, -qty) for m, loc, qty in inputs]
+            lines.append(("PRODUCT", roll["id"], ROLL_STORE, gross - wastage))
+            lines += await wastage_lines(c, wastage, to_regrind)
+            receipt = await post_ledger(
+                c, doc_type="EXTRUSION", doc_id=doc["id"], doc_no=doc_no, business_date=business_date, shift=shift,
+                lines=lines, created_by=user_id_from_token(user), note=f"{machine['name']} · {roll['code']}",
+                occurred_at=entry_ts)
+    await broadcast("production")
+    await broadcast("stock")
+    return {"success": True, "entry": {**dict(doc), "machine_name": machine["name"], "output_code": roll["code"]},
+            "stock_receipt": receipt}
+
+
+@app.post("/production/cutting")
+async def create_cutting(request: Request, user=Depends(get_user)):
+    body = await request.json()
+    gross, wastage, to_regrind = parse_output(body)
+    business_date, shift, entry_ts = parse_business_context(body)
+    async with pool.acquire() as c:
+        async with c.transaction():
+            await guard_closed_day(c, user, business_date)
+            machine = await fetch_machine(c, body.get("machine_id"))
+            if machine["type"] != "cutting":
+                raise HTTPException(400, f"{machine['name']} is an extruder — log it under Plant Production")
+            if body.get("input_product_id") not in (None, ""):
+                roll = await product_by_id(c, body["input_product_id"], "ROLL")
+            else:
+                roll = await get_or_create_product(c, "ROLL", body.get("input_size"), create=False)
+            finished = await get_or_create_product(c, "FINISHED", body.get("output_size") or body.get("size"))
+            doc_no = await next_document_no(c, "CT", "production_entries", business_date)
+            doc = await c.fetchrow(
+                """INSERT INTO production_entries (doc_no, kind, machine_id, input_product_id, output_product_id,
+                       gross_kg, wastage_kg, wastage_to_regrind, worker_name, note, business_date, shift,
+                       entered_at, created_by)
+                   VALUES ($1, 'CUTTING', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW()), $13)
+                   RETURNING *""",
+                doc_no, machine["id"], roll["id"], finished["id"], gross, wastage, to_regrind,
+                str(body.get("worker_name") or "").strip() or None, str(body.get("note") or "").strip() or None,
+                business_date, shift, entry_ts, user_id_from_token(user))
+            lines = [("PRODUCT", roll["id"], ROLL_STORE, -gross),
+                     ("PRODUCT", finished["id"], FINISHED_STORE, gross - wastage)]
+            lines += await wastage_lines(c, wastage, to_regrind)
+            receipt = await post_ledger(
+                c, doc_type="CUTTING", doc_id=doc["id"], doc_no=doc_no, business_date=business_date, shift=shift,
+                lines=lines, created_by=user_id_from_token(user),
+                note=f"{machine['name']} · {roll['code']} → {finished['code']}", occurred_at=entry_ts)
+    await broadcast("production")
+    await broadcast("stock")
+    return {"success": True, "entry": {**dict(doc), "machine_name": machine["name"], "input_code": roll["code"],
+                                       "output_code": finished["code"]}, "stock_receipt": receipt}
+
+
+async def fetch_production_entries(c, *, date_from=None, date_to=None, kind=None, shift=None,
+                                   include_reversed=True, machine_id=None) -> list[dict]:
+    conds, vals = [], []
+    if date_from:
+        vals.append(parse_date(date_from)); conds.append(f"pe.business_date >= ${len(vals)}")
+    if date_to:
+        vals.append(parse_date(date_to)); conds.append(f"pe.business_date <= ${len(vals)}")
+    if kind:
+        vals.append(str(kind).upper()); conds.append(f"pe.kind = ${len(vals)}")
+    if shift:
+        vals.append(normalize_shift(shift)); conds.append(f"pe.shift = ${len(vals)}")
+    if machine_id:
+        vals.append(parse_machine_id(machine_id)); conds.append(f"pe.machine_id = ${len(vals)}")
+    if not include_reversed:
+        conds.append("pe.status = 'ACTIVE'")
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    entries = rows(await c.fetch(
+        f"""SELECT pe.*, m.name AS machine_name, op.code AS output_code, ip.code AS input_code,
+                   u.name AS created_by_name
+              FROM production_entries pe
+              JOIN machines m ON m.id = pe.machine_id
+              JOIN products op ON op.id = pe.output_product_id
+              LEFT JOIN products ip ON ip.id = pe.input_product_id
+              LEFT JOIN users u ON u.id = pe.created_by
+            {where} ORDER BY pe.business_date DESC, pe.shift DESC, pe.entered_at DESC, pe.id DESC LIMIT 2000""",
+        *vals))
+    if entries:
+        inputs = rows(await c.fetch(
+            """SELECT pi.entry_id, pi.material_id, m.name AS material_name, pi.location, pi.quantity_kg
+                 FROM production_inputs pi JOIN materials m ON m.id = pi.material_id
+                WHERE pi.entry_id = ANY($1::int[]) ORDER BY pi.id""", [e["id"] for e in entries]))
+        for e in entries:
+            e["inputs"] = [i for i in inputs if i["entry_id"] == e["id"]]
+    return entries
+
+
+@app.get("/production/entries")
+async def list_production_entries(kind: str = None, date_from: str = None, date_to: str = None,
+                                  shift: str = None, machine_id: str = None, user=Depends(get_user)):
+    async with pool.acquire() as c:
+        return await fetch_production_entries(c, date_from=date_from, date_to=date_to, kind=kind,
+                                              shift=shift, machine_id=machine_id)
+
+
+@app.delete("/production/entries/{entry_id}")
+async def reverse_production_entry(entry_id: int, user=Depends(get_user)):
+    async with pool.acquire() as c:
+        async with c.transaction():
+            kind = await c.fetchval("SELECT kind FROM production_entries WHERE id = $1", entry_id)
+            if not kind:
+                raise HTTPException(404, "Entry not found")
+            receipt = await reverse_document(c, doc_type=kind, doc_id=entry_id, user=user)
+    await broadcast("production")
+    await broadcast("stock")
+    return {"success": True, "stock_receipt": receipt}
+
+
+# ── Adjustments: physical count, correction, return to supplier, damage ──
+
+@app.post("/adjustments")
+async def create_adjustment(request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
+    body = await request.json()
+    reason_type = str(body.get("reason_type") or "COUNT").upper()
+    if reason_type not in ("COUNT", "CORRECTION", "RETURN", "DAMAGE"):
+        raise HTTPException(400, "Reason must be COUNT, CORRECTION, RETURN or DAMAGE")
+    reason = str(body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "Write why the stock is being adjusted")
+    business_date, shift, entry_ts = parse_business_context(body)
+    async with pool.acquire() as c:
+        async with c.transaction():
+            item_kind = str(body.get("item_kind") or "MATERIAL").upper()
+            if item_kind == "MATERIAL":
+                item = await resolve_material(c, body)
+                location = str(body.get("location") or "").upper()
+                if location not in MATERIAL_LOCATIONS:
+                    raise HTTPException(400, "Choose the floor being adjusted")
+            elif item_kind == "PRODUCT":
+                item = await product_by_id(c, body.get("product_id"))
+                location = PRODUCT_STORE[item["kind"]]
+            else:
+                raise HTTPException(400, "item_kind must be MATERIAL or PRODUCT")
+            current = decimal_kg(await c.fetchval(
+                "SELECT qty_kg FROM stock_balances WHERE item_kind = $1 AND item_id = $2 AND location = $3",
+                item_kind, item["id"], location))
+            counted = None
+            if reason_type == "COUNT":
+                counted = parse_kg(body.get("counted_kg"), "Counted quantity", allow_zero=True)
+                delta = counted - current
+            else:
+                delta = parse_kg(body.get("quantity_kg"), "Quantity")
+                if reason_type in ("RETURN", "DAMAGE") or str(body.get("direction") or "").lower() == "remove":
+                    delta = -delta
+            if delta == 0:
+                raise HTTPException(400, "The count matches the system stock — nothing to adjust")
+            doc_no = await next_document_no(c, "AD", "stock_adjustments", business_date)
+            doc = await c.fetchrow(
+                """INSERT INTO stock_adjustments (doc_no, item_kind, item_id, location, reason_type, counted_kg,
+                       delta_kg, reason, business_date, shift, entered_at, created_by)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()), $12) RETURNING *""",
+                doc_no, item_kind, item["id"], location, reason_type, counted, delta, reason,
+                business_date, shift, entry_ts, user_id_from_token(user))
+            receipt = await post_ledger(
+                c, doc_type="ADJUSTMENT", doc_id=doc["id"], doc_no=doc_no, business_date=business_date,
+                shift=shift, lines=[(item_kind, item["id"], location, delta)], created_by=user_id_from_token(user),
+                note=f"{reason_type}: {reason}", occurred_at=entry_ts)
+    await broadcast("stock")
+    return {"success": True, "adjustment": dict(doc), "stock_receipt": receipt}
+
+
+@app.get("/adjustments")
+async def list_adjustments(user=Depends(get_user)):
+    async with pool.acquire() as c:
         result = rows(await c.fetch(
-            f"""SELECT sr.*, mm.name AS material_name, m.name AS machine_name,
-                       pb.batch_no, u.name AS created_by_name
-                  FROM stock_returns sr
-                  JOIN materials_master mm ON mm.id = sr.material_id
-                  LEFT JOIN machines m ON m.id = sr.machine_id
-                  LEFT JOIN production_batches pb ON pb.id = sr.production_batch_id
-                  LEFT JOIN users u ON u.id = sr.created_by
-                {where} ORDER BY sr.business_date DESC, sr.id DESC LIMIT 500""", *vals))
-    for r_ in result:
-        r_["location_label"] = describe_location(r_["location"], r_["machine_name"])
-        r_["status"] = "RETURNED"
+            """SELECT a.*, u.name AS created_by_name,
+                      CASE WHEN a.item_kind = 'MATERIAL' THEN m.name ELSE p.code END AS item_name
+                 FROM stock_adjustments a
+                 LEFT JOIN materials m ON a.item_kind = 'MATERIAL' AND m.id = a.item_id
+                 LEFT JOIN products p ON a.item_kind = 'PRODUCT' AND p.id = a.item_id
+                 LEFT JOIN users u ON u.id = a.created_by
+                ORDER BY a.business_date DESC, a.id DESC LIMIT 500"""))
     return result
 
 
-# ── Day ledger: opening / closing per location, per AM/PM shift ──
-
-LEDGER_LOCATIONS = ("WAREHOUSE", "GROUND_FLOOR", "FIRST_FLOOR", "MACHINES")
-LEDGER_DELTA_COLUMNS = {
-    "WAREHOUSE": "warehouse_delta_kg", "GROUND_FLOOR": "floor_delta_kg",
-    "FIRST_FLOOR": "first_floor_delta_kg", "MACHINES": "machines_total_delta_kg",
-}
-LEDGER_CATEGORIES = {
-    "RAW_INPUT": "received", "MANUAL_ADJUSTMENT": "adjusted",
-    "FLOOR_TRANSFER": "transfer", "STOCK_TRANSFER": "transfer",
-    "PRODUCTION": "consumed", "STOCK_RETURN": "returned",
-}
+@app.delete("/adjustments/{doc_id}")
+async def reverse_adjustment(doc_id: int, user=Depends(get_user)):
+    require_owner_or_admin(user)
+    async with pool.acquire() as c:
+        async with c.transaction():
+            receipt = await reverse_document(c, doc_type="ADJUSTMENT", doc_id=doc_id, user=user)
+    await broadcast("stock")
+    return {"success": True, "stock_receipt": receipt}
 
 
-async def ledger_movements(c, from_date: dt_date) -> list:
-    """Net movement per entry (so a deleted entry nets to zero), then per material,
-    business date, shift and domain, split into stock in / stock out."""
-    bd = sql_business_date("sal.business_date", "sal.occurred_at")
-    sh = sql_shift("sal.shift", "sal.occurred_at")
-    per_loc = ",\n".join(
-        f"SUM(COALESCE(sal.{col}, 0)) AS {loc.lower()}" for loc, col in LEDGER_DELTA_COLUMNS.items())
-    split = ",\n".join(
-        f"SUM(GREATEST({loc.lower()}, 0)) AS {loc.lower()}_in, "
-        f"SUM(LEAST({loc.lower()}, 0)) AS {loc.lower()}_out" for loc in LEDGER_DELTA_COLUMNS)
-    return rows(await c.fetch(
-        f"""WITH per_entry AS (
-                SELECT sal.material_id, {bd} AS bd, {sh} AS shift, sal.source_domain,
-                       COALESCE(sal.source_id, -sal.id) AS entry,
-                       {per_loc}
-                  FROM stock_activity_log sal
-                 WHERE sal.material_id IS NOT NULL AND {bd} >= $1
-                 GROUP BY 1, 2, 3, 4, 5)
-            SELECT material_id, bd, shift, source_domain, {split}
-              FROM per_entry GROUP BY 1, 2, 3, 4""", from_date))
+# ── Stock views ──
 
-
-async def machine_ledger_movements(c, from_date: dt_date) -> list:
-    bd = sql_business_date("sal.business_date", "sal.occurred_at")
-    sh = sql_shift("sal.shift", "sal.occurred_at")
-    return rows(await c.fetch(
-        f"""SELECT sal.machine_id, sal.material_id, {bd} AS bd, {sh} AS shift,
-                   SUM(GREATEST(COALESCE(sal.machine_delta_kg, 0), 0)) AS inflow,
-                   SUM(LEAST(COALESCE(sal.machine_delta_kg, 0), 0)) AS outflow
-              FROM stock_activity_log sal
-             WHERE sal.machine_id IS NOT NULL AND sal.material_id IS NOT NULL AND {bd} >= $1
-             GROUP BY 1, 2, 3, 4""", from_date))
-
-
-def _blank_location_day():
-    return {"opening": Decimal("0"), "closing": Decimal("0"),
-            "am": {"in": Decimal("0"), "out": Decimal("0")},
-            "pm": {"in": Decimal("0"), "out": Decimal("0")},
-            "received": Decimal("0"), "adjusted": Decimal("0"), "transfer_in": Decimal("0"),
-            "transfer_out": Decimal("0"), "consumed": Decimal("0"), "returned": Decimal("0")}
-
-
-def compute_day_ledger(balances: dict, movements: list, day: dt_date) -> dict:
-    """Opening/closing per material and location for `day`, derived backwards from the
-    live balance so today's closing is exactly the live stock and every day's
-    closing is exactly the next day's opening."""
-    materials: dict = {}
-
-    def ensure(key, material_id=None, name=None):
-        if key not in materials:
-            base = balances.get(key, {})
-            materials[key] = {
-                "key": key,
-                "material_id": base.get("material_id", material_id),
-                "material_type_id": base.get("material_type_id"),
-                "material_name": base.get("material_name", name),
-                "current": {loc: base.get(loc, Decimal("0")) for loc in LEDGER_LOCATIONS},
-                "after": {loc: Decimal("0") for loc in LEDGER_LOCATIONS},
-                "day": {loc: _blank_location_day() for loc in LEDGER_LOCATIONS},
-                "moved": False,
-            }
-        return materials[key]
-
-    for key in balances:
-        ensure(key)
-    for mv in movements:
-        key = f"m{mv['material_id']}"
-        entry = ensure(key, int(mv["material_id"]))
-        mv_day = mv["bd"]
-        for loc in LEDGER_LOCATIONS:
-            inflow = decimal_kg(mv[f"{loc.lower()}_in"])
-            outflow = decimal_kg(mv[f"{loc.lower()}_out"])
-            if mv_day > day:
-                entry["after"][loc] += inflow + outflow
-                continue
-            if mv_day != day:
-                continue
-            if inflow or outflow:
-                entry["moved"] = True
-            slot = entry["day"][loc]
-            shift_slot = slot["am" if mv["shift"] == "AM" else "pm"]
-            shift_slot["in"] += inflow
-            shift_slot["out"] += outflow
-            category = LEDGER_CATEGORIES.get(mv["source_domain"])
-            if category == "transfer":
-                slot["transfer_in"] += inflow
-                slot["transfer_out"] += -outflow
-            elif category in ("received", "adjusted"):
-                slot[category] += inflow + outflow
-            elif category in ("consumed", "returned"):
-                slot[category] += -(inflow + outflow)
-
-    out_rows = []
-    totals = {loc: _blank_location_day() for loc in (*LEDGER_LOCATIONS, "PLANT")}
-    for entry in materials.values():
-        locations = {}
-        plant = _blank_location_day()
-        for loc in LEDGER_LOCATIONS:
-            slot = entry["day"][loc]
-            closing = entry["current"][loc] - entry["after"][loc]
-            pm_net = slot["pm"]["in"] + slot["pm"]["out"]
-            am_net = slot["am"]["in"] + slot["am"]["out"]
-            am_closing = closing - pm_net
-            opening = am_closing - am_net
-            locations[loc] = {
-                "opening_kg": opening, "closing_kg": closing,
-                "am": {"opening_kg": opening, "in_kg": slot["am"]["in"], "out_kg": -slot["am"]["out"],
-                       "closing_kg": am_closing},
-                "pm": {"opening_kg": am_closing, "in_kg": slot["pm"]["in"], "out_kg": -slot["pm"]["out"],
-                       "closing_kg": closing},
-                "received_kg": slot["received"], "adjusted_kg": slot["adjusted"],
-                "transfer_in_kg": slot["transfer_in"], "transfer_out_kg": slot["transfer_out"],
-                "consumed_kg": slot["consumed"], "returned_kg": slot["returned"],
-            }
-        for field in ("opening_kg", "closing_kg", "received_kg", "adjusted_kg",
-                      "transfer_in_kg", "transfer_out_kg", "consumed_kg", "returned_kg"):
-            plant[field] = sum((locations[loc][field] for loc in LEDGER_LOCATIONS), Decimal("0"))
-        plant["am"] = {k: sum((locations[loc]["am"][k] for loc in LEDGER_LOCATIONS), Decimal("0"))
-                       for k in ("opening_kg", "in_kg", "out_kg", "closing_kg")}
-        plant["pm"] = {k: sum((locations[loc]["pm"][k] for loc in LEDGER_LOCATIONS), Decimal("0"))
-                       for k in ("opening_kg", "in_kg", "out_kg", "closing_kg")}
-        locations["PLANT"] = plant
-        if not entry["moved"] and plant["opening_kg"] == 0 and plant["closing_kg"] == 0:
-            continue
-        for loc, data in locations.items():
-            agg = totals[loc]
-            for field in ("opening_kg", "closing_kg", "received_kg", "adjusted_kg",
-                          "transfer_in_kg", "transfer_out_kg", "consumed_kg", "returned_kg"):
-                agg[field] = agg.get(field, Decimal("0")) + data[field]
-            for sh in ("am", "pm"):
-                agg.setdefault(f"{sh}_totals", {k: Decimal("0") for k in ("opening_kg", "in_kg", "out_kg", "closing_kg")})
-                for k in ("opening_kg", "in_kg", "out_kg", "closing_kg"):
-                    agg[f"{sh}_totals"][k] += data[sh][k]
-        out_rows.append({
-            "key": entry["key"], "material_id": entry["material_id"],
-            "material_type_id": entry["material_type_id"], "material_name": entry["material_name"],
-            "moved": entry["moved"], "locations": _floatify(locations),
-        })
-    out_rows.sort(key=lambda r_: (r_["material_name"] or "").lower())
-    clean_totals = {}
-    for loc, agg in totals.items():
-        clean_totals[loc] = _floatify({
-            k: v for k, v in agg.items()
-            if k.endswith("_kg")
-        })
-        clean_totals[loc]["am"] = _floatify(agg.get("am_totals") or {})
-        clean_totals[loc]["pm"] = _floatify(agg.get("pm_totals") or {})
-    return {"materials": out_rows, "totals": clean_totals}
-
-
-def _floatify(value):
-    if isinstance(value, dict):
-        return {k: _floatify(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_floatify(v) for v in value]
-    if isinstance(value, Decimal):
-        return kg_out(value)
-    return value
-
-
-async def build_day_ledger(c, day: dt_date) -> dict:
-    balances = await current_location_balances(c)
-    movements = await ledger_movements(c, day)
-    ledger = compute_day_ledger(balances, movements, day)
-    # Per-machine opening/closing.
-    current_alloc = rows(await c.fetch(
-        """SELECT msa.machine_id, mm.id AS material_id, msa.quantity_kg
-             FROM machine_stock_allocations msa
-             JOIN material_types mt ON mt.id = msa.material_type_id
-             JOIN materials_master mm ON LOWER(TRIM(mm.name)) = LOWER(TRIM(mt.name))"""))
-    machine_moves = await machine_ledger_movements(c, day)
-    machines = {r_["id"]: dict(r_) for r_ in await c.fetch(
-        f"SELECT id, name, {MACHINE_FLOOR_SQL} AS floor FROM machines")}
-    names = {r_["id"]: r_["name"] for r_ in await c.fetch("SELECT id, name FROM materials_master")}
-    per_machine: dict = {}
-    for a in current_alloc:
-        key = (a["machine_id"], a["material_id"])
-        per_machine.setdefault(key, {"current": Decimal("0"), "after": Decimal("0"),
-                                     "am_in": Decimal("0"), "am_out": Decimal("0"),
-                                     "pm_in": Decimal("0"), "pm_out": Decimal("0")})
-        per_machine[key]["current"] += decimal_kg(a["quantity_kg"])
-    for mv in machine_moves:
-        key = (mv["machine_id"], mv["material_id"])
-        slot = per_machine.setdefault(key, {"current": Decimal("0"), "after": Decimal("0"),
-                                            "am_in": Decimal("0"), "am_out": Decimal("0"),
-                                            "pm_in": Decimal("0"), "pm_out": Decimal("0")})
-        if mv["bd"] > day:
-            slot["after"] += decimal_kg(mv["inflow"]) + decimal_kg(mv["outflow"])
-        elif mv["bd"] == day:
-            prefix = "am" if mv["shift"] == "AM" else "pm"
-            slot[f"{prefix}_in"] += decimal_kg(mv["inflow"])
-            slot[f"{prefix}_out"] += -decimal_kg(mv["outflow"])
-    machine_rows = []
-    for (machine_id, material_id), slot in per_machine.items():
-        closing = slot["current"] - slot["after"]
-        am_closing = closing - (slot["pm_in"] - slot["pm_out"])
-        opening = am_closing - (slot["am_in"] - slot["am_out"])
-        if not any((opening, closing, slot["am_in"], slot["am_out"], slot["pm_in"], slot["pm_out"])):
-            continue
-        machine = machines.get(machine_id, {})
-        machine_rows.append(_floatify({
-            "machine_id": machine_id, "machine_name": machine.get("name"), "floor": machine.get("floor"),
-            "material_id": material_id, "material_name": names.get(material_id),
-            "opening_kg": opening, "am_closing_kg": am_closing, "closing_kg": closing,
-            "in_kg": slot["am_in"] + slot["pm_in"], "out_kg": slot["am_out"] + slot["pm_out"],
-        }))
-    machine_rows.sort(key=lambda r_: (r_["machine_id"], (r_["material_name"] or "").lower()))
-    for m in ledger["materials"]:
-        if not m["material_name"] and m["material_id"] is not None:
-            m["material_name"] = names.get(m["material_id"])
-    closing_row = await c.fetchrow(
-        """SELECT sdc.*, u.name AS closed_by_name FROM stock_day_closings sdc
-             LEFT JOIN users u ON u.id = sdc.closed_by WHERE sdc.business_date = $1""", day)
-    closing_record = None
-    if closing_row:
-        snapshot = closing_row["snapshot"]
-        if isinstance(snapshot, str):
-            snapshot = orjson.loads(snapshot)
-        live_by_key = {m["key"]: m["locations"]["PLANT"]["closing_kg"] for m in ledger["materials"]}
-        snap_by_key = {m["key"]: m["plant_closing_kg"] for m in snapshot.get("materials", [])}
-        variance = []
-        for key in set(live_by_key) | set(snap_by_key):
-            diff = round(live_by_key.get(key, 0.0) - snap_by_key.get(key, 0.0), 3)
-            if abs(diff) >= 0.001:
-                name = next((m["material_name"] for m in ledger["materials"] if m["key"] == key),
-                            next((m["material_name"] for m in snapshot.get("materials", []) if m["key"] == key), key))
-                variance.append({"key": key, "material_name": name, "difference_kg": diff})
-        closing_record = {
-            "closed_at": closing_row["closed_at"], "closed_by_name": closing_row["closed_by_name"],
-            "note": closing_row["note"],
-            "plant_closing_kg": snapshot.get("plant_closing_kg"),
-            "variance": variance,
-        }
-    usage = {"AM": Decimal("0"), "PM": Decimal("0")}
-    for mv in movements:
-        if mv["bd"] == day and mv["source_domain"] == "PRODUCTION":
-            net = sum((decimal_kg(mv[f"{loc.lower()}_in"]) + decimal_kg(mv[f"{loc.lower()}_out"])
-                       for loc in LEDGER_LOCATIONS), Decimal("0"))
-            usage["AM" if mv["shift"] == "AM" else "PM"] += -net
+@app.get("/stock/overview")
+async def stock_overview(user=Depends(get_user)):
+    async with pool.acquire() as c:
+        low, high = await get_thresholds(c)
+        materials = await material_rows(c)
+        products = await product_rows(c)
+    gf = sum(m["ground_floor_kg"] for m in materials)
+    ff = sum(m["first_floor_kg"] for m in materials)
+    rolls = [p for p in products if p["kind"] == "ROLL"]
+    finished = [p for p in products if p["kind"] == "FINISHED"]
     live_date, live_shift = derive_business_context()
     return {
-        "business_date": day.isoformat(),
-        "previous_date": (day - timedelta(days=1)).isoformat(),
-        "next_date": (day + timedelta(days=1)).isoformat(),
         "live_business_date": live_date.isoformat(), "live_shift": live_shift,
-        "is_live_day": day == live_date,
-        "is_future": day > live_date,
-        **ledger,
-        "machines": machine_rows,
-        "usage": {"am_kg": kg_out(usage["AM"]), "pm_kg": kg_out(usage["PM"]),
-                  "total_kg": kg_out(usage["AM"] + usage["PM"])},
-        "day_closing": closing_record,
+        "thresholds": {"reorder_below_kg": kg_out(low), "optimal_above_kg": kg_out(high)},
+        "materials": materials, "rolls": rolls, "finished": finished,
+        "totals": {
+            "ground_floor_kg": kg_out(gf), "ground_floor_status": stock_status(gf, low, high),
+            "first_floor_kg": kg_out(ff), "first_floor_status": stock_status(ff, low, high),
+            "raw_total_kg": kg_out(gf + ff), "raw_total_status": stock_status(gf + ff, low, high),
+            "roll_store_kg": kg_out(sum(p["quantity_kg"] for p in rolls)),
+            "finished_store_kg": kg_out(sum(p["quantity_kg"] for p in finished)),
+        },
     }
 
 
 @app.get("/stock/ledger")
-async def get_stock_ledger(date: str = None, user=Depends(get_user)):
+async def stock_ledger(date_from: str = None, date_to: str = None, location: str = None, doc_type: str = None,
+                       item_kind: str = None, item_id: str = None, limit: str = "500", user=Depends(get_user)):
+    conds, vals = [], []
+    if date_from:
+        vals.append(parse_date(date_from)); conds.append(f"l.business_date >= ${len(vals)}")
+    if date_to:
+        vals.append(parse_date(date_to)); conds.append(f"l.business_date <= ${len(vals)}")
+    if location:
+        vals.append(location.upper()); conds.append(f"l.location = ${len(vals)}")
+    if doc_type:
+        vals.append(doc_type.upper()); conds.append(f"l.doc_type = ${len(vals)}")
+    if item_kind:
+        vals.append(item_kind.upper()); conds.append(f"l.item_kind = ${len(vals)}")
+    if item_id:
+        vals.append(int(to_num(item_id))); conds.append(f"l.item_id = ${len(vals)}")
+    vals.append(min(max(int(to_num(limit, 500)), 1), 2000))
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    async with pool.acquire() as c:
+        return rows(await c.fetch(
+            f"""SELECT l.*, u.name AS created_by_name,
+                       CASE WHEN l.item_kind = 'MATERIAL' THEN m.name ELSE p.code END AS item_name,
+                       p.kind AS product_kind
+                  FROM stock_ledger l
+                  LEFT JOIN materials m ON l.item_kind = 'MATERIAL' AND m.id = l.item_id
+                  LEFT JOIN products p ON l.item_kind = 'PRODUCT' AND p.id = l.item_id
+                  LEFT JOIN users u ON u.id = l.created_by
+                {where} ORDER BY l.occurred_at DESC, l.id DESC LIMIT ${len(vals)}""", *vals))
+
+
+@app.get("/stock/verify")
+async def verify_stock(user=Depends(get_user)):
+    """Every balance must equal the sum of its ledger rows."""
+    require_owner_or_admin(user)
+    async with pool.acquire() as c:
+        drift = rows(await c.fetch(
+            """SELECT COALESCE(b.item_kind, l.item_kind) AS item_kind, COALESCE(b.item_id, l.item_id) AS item_id,
+                      COALESCE(b.location, l.location) AS location,
+                      COALESCE(b.qty_kg, 0) AS balance_kg, COALESCE(l.total, 0) AS ledger_kg
+                 FROM stock_balances b
+                 FULL JOIN (SELECT item_kind, item_id, location, SUM(delta_kg) AS total
+                              FROM stock_ledger GROUP BY 1, 2, 3) l
+                   ON l.item_kind = b.item_kind AND l.item_id = b.item_id AND l.location = b.location
+                WHERE COALESCE(b.qty_kg, 0) <> COALESCE(l.total, 0)"""))
+    return {"ok": not drift, "drift": drift}
+
+
+# ── Reports ──
+
+async def register_data(c, day: dt_date) -> dict:
+    """Inventory register for one business day: every store, opening → closing."""
+    low, high = await get_thresholds(c)
+    agg = rows(await c.fetch(
+        """SELECT item_kind, item_id, location,
+                  SUM(delta_kg) FILTER (WHERE business_date < $1) AS before_kg,
+                  SUM(delta_kg) FILTER (WHERE business_date = $1) AS day_delta_kg
+             FROM stock_ledger WHERE business_date <= $1
+            GROUP BY item_kind, item_id, location, doc_type, doc_id""", day))
+    materials = {m["id"]: dict(m) for m in await c.fetch("SELECT * FROM materials")}
+    products = {p["id"]: dict(p) for p in await c.fetch("SELECT * FROM products")}
+    batches = {(r_["material_id"], r_["location"]): r_["batch_no"] for r_ in await c.fetch(
+        """SELECT DISTINCT ON (material_id, location) material_id, location, batch_no
+             FROM stock_receipts WHERE status = 'ACTIVE' AND batch_no IS NOT NULL AND business_date <= $1
+            ORDER BY material_id, location, business_date DESC, id DESC""", day)}
+    thresholds = {("MATERIAL", mid): (m["reorder_below_kg"] if m["reorder_below_kg"] is not None else low,
+                                      m["optimal_above_kg"] if m["optimal_above_kg"] is not None else high)
+                  for mid, m in materials.items()}
+    lines = day_register(agg, thresholds=thresholds)
+
+    def zone(location):
+        items = []
+        for ln in lines:
+            if ln["location"] != location:
+                continue
+            if not any((ln["opening_kg"], ln["received_kg"], ln["issued_kg"], ln["closing_kg"])):
+                continue
+            if ln["item_kind"] == "MATERIAL":
+                m = materials.get(ln["item_id"], {})
+                name, brand = m.get("name"), m.get("brand")
+                batch = batches.get((ln["item_id"], location))
+            else:
+                p = products.get(ln["item_id"], {})
+                name, brand, batch = p.get("code"), p.get("description") or "", None
+            items.append({**ln, "item_name": name, "brand": brand, "batch_no": batch,
+                          "opening_bags": ln["opening_kg"] / BAG_KG, "received_bags": ln["received_kg"] / BAG_KG,
+                          "issued_bags": ln["issued_kg"] / BAG_KG, "closing_bags": ln["closing_kg"] / BAG_KG,
+                          "status_label": STATUS_LABELS.get(ln["status"]) if ln["status"] else None})
+        items.sort(key=lambda i: (str(i["item_name"] or "").lower()))
+        sub = {k: sum((i[k] for i in items), Decimal("0"))
+               for k in ("opening_kg", "received_kg", "issued_kg", "closing_kg")}
+        sub.update({k.replace("_kg", "_bags"): v / BAG_KG for k, v in list(sub.items())})
+        is_raw = location in MATERIAL_LOCATIONS
+        sub["status"] = stock_status(sub["closing_kg"], low, high) if is_raw else None
+        sub["status_label"] = STATUS_LABELS.get(sub["status"]) if sub["status"] else None
+        return {"location": location, "label": LOCATION_LABELS[location], "rows": items, "subtotal": sub}
+
+    zones = [zone(loc) for loc in ALL_LOCATIONS]
+    raw = [z for z in zones if z["location"] in MATERIAL_LOCATIONS]
+    plant = {k: sum((z["subtotal"][k] for z in raw), Decimal("0"))
+             for k in ("opening_kg", "received_kg", "issued_kg", "closing_kg",
+                       "opening_bags", "received_bags", "issued_bags", "closing_bags")}
+    plant["status"] = stock_status(plant["closing_kg"], low, high)
+    plant["status_label"] = STATUS_LABELS[plant["status"]]
+    return floatify({
+        "business_date": day.isoformat(),
+        "thresholds": {"reorder_below_kg": low, "optimal_above_kg": high},
+        "zones": zones, "plant_raw_total": plant,
+    })
+
+
+@app.get("/reports/inventory-register")
+async def inventory_register(date: str = None, user=Depends(get_user)):
     day = parse_optional_date(date) or derive_business_context()[0]
     async with pool.acquire() as c:
-        return await build_day_ledger(c, day)
+        return await register_data(c, day)
 
+
+async def shift_report_data(c, day: dt_date) -> dict:
+    entries = await fetch_production_entries(c, date_from=day, date_to=day, include_reversed=False)
+    entries.sort(key=lambda e: (e["machine_name"], e["entered_at"], e["id"]))
+    return floatify({"business_date": day.isoformat(), **shift_report(entries)})
+
+
+@app.get("/reports/shift-production")
+async def shift_production_report(date: str = None, user=Depends(get_user)):
+    day = parse_optional_date(date) or derive_business_context()[0]
+    async with pool.acquire() as c:
+        return await shift_report_data(c, day)
+
+
+async def summary_data(c, start: dt_date, end: dt_date) -> dict:
+    entries = await fetch_production_entries(c, date_from=start, date_to=end, include_reversed=False)
+    days = []
+    cursor = start
+    while cursor <= end:
+        day_entries = [e for e in entries if e["business_date"] == cursor]
+        rep = shift_report(day_entries)
+        days.append({"business_date": cursor.isoformat(),
+                     "plant_am": {k: v for k, v in rep["AM"]["plant"].items() if k != "entries"},
+                     "plant_pm": {k: v for k, v in rep["PM"]["plant"].items() if k != "entries"},
+                     "cutting_am": {k: v for k, v in rep["AM"]["cutting"].items() if k != "entries"},
+                     "cutting_pm": {k: v for k, v in rep["PM"]["cutting"].items() if k != "entries"},
+                     "plant": rep["day_and_night"]["plant"], "cutting": rep["day_and_night"]["cutting"]})
+        cursor += timedelta(days=1)
+    machines = {}
+    for e in entries:
+        slot = machines.setdefault(e["machine_id"], {"machine_id": e["machine_id"], "machine_name": e["machine_name"],
+                                                     "kind": e["kind"], "entries": []})
+        slot["entries"].append(e)
+    machine_rows = []
+    for slot in machines.values():
+        t = shift_report(slot.pop("entries"))
+        section = "plant" if slot["kind"] == "EXTRUSION" else "cutting"
+        machine_rows.append({**slot, **t["day_and_night"][section]})
+    machine_rows.sort(key=lambda m: (m["kind"], m["machine_name"]))
+    usage = rows(await c.fetch(
+        """SELECT m.id AS material_id, m.name AS material_name, m.brand, SUM(pi.quantity_kg) AS used_kg
+             FROM production_inputs pi JOIN production_entries pe ON pe.id = pi.entry_id
+             JOIN materials m ON m.id = pi.material_id
+            WHERE pe.status = 'ACTIVE' AND pe.business_date BETWEEN $1 AND $2
+            GROUP BY 1, 2, 3 ORDER BY 4 DESC""", start, end))
+    sizes = rows(await c.fetch(
+        """SELECT pe.kind, p.code, COUNT(*) AS entries, SUM(pe.gross_kg) AS gross_kg,
+                  SUM(pe.wastage_kg) AS wastage_kg, SUM(pe.net_kg) AS net_kg
+             FROM production_entries pe JOIN products p ON p.id = pe.output_product_id
+            WHERE pe.status = 'ACTIVE' AND pe.business_date BETWEEN $1 AND $2
+            GROUP BY 1, 2 ORDER BY 1, 6 DESC""", start, end))
+    totals = shift_report(entries)["day_and_night"]
+    return floatify({"date_from": start.isoformat(), "date_to": end.isoformat(), "days": days,
+                     "machines": machine_rows, "material_usage": usage, "sizes": sizes, "totals": totals})
+
+
+def report_range(date_from, date_to, default_days=14, max_days=93) -> tuple[dt_date, dt_date]:
+    end = parse_optional_date(date_to) or derive_business_context()[0]
+    start = parse_optional_date(date_from) or end - timedelta(days=default_days - 1)
+    if start > end:
+        raise HTTPException(400, "date_from must be on or before date_to")
+    if (end - start).days + 1 > max_days:
+        raise HTTPException(400, f"Choose at most {max_days} days")
+    return start, end
+
+
+@app.get("/reports/production-summary")
+async def production_summary(date_from: str = None, date_to: str = None, user=Depends(get_user)):
+    start, end = report_range(date_from, date_to)
+    async with pool.acquire() as c:
+        return await summary_data(c, start, end)
+
+
+def xlsx_response(content: bytes, filename: str) -> Response:
+    return Response(content=content,
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"})
+
+
+@app.get("/reports/inventory-register.xlsx")
+async def inventory_register_xlsx(date: str = None, user=Depends(get_user)):
+    from reports_xlsx import inventory_register_workbook
+    day = parse_optional_date(date) or derive_business_context()[0]
+    async with pool.acquire() as c:
+        data = await register_data(c, day)
+    return xlsx_response(inventory_register_workbook(data), f"Inventory_Register_{day:%d-%m-%Y}.xlsx")
+
+
+@app.get("/reports/shift-production.xlsx")
+async def shift_production_xlsx(date: str = None, user=Depends(get_user)):
+    from reports_xlsx import shift_report_workbook
+    day = parse_optional_date(date) or derive_business_context()[0]
+    async with pool.acquire() as c:
+        data = await shift_report_data(c, day)
+    return xlsx_response(shift_report_workbook(data), f"Shift_Production_Report_{day:%d-%m-%Y}.xlsx")
+
+
+@app.get("/reports/production-summary.xlsx")
+async def production_summary_xlsx(date_from: str = None, date_to: str = None, user=Depends(get_user)):
+    from reports_xlsx import summary_workbook
+    start, end = report_range(date_from, date_to)
+    async with pool.acquire() as c:
+        data = await summary_data(c, start, end)
+    return xlsx_response(summary_workbook(data), f"Production_Summary_{start:%d-%m-%Y}_to_{end:%d-%m-%Y}.xlsx")
+
+
+@app.get("/dashboard")
+async def dashboard(user=Depends(get_user)):
+    live_date, live_shift = derive_business_context()
+    async with pool.acquire() as c:
+        low, high = await get_thresholds(c)
+        materials = await material_rows(c)
+        products = await product_rows(c)
+        today = await shift_report_data(c, live_date)
+        summary = await summary_data(c, live_date - timedelta(days=13), live_date)
+    gf = sum(m["ground_floor_kg"] for m in materials)
+    ff = sum(m["first_floor_kg"] for m in materials)
+    return {
+        "live_business_date": live_date.isoformat(), "live_shift": live_shift,
+        "thresholds": {"reorder_below_kg": kg_out(low), "optimal_above_kg": kg_out(high)},
+        "stock": {
+            "ground_floor_kg": kg_out(gf), "ground_floor_status": stock_status(gf, low, high),
+            "first_floor_kg": kg_out(ff), "first_floor_status": stock_status(ff, low, high),
+            "raw_total_kg": kg_out(gf + ff), "raw_total_status": stock_status(gf + ff, low, high),
+            "roll_store_kg": kg_out(sum(p["quantity_kg"] for p in products if p["kind"] == "ROLL")),
+            "finished_store_kg": kg_out(sum(p["quantity_kg"] for p in products if p["kind"] == "FINISHED")),
+        },
+        "reorder": [m for m in materials if m["active"] and m["status"] == "REORDER" and m["name"] != REGRIND_MATERIAL],
+        "today": {"AM": {s: {k: v for k, v in today["AM"][s].items() if k != "entries"} for s in ("plant", "cutting")},
+                  "PM": {s: {k: v for k, v in today["PM"][s].items() if k != "entries"} for s in ("plant", "cutting")},
+                  "day_and_night": today["day_and_night"]},
+        "trend": summary["days"],
+        "totals_14d": summary["totals"],
+    }
+
+
+# ── Day close ──
 
 @app.post("/stock/day-close")
-async def close_stock_day(request: Request, user=Depends(get_user)):
+async def close_day(request: Request, user=Depends(get_user)):
     require_owner_or_admin(user)
     body = await request.json()
     day = parse_required_date(body.get("business_date"), "business_date")
-    live_date, _ = derive_business_context()
-    if day > live_date:
+    if day > derive_business_context()[0]:
         raise HTTPException(400, "A future day cannot be closed")
     note = str(body.get("note") or "").strip() or None
     async with pool.acquire() as c:
         async with c.transaction():
             await c.execute("SELECT pg_advisory_xact_lock(hashtext('vp-day-close'))")
-            ledger = await build_day_ledger(c, day)
-            snapshot = {
-                "business_date": day.isoformat(),
-                "plant_closing_kg": ledger["totals"]["PLANT"]["closing_kg"],
-                "totals": {loc: ledger["totals"][loc]["closing_kg"] for loc in ledger["totals"]},
-                "materials": [{
-                    "key": m["key"], "material_id": m["material_id"], "material_name": m["material_name"],
-                    **{f"{loc.lower()}_closing_kg": m["locations"][loc]["closing_kg"]
-                       for loc in (*LEDGER_LOCATIONS, "PLANT")},
-                } for m in ledger["materials"]],
-                "machines": ledger["machines"],
-            }
+            register = await register_data(c, day)
             await c.execute(
                 """INSERT INTO stock_day_closings (business_date, snapshot, note, closed_by, closed_at)
                    VALUES ($1, $2::jsonb, $3, $4, NOW())
-                   ON CONFLICT (business_date) DO UPDATE
-                      SET snapshot = EXCLUDED.snapshot, note = EXCLUDED.note,
-                          closed_by = EXCLUDED.closed_by, closed_at = NOW()""",
-                day, orjson.dumps(snapshot, default=_orjson_default).decode(), note,
-                user_id_from_token(user))
-            ledger = await build_day_ledger(c, day)
+                   ON CONFLICT (business_date) DO UPDATE SET snapshot = EXCLUDED.snapshot, note = EXCLUDED.note,
+                       closed_by = EXCLUDED.closed_by, closed_at = NOW()""",
+                day, orjson.dumps(register, default=_orjson_default).decode(), note, user_id_from_token(user))
     await broadcast("stock")
-    return {"success": True, "ledger": ledger}
+    return {"success": True, "business_date": day.isoformat()}
 
 
 @app.get("/stock/day-closings")
 async def list_day_closings(user=Depends(get_user)):
     async with pool.acquire() as c:
-        result = rows(await c.fetch(
-            """SELECT sdc.business_date, sdc.closed_at, sdc.note, u.name AS closed_by_name,
-                      (sdc.snapshot->>'plant_closing_kg')::float AS plant_closing_kg
-                 FROM stock_day_closings sdc LEFT JOIN users u ON u.id = sdc.closed_by
-                ORDER BY sdc.business_date DESC LIMIT 120"""))
-    return result
-
-
-# ── Day-wise usage ──
-
-@app.get("/stock/usage")
-async def get_stock_usage(date_from: str = None, date_to: str = None, user=Depends(get_user)):
-    live_date, _ = derive_business_context()
-    end = parse_optional_date(date_to) or live_date
-    start = parse_optional_date(date_from) or (end - timedelta(days=13))
-    if start > end:
-        raise HTTPException(400, "date_from must be on or before date_to")
-    bd = sql_business_date("sal.business_date", "sal.occurred_at")
-    sh = sql_shift("sal.shift", "sal.occurred_at")
-    async with pool.acquire() as c:
-        usage = rows(await c.fetch(
-            f"""SELECT {bd} AS business_date, {sh} AS shift, sal.material_id, mm.name AS material_name,
-                       -SUM(COALESCE(sal.floor_delta_kg, 0) + COALESCE(sal.machines_total_delta_kg, 0))::float AS consumed_kg,
-                       -SUM(COALESCE(sal.machines_total_delta_kg, 0))::float AS from_machine_kg,
-                       -SUM(COALESCE(sal.floor_delta_kg, 0))::float AS from_ground_floor_kg
-                  FROM stock_activity_log sal
-                  JOIN materials_master mm ON mm.id = sal.material_id
-                 WHERE sal.source_domain = 'PRODUCTION' AND {bd} BETWEEN $1 AND $2
-                 GROUP BY 1, 2, 3, 4
-                HAVING SUM(COALESCE(sal.floor_delta_kg, 0) + COALESCE(sal.machines_total_delta_kg, 0)) <> 0
-                 ORDER BY 1 DESC, 2, 4""", start, end))
-        moved = rows(await c.fetch(
-            f"""SELECT {bd} AS business_date, {sh} AS shift,
-                       SUM(CASE WHEN sal.action = 'REVERSE' THEN -sal.quantity_kg ELSE sal.quantity_kg END)::float AS moved_kg
-                  FROM stock_activity_log sal
-                 WHERE sal.source_domain IN ('FLOOR_TRANSFER', 'STOCK_TRANSFER')
-                   AND sal.action IN ('CREATE', 'REVERSE') AND {bd} BETWEEN $1 AND $2
-                 GROUP BY 1, 2""", start, end))
-        received = rows(await c.fetch(
-            f"""SELECT {bd} AS business_date, {sh} AS shift,
-                       SUM(COALESCE(sal.warehouse_delta_kg, 0))::float AS received_kg
-                  FROM stock_activity_log sal
-                 WHERE sal.source_domain = 'RAW_INPUT' AND {bd} BETWEEN $1 AND $2
-                 GROUP BY 1, 2""", start, end))
-        output = rows(await c.fetch(
-            f"""SELECT {sql_business_date('pl.business_date', 'pl.created_at')} AS business_date,
-                       {sql_shift('pl.shift', 'pl.created_at')} AS shift,
-                       COUNT(*)::int AS entries, COUNT(DISTINCT pl.batch_id)::int AS batches,
-                       COUNT(DISTINCT pl.machine_id)::int AS machines
-                  FROM production_logs pl
-                 WHERE {sql_business_date('pl.business_date', 'pl.created_at')} BETWEEN $1 AND $2
-                 GROUP BY 1, 2""", start, end))
-    days = []
-    cursor = end
-    while cursor >= start:
-        day_rows = [u for u in usage if u["business_date"] == cursor]
-        day = {"business_date": cursor.isoformat(), "shifts": {}, "materials": [], "total_consumed_kg": 0.0}
-        for sh_ in SHIFTS:
-            consumed = sum(u["consumed_kg"] for u in day_rows if u["shift"] == sh_)
-            out = next((o for o in output if o["business_date"] == cursor and o["shift"] == sh_), {})
-            day["shifts"][sh_] = {
-                "consumed_kg": kg_out(consumed),
-                "moved_kg": kg_out(sum(m["moved_kg"] or 0 for m in moved
-                                       if m["business_date"] == cursor and m["shift"] == sh_)),
-                "received_kg": kg_out(sum(r_["received_kg"] or 0 for r_ in received
-                                          if r_["business_date"] == cursor and r_["shift"] == sh_)),
-                "entries": out.get("entries", 0), "batches": out.get("batches", 0),
-                "machines": out.get("machines", 0),
-            }
-        by_material: dict = {}
-        for u in day_rows:
-            item = by_material.setdefault(u["material_id"], {
-                "material_id": u["material_id"], "material_name": u["material_name"],
-                "am_kg": 0.0, "pm_kg": 0.0, "from_machine_kg": 0.0, "from_ground_floor_kg": 0.0})
-            item["am_kg" if u["shift"] == "AM" else "pm_kg"] += u["consumed_kg"]
-            item["from_machine_kg"] += u["from_machine_kg"]
-            item["from_ground_floor_kg"] += u["from_ground_floor_kg"]
-        for item in by_material.values():
-            item["total_kg"] = kg_out(item["am_kg"] + item["pm_kg"])
-            for k in ("am_kg", "pm_kg", "from_machine_kg", "from_ground_floor_kg"):
-                item[k] = kg_out(item[k])
-        day["materials"] = sorted(by_material.values(), key=lambda i: -i["total_kg"])
-        day["total_consumed_kg"] = kg_out(sum(i["total_kg"] for i in day["materials"]))
-        days.append(day)
-        cursor -= timedelta(days=1)
-    return {"date_from": start.isoformat(), "date_to": end.isoformat(), "days": days,
-            "total_consumed_kg": kg_out(sum(d["total_consumed_kg"] for d in days))}
-
-
-# ── Search across every stock document (returns included) ──
-
-@app.get("/stock/search")
-async def search_stock(q: str = "", user=Depends(get_user)):
-    term = str(q or "").strip()
-    if len(term) < 2:
-        return {"query": term, "results": []}
-    like = f"%{term}%"
-    async with pool.acquire() as c:
-        returns = rows(await c.fetch(
-            """SELECT 'RETURN' AS kind, sr.id, sr.return_no AS reference, mm.name AS material_name,
-                      sr.quantity_kg::float AS quantity_kg, sr.business_date, sr.shift,
-                      sr.location, m.name AS machine_name, sr.returned_to, sr.reason AS detail,
-                      'RETURNED' AS status, sr.created_at
-                 FROM stock_returns sr
-                 JOIN materials_master mm ON mm.id = sr.material_id
-                 LEFT JOIN machines m ON m.id = sr.machine_id
-                 LEFT JOIN production_batches pb ON pb.id = sr.production_batch_id
-                WHERE sr.return_no ILIKE $1 OR mm.name ILIKE $1 OR sr.returned_to ILIKE $1
-                   OR sr.reason ILIKE $1 OR pb.batch_no ILIKE $1
-                ORDER BY sr.id DESC LIMIT 50""", like))
-        transfers = rows(await c.fetch(
-            """SELECT 'TRANSFER' AS kind, st.id, st.transfer_no AS reference, mm.name AS material_name,
-                      st.quantity_kg::float AS quantity_kg, st.business_date, st.shift,
-                      st.from_location, st.to_location, fm.name AS from_machine_name,
-                      tm.name AS to_machine_name, st.note AS detail, st.status, st.created_at
-                 FROM stock_transfers st
-                 JOIN materials_master mm ON mm.id = st.material_id
-                 LEFT JOIN machines fm ON fm.id = st.from_machine_id
-                 LEFT JOIN machines tm ON tm.id = st.to_machine_id
-                WHERE st.transfer_no ILIKE $1 OR mm.name ILIKE $1 OR st.note ILIKE $1
-                ORDER BY st.id DESC LIMIT 50""", like))
-        batches = rows(await c.fetch(
-            """SELECT 'BATCH' AS kind, pb.id, pb.batch_no AS reference,
-                      STRING_AGG(DISTINCT COALESCE(mt.name, mat.name), ', ') AS material_name,
-                      COALESCE(SUM(pl.gross_weight - pl.tare_weight), 0)::float AS quantity_kg,
-                      pb.business_date, pb.shift, pb.note AS detail, pb.status, pb.created_at
-                 FROM production_batches pb
-                 LEFT JOIN production_logs pl ON pl.batch_id = pb.id
-                 LEFT JOIN material_types mt ON mt.id = pl.material_type_id
-                 LEFT JOIN materials_master mat ON mat.id = pl.material_id
-                WHERE pb.batch_no ILIKE $1 OR pb.note ILIKE $1 OR mt.name ILIKE $1
-                   OR mat.name ILIKE $1 OR pl.size ILIKE $1
-                GROUP BY pb.id ORDER BY pb.id DESC LIMIT 50""", like))
-        production = rows(await c.fetch(
-            f"""SELECT 'PRODUCTION' AS kind, pl.id, COALESCE(pb.batch_no, 'Entry #' || pl.id) AS reference,
-                       COALESCE(mt.name, mat.name) AS material_name,
-                       (pl.gross_weight - pl.tare_weight)::float AS quantity_kg,
-                       {sql_business_date('pl.business_date', 'pl.created_at')} AS business_date,
-                       {sql_shift('pl.shift', 'pl.created_at')} AS shift,
-                       m.name AS machine_name, pl.size AS detail, 'ACTIVE' AS status, pl.created_at
-                  FROM production_logs pl
-                  LEFT JOIN production_batches pb ON pb.id = pl.batch_id
-                  LEFT JOIN machines m ON m.id = pl.machine_id
-                  LEFT JOIN material_types mt ON mt.id = pl.material_type_id
-                  LEFT JOIN materials_master mat ON mat.id = pl.material_id
-                 WHERE COALESCE(mt.name, mat.name) ILIKE $1 OR pl.size ILIKE $1
-                    OR pl.worker_name ILIKE $1 OR m.name ILIKE $1
-                 ORDER BY pl.id DESC LIMIT 50""", like))
-        receipts = rows(await c.fetch(
-            f"""SELECT 'RECEIPT' AS kind, rb.id, 'Receipt #' || rb.id AS reference,
-                       rb.material_name, rb.quantity_kg::float AS quantity_kg,
-                       {sql_business_date('rb.business_date', 'rb.created_at')} AS business_date,
-                       {sql_shift('rb.shift', 'rb.created_at')} AS shift,
-                       rb.note AS detail, 'ACTIVE' AS status, rb.created_at
-                  FROM raw_material_batches rb
-                 WHERE rb.material_name ILIKE $1 OR rb.note ILIKE $1 OR rb.thickness ILIKE $1
-                 ORDER BY rb.id DESC LIMIT 50""", like))
-        balances = await current_location_balances(c)
-    for t in transfers:
-        t["detail"] = " → ".join([
-            describe_location(t["from_location"], t["from_machine_name"]),
-            describe_location(t["to_location"], t["to_machine_name"])]) + (
-            f" · {t['detail']}" if t["detail"] else "")
-    for r_ in returns:
-        r_["detail"] = (f"Returned from {describe_location(r_['location'], r_['machine_name'])}"
-                        + (f" to {r_['returned_to']}" if r_["returned_to"] else "")
-                        + f" · {r_['detail']}")
-    stock = []
-    for entry in balances.values():
-        if entry["material_name"] and term.lower() in entry["material_name"].lower():
-            plant = sum((entry[k] for k in LEDGER_LOCATIONS), Decimal("0"))
-            stock.append({
-                "kind": "STOCK", "id": entry["key"], "reference": entry["material_name"],
-                "material_name": entry["material_name"], "quantity_kg": kg_out(plant),
-                "detail": (f"Warehouse {kg_out(entry['WAREHOUSE'])} kg · Ground Floor "
-                           f"{kg_out(entry['GROUND_FLOOR'])} kg · First Floor "
-                           f"{kg_out(entry['FIRST_FLOOR'])} kg · Machines {kg_out(entry['MACHINES'])} kg"),
-                "status": "IN_STOCK", "business_date": None, "shift": None,
-            })
-    results = returns + stock + batches + transfers + production + receipts
-    return {"query": term, "results": results,
-            "counts": {"returns": len(returns), "stock": len(stock), "batches": len(batches),
-                       "transfers": len(transfers), "production": len(production),
-                       "receipts": len(receipts)}}
-
-
-# ── Reports ──
-
-@app.get("/reports/machines")
-async def get_reports_machines(date_from: str = None, date_to: str = None, machine_id: str = None, user=Depends(get_user)):
-    async with pool.acquire() as c:
-        conds, vals = [], []
-        if date_from:
-            vals.append(parse_date(date_from)); conds.append(f"pl.created_at >= ${len(vals)}::date")
-        if date_to:
-            vals.append(parse_date(date_to)); conds.append(f"pl.created_at < (${len(vals)}::date + INTERVAL '1 day')")
-        if machine_id:
-            vals.append(parse_machine_id(machine_id)); conds.append(f"pl.machine_id = ${len(vals)}")
-        where = f"WHERE {' AND '.join(conds)}" if conds else ""
         return rows(await c.fetch(
-            f"SELECT m.id AS machine_id, m.name AS machine_name, COUNT(pl.id) AS total_entries, COALESCE(SUM(pl.gross_weight - pl.tare_weight), 0)::float AS total_net_weight_kg, COALESCE(SUM(pl.gross_weight), 0)::float AS total_gross_weight_kg, COALESCE(SUM(pl.tare_weight), 0)::float AS total_tare_weight_kg FROM machines m LEFT JOIN production_logs pl ON pl.machine_id = m.id {where} GROUP BY m.id, m.name ORDER BY m.id",
-            *vals))
-
-
-PRODUCTION_REPORT_MAX_DAYS = 93
-
-
-@app.get("/reports/production.xlsx")
-async def production_report_xlsx(date_from: str = None, date_to: str = None, user=Depends(get_user)):
-    """Formatted multi-sheet Excel production report for a business-date range."""
-    # Imported here so a missing optional dependency only breaks this download.
-    from production_report import build_production_workbook
-
-    end = parse_optional_date(date_to) or derive_business_context()[0]
-    start = parse_optional_date(date_from) or end - timedelta(days=6)
-    if start > end:
-        raise HTTPException(400, "date_from must be on or before date_to")
-    if (end - start).days + 1 > PRODUCTION_REPORT_MAX_DAYS:
-        raise HTTPException(400, f"Choose at most {PRODUCTION_REPORT_MAX_DAYS} days per report")
-
-    pl_bd = sql_business_date("pl.business_date", "pl.created_at")
-    pl_sh = sql_shift("pl.shift", "pl.created_at")
-    async with pool.acquire() as c:
-        entries = rows(await c.fetch(
-            f"""SELECT pl.id, {pl_bd} AS business_date, {pl_sh} AS shift, pl.created_at,
-                       pl.machine_id, m.name AS machine_name, {MACHINE_FLOOR_SQL} AS floor,
-                       pl.batch_id, pb.batch_no, mm.name AS material_name, pl.size, pl.worker_name,
-                       pl.gross_weight, pl.tare_weight, pl.net_weight, pl.machine_consumed_kg,
-                       u.name AS entered_by, sal.occurred_at AS keyed_at
-                  FROM production_logs pl
-                  JOIN machines m ON m.id = pl.machine_id
-                  LEFT JOIN materials_master mm ON mm.id = pl.material_id
-                  LEFT JOIN production_batches pb ON pb.id = pl.batch_id
-                  LEFT JOIN users u ON u.id = pl.created_by
-                  LEFT JOIN LATERAL (
-                      SELECT occurred_at FROM stock_activity_log
-                       WHERE source_domain = 'PRODUCTION' AND source_id = pl.id AND action = 'CREATE'
-                       ORDER BY id LIMIT 1) sal ON TRUE
-                 WHERE {pl_bd} BETWEEN $1 AND $2
-                 ORDER BY 2, 3, pl.created_at, pl.id""", start, end))
-        machines = rows(await c.fetch(
-            f"SELECT id, name, type, {MACHINE_FLOOR_SQL} AS floor FROM machines ORDER BY id"))
-        batches = rows(await c.fetch(
-            """SELECT pb.*, u.name AS created_by_name FROM production_batches pb
-                 LEFT JOIN users u ON u.id = pb.created_by
-                WHERE pb.business_date BETWEEN $1 AND $2
-                ORDER BY pb.business_date, pb.shift, pb.batch_no""", start, end))
-        machine_issues = rows(await c.fetch(
-            """SELECT st.transfer_no, st.business_date, st.shift, st.created_at, st.from_location,
-                      st.quantity_kg, st.status, st.note, m.name AS machine_name,
-                      mt.name AS material_name, u.name AS created_by_name
-                 FROM stock_transfers st
-                 JOIN machines m ON m.id = st.to_machine_id
-                 LEFT JOIN material_types mt ON mt.id = st.material_type_id
-                 LEFT JOIN users u ON u.id = st.created_by
-                WHERE st.to_location = 'MACHINE' AND st.business_date BETWEEN $1 AND $2
-                ORDER BY st.business_date, st.shift, st.created_at""", start, end))
-        wastage = rows(await c.fetch(
-            """SELECT w.date, w.weight, u.name AS created_by_name FROM wastage_data w
-                 LEFT JOIN users u ON u.id = w.created_by
-                WHERE w.date BETWEEN $1 AND $2 ORDER BY w.date, w.sno""", start, end))
-        sal_bd = sql_business_date("sal.business_date", "sal.occurred_at")
-        sal_sh = sql_shift("sal.shift", "sal.occurred_at")
-        reversals = rows(await c.fetch(
-            f"""SELECT sal.occurred_at, {sal_bd} AS business_date, {sal_sh} AS shift, sal.source_id,
-                       sal.quantity_kg, sal.reason, m.name AS machine_name, mm.name AS material_name,
-                       u.name AS created_by_name
-                  FROM stock_activity_log sal
-                  LEFT JOIN machines m ON m.id = sal.machine_id
-                  LEFT JOIN materials_master mm ON mm.id = sal.material_id
-                  LEFT JOIN users u ON u.id = sal.created_by
-                 WHERE sal.source_domain = 'PRODUCTION' AND sal.action = 'REVERSE'
-                   AND {sal_bd} BETWEEN $1 AND $2
-                 ORDER BY sal.occurred_at""", start, end))
-        ledgers = [await build_day_ledger(c, start + timedelta(days=i))
-                   for i in range((end - start).days + 1)]
-        generated_by = await c.fetchval("SELECT name FROM users WHERE id = $1", user_id_from_token(user)) \
-            or user.get("name") or user.get("email") or "—"
-
-    content = build_production_workbook(
-        start=start, end=end, generated_by=generated_by, generated_at=datetime.now(),
-        entries=entries, machines=machines, batches=batches, machine_issues=machine_issues,
-        wastage=wastage, reversals=reversals, ledgers=ledgers,
-        am_start=f"{SHIFT_AM_START:%H:%M}", pm_start=f"{SHIFT_PM_START:%H:%M}")
-    filename = f"Production_Report_{start:%Y-%m-%d}_to_{end:%Y-%m-%d}.xlsx"
-    return Response(
-        content=content,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"',
-                 "Cache-Control": "no-store"})
-
-
-# ── Analytics ──
-
-@app.get("/analytics/plant-efficiency-v2")
-async def get_plant_efficiency_v2(date_from: str = None, date_to: str = None, user=Depends(get_user)):
-    async with pool.acquire() as c:
-        vals = []
-        where = build_date_where(date_from, date_to, vals, "created_at")
-        # Input is material actually issued to the shop floor in the period, not
-        # material purchased in the period — a delivery received on the 1st is not
-        # input to the run, and dividing by it made efficiency read far too low.
-        movement_where = where.replace("created_at", "mv.created_at") if where else ""
-        r_ = await c.fetchrow(
-            f"""SELECT
-                  COALESCE(SUM(fi.quantity_kg), 0) AS total_input_kg,
-                  COALESCE(SUM(pl.net_weight), 0) AS total_output_kg,
-                  CASE WHEN COALESCE(SUM(fi.quantity_kg), 0) = 0 THEN 0
-                  ELSE ROUND((COALESCE(SUM(pl.net_weight), 0) / COALESCE(SUM(fi.quantity_kg), 0)) * 100, 2)
-                  END AS efficiency_percent
-                FROM
-                  (SELECT COALESCE(SUM(mv.quantity_kg), 0) AS quantity_kg
-                     FROM material_movements mv
-                    WHERE mv.movement_type = 'FLOOR_TRANSFER' AND mv.direction = 'OUT'
-                      {('AND ' + movement_where[len('WHERE '):]) if movement_where else ''}) fi,
-                  (SELECT COALESCE(SUM(gross_weight - tare_weight), 0) AS net_weight FROM production_logs {where}) pl""",
-            *vals)
-        return dict(r_) if r_ else {"total_input_kg": 0, "total_output_kg": 0, "efficiency_percent": 0}
-
-
-# ── Inventory ──
-
-@app.get("/inventory/transactions")
-async def get_inventory_transactions(date_from: str = None, date_to: str = None, user=Depends(get_user)):
-    async with pool.acquire() as c:
-        vals = []
-        where = build_date_where(date_from, date_to, vals, "rb.created_at")
-        vals.append(500)
-        return rows(await c.fetch(
-            f"SELECT rb.*, u.name AS created_by_name FROM raw_material_batches rb LEFT JOIN users u ON u.id = rb.created_by {where} ORDER BY rb.created_at DESC LIMIT ${len(vals)}",
-            *vals))
+            """SELECT d.business_date, d.closed_at, d.note, u.name AS closed_by_name,
+                      (d.snapshot->'plant_raw_total'->>'closing_kg')::float AS raw_closing_kg
+                 FROM stock_day_closings d LEFT JOIN users u ON u.id = d.closed_by
+                ORDER BY d.business_date DESC LIMIT 120"""))
 
 
 # ── Auth ──
-
 @app.post("/auth/register")
 async def register(request: Request):
     body = await request.json()
@@ -3798,10 +1848,77 @@ async def get_users(user=Depends(owner_only)):
         return rows(await c.fetch("SELECT id, email, name, role, status FROM users ORDER BY id DESC"))
 
 
-# ── Orders ──
+# ── Orders and dispatch ──
+#
+# Each order item points at a stock item (a finished size, or a roll size when
+# rolls are sold as they are). Supplying against an order is a dispatch: it takes
+# the goods out of the Finished Goods Store / Roll Store through the ledger.
+
+def normalize_order_status(s: str) -> str:
+    v = str(s or "").strip().lower()
+    if v in ("active", "completed", "cancelled"):
+        return "completed" if v == "completed" else "cancelled" if v == "cancelled" else "Active"
+    return v
+
+
+async def resolve_order_product(c, item: dict) -> dict:
+    if item.get("product_id") not in (None, ""):
+        return await product_by_id(c, item["product_id"])
+    code = normalize_product_code(item.get("item_name"))
+    for kind in ("FINISHED", "ROLL"):
+        r_ = await c.fetchrow("SELECT * FROM products WHERE kind = $1 AND code = $2", kind, code)
+        if r_:
+            return dict(r_)
+    return await get_or_create_product(c, "FINISHED", code)
+
+
+async def fetch_order_items(conn, order_id: int) -> list:
+    rs = await conn.fetch(
+        """SELECT oi.id, oi.order_id, oi.item_name, oi.product_id, p.kind AS product_kind, p.code AS product_code,
+               oi.required_quantity::float AS required_quantity,
+               COALESCE(oi.unit_price, 0)::float AS unit_price,
+               (oi.required_quantity * COALESCE(oi.unit_price, 0))::float AS total_amount,
+               COALESCE(SUM(fr.supplied_quantity), 0)::float AS fulfilled_quantity,
+               GREATEST(oi.required_quantity - COALESCE(SUM(fr.supplied_quantity), 0), 0)::float AS remaining_quantity,
+               COALESCE(sb.qty_kg, 0)::float AS in_stock_kg,
+               oi.created_at
+           FROM order_items oi
+           LEFT JOIN products p ON p.id = oi.product_id
+           LEFT JOIN stock_balances sb ON sb.item_kind = 'PRODUCT' AND sb.item_id = oi.product_id
+           LEFT JOIN fulfillment_records fr ON fr.order_item_id = oi.id
+           WHERE oi.order_id = $1
+           GROUP BY oi.id, p.kind, p.code, sb.qty_kg
+           ORDER BY oi.created_at ASC, oi.id ASC""",
+        order_id)
+    return rows(rs)
+
+
+async def hydrate_orders(conn, orders: list) -> list:
+    return [{**o, "items": await fetch_order_items(conn, o["id"])} for o in orders]
+
+
+async def sync_order_status(conn, order_id: int):
+    o = await conn.fetchrow("SELECT status FROM orders WHERE id = $1 FOR UPDATE", order_id)
+    if not o or o["status"] == "cancelled":
+        return o["status"] if o else None
+    summary = await conn.fetchrow(
+        """SELECT COUNT(*)::int AS total_items,
+               COUNT(*) FILTER (WHERE COALESCE(fr.fulfilled_quantity, 0) >= oi.required_quantity)::int AS completed_items
+           FROM order_items oi
+           LEFT JOIN (SELECT order_item_id, SUM(supplied_quantity) AS fulfilled_quantity
+                      FROM fulfillment_records GROUP BY order_item_id) fr ON fr.order_item_id = oi.id
+           WHERE oi.order_id = $1""",
+        order_id)
+    total = summary["total_items"] if summary else 0
+    completed = summary["completed_items"] if summary else 0
+    next_status = "completed" if total > 0 and total == completed else "Active"
+    await conn.execute("UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2", next_status, order_id)
+    return next_status
+
 
 @app.post("/orders")
 async def create_order(request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
     body = await request.json()
     order_number = str(body.get("order_number") or "").strip()
     client_name = str(body.get("client_name") or "").strip()
@@ -3811,28 +1928,26 @@ async def create_order(request: Request, user=Depends(get_user)):
         raise HTTPException(400, "client_name is required")
     order_date = parse_optional_date(body.get("order_date"))
     normalized_status = normalize_order_status(body.get("status", "Active"))
-    norm_items = [
-        {"item_name": str(i.get("item_name") or "").strip(),
-         "required_quantity": float(i.get("required_quantity", 0)),
-         "unit_price": float(i.get("unit_price") or 0)}
-        for i in (body.get("items") or [])
-        if str(i.get("item_name") or "").strip() and float(i.get("required_quantity", 0)) > 0
-    ]
+    items = [i for i in (body.get("items") or [])
+             if (str(i.get("item_name") or "").strip() or i.get("product_id")) and to_num(i.get("required_quantity")) > 0]
     async with pool.acquire() as c:
         try:
             async with c.transaction():
-                order_row = await c.fetchrow(
+                order = dict(await c.fetchrow(
                     "INSERT INTO orders (order_number, client_name, status, order_date) VALUES ($1, $2, $3, $4) RETURNING *",
-                    order_number, client_name, normalized_status, order_date)
-                order = dict(order_row)
-                for item in norm_items:
-                    await c.execute("INSERT INTO order_items (order_id, item_name, required_quantity, unit_price) VALUES ($1, $2, $3, $4)",
-                                    order["id"], item["item_name"], item["required_quantity"], item["unit_price"])
+                    order_number, client_name, normalized_status, order_date))
+                for item in items:
+                    product = await resolve_order_product(c, item)
+                    await c.execute(
+                        """INSERT INTO order_items (order_id, item_name, product_id, required_quantity, unit_price)
+                           VALUES ($1, $2, $3, $4, $5)""",
+                        order["id"], str(item.get("item_name") or product["code"]).strip(), product["id"],
+                        to_num(item.get("required_quantity")), to_num(item.get("unit_price")))
                 hydrated = await hydrate_orders(c, [order])
-            await broadcast("orders")
-            return hydrated[0]
         except asyncpg.UniqueViolationError:
             raise HTTPException(400, "Order number already exists")
+    await broadcast("orders")
+    return hydrated[0]
 
 
 @app.get("/orders")
@@ -3859,31 +1974,29 @@ async def get_order(order_id: int, user=Depends(get_user)):
         r_ = await c.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
         if not r_:
             raise HTTPException(404, "Order not found")
-        hydrated = await hydrate_orders(c, [dict(r_)])
-        return hydrated[0]
+        return (await hydrate_orders(c, [dict(r_)]))[0]
 
 
 @app.delete("/orders/{order_id}")
 async def delete_order(order_id: int, user=Depends(get_user)):
+    """Deleting an order returns everything dispatched against it to stock first."""
     require_owner_or_admin(user)
     async with pool.acquire() as c:
         async with c.transaction():
-            # order_items and fulfillment_records cascade away with the order, so say
-            # how much delivery history went with it instead of deleting silently.
-            counts = await c.fetchrow(
-                """SELECT (SELECT COUNT(*) FROM order_items WHERE order_id = $1)::int AS items,
-                          (SELECT COUNT(*) FROM fulfillment_records WHERE order_id = $1)::int AS fulfilments""",
-                order_id)
+            dispatched = await c.fetch("SELECT id FROM fulfillment_records WHERE order_id = $1 ORDER BY id", order_id)
+            for d in dispatched:
+                await reverse_document(c, doc_type="DISPATCH", doc_id=d["id"], user=user)
             r_ = await c.fetchrow("DELETE FROM orders WHERE id = $1 RETURNING *", order_id)
             if not r_:
                 raise HTTPException(404, "Order not found")
     await broadcast("orders")
-    return {"message": "Order deleted", "deleted": dict(r_),
-            "deleted_items": counts["items"], "deleted_fulfilments": counts["fulfilments"]}
+    await broadcast("stock")
+    return {"message": "Order deleted", "deleted": dict(r_), "returned_dispatches": len(dispatched)}
 
 
 @app.put("/orders/{order_id}/status")
 async def update_order_status(order_id: int, request: Request, user=Depends(get_user)):
+    require_owner_or_admin(user)
     body = await request.json()
     normalized = normalize_order_status(body.get("status"))
     if normalized not in ("Active", "completed", "cancelled"):
@@ -3896,57 +2009,61 @@ async def update_order_status(order_id: int, request: Request, user=Depends(get_
     return dict(r_)
 
 
-# ── Fulfillment ──
-
 @app.post("/fulfillment")
 async def create_fulfillment(request: Request, user=Depends(get_user)):
     body = await request.json()
     order_number = str(body.get("order_number") or "").strip()
     item_id = body.get("item_id")
     item_index = body.get("item_index")
-    note = body.get("note")
     if not order_number:
         raise HTTPException(400, "order_number is required")
-    try:
-        quantity = float(body.get("supplied_quantity"))
-        if quantity <= 0:
-            raise ValueError()
-    except (TypeError, ValueError):
-        raise HTTPException(400, "supplied_quantity must be greater than 0")
+    quantity = parse_kg(body.get("supplied_quantity"), "supplied_quantity")
+    business_date, shift, entry_ts = parse_business_context(body)
     async with pool.acquire() as c:
         async with c.transaction():
+            await guard_closed_day(c, user, business_date)
             order = await c.fetchrow("SELECT id, status FROM orders WHERE order_number = $1 FOR UPDATE", order_number)
             if not order:
                 raise HTTPException(404, "Order not found")
+            if order["status"] == "cancelled":
+                raise HTTPException(400, "This order is cancelled")
             target = None
             if item_id is not None:
-                r_ = await c.fetchrow("SELECT id, item_name, required_quantity FROM order_items WHERE id = $1 AND order_id = $2 FOR UPDATE", int(item_id), order["id"])
-                target = dict(r_) if r_ else None
-            elif item_index is not None and item_index != "":
-                r_ = await c.fetchrow("SELECT id, item_name, required_quantity FROM order_items WHERE order_id = $1 ORDER BY created_at ASC, id ASC OFFSET $2 LIMIT 1 FOR UPDATE", order["id"], int(item_index))
-                target = dict(r_) if r_ else None
+                target = await c.fetchrow("SELECT * FROM order_items WHERE id = $1 AND order_id = $2 FOR UPDATE",
+                                          int(item_id), order["id"])
+            elif item_index not in (None, ""):
+                target = await c.fetchrow(
+                    "SELECT * FROM order_items WHERE order_id = $1 ORDER BY created_at ASC, id ASC OFFSET $2 LIMIT 1 FOR UPDATE",
+                    order["id"], int(item_index))
             if not target:
                 raise HTTPException(400, "Valid order item is required")
-            fulfilled_row = await c.fetchrow("SELECT COALESCE(SUM(supplied_quantity), 0)::float AS fulfilled_quantity FROM fulfillment_records WHERE order_item_id = $1", target["id"])
-            fulfilled_qty = float(fulfilled_row["fulfilled_quantity"]) if fulfilled_row else 0.0
-            remaining = float(target["required_quantity"]) - fulfilled_qty
+            target = dict(target)
+            if not target.get("product_id"):
+                product = await resolve_order_product(c, target)
+                await c.execute("UPDATE order_items SET product_id = $1 WHERE id = $2", product["id"], target["id"])
+                target["product_id"] = product["id"]
+            product = await product_by_id(c, target["product_id"])
+            fulfilled = decimal_kg(await c.fetchval(
+                "SELECT COALESCE(SUM(supplied_quantity), 0) FROM fulfillment_records WHERE order_item_id = $1", target["id"]))
+            remaining = decimal_kg(target["required_quantity"]) - fulfilled
             if remaining < quantity:
-                raise HTTPException(400, f"Cannot supply more than remaining quantity ({max(remaining, 0):.2f} kg)")
+                raise HTTPException(400, f"Cannot supply more than remaining quantity ({float(max(remaining, 0)):.2f} kg)")
             insert_row = await c.fetchrow(
-                "INSERT INTO fulfillment_records (order_id, order_item_id, supplied_quantity, note, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-                order["id"], target["id"], quantity, note, user.get("id") or user.get("user_id"))
-            required_qty = float(target["required_quantity"])
-            supplied_total = fulfilled_qty + quantity
-            tol = await eval_tolerance(required_qty, supplied_total, c)
-            if supplied_total < required_qty - 1e-9:
-                # Partial deliveries are normal; the order is only measurable against
-                # tolerance once the item is fully supplied.
-                tol = {**tol, "tolerance_status": "PENDING"}
-            if STRICT_TOLERANCE and tol["tolerance_status"] == "BREACH":
-                raise HTTPException(400, {"error": "Tolerance breach", "details": tol})
+                """INSERT INTO fulfillment_records (order_id, order_item_id, supplied_quantity, note, created_by,
+                       business_date, shift, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW())) RETURNING *""",
+                order["id"], target["id"], quantity, body.get("note"), user_id_from_token(user),
+                business_date, shift, entry_ts)
+            receipt = await post_ledger(
+                c, doc_type="DISPATCH", doc_id=insert_row["id"], doc_no=f"DS-{insert_row['id']}",
+                business_date=business_date, shift=shift,
+                lines=[("PRODUCT", product["id"], PRODUCT_STORE[product["kind"]], -quantity)],
+                created_by=user_id_from_token(user), note=f"Order {order_number}", occurred_at=entry_ts)
             await sync_order_status(c, order["id"])
     await broadcast("orders")
-    return {**dict(insert_row), "order_number": order_number, "item_name": target["item_name"], "tolerance": tol}
+    await broadcast("stock")
+    return {**dict(insert_row), "order_number": order_number, "item_name": target["item_name"],
+            "stock_receipt": receipt}
 
 
 @app.get("/fulfillment")
@@ -3958,112 +2075,25 @@ async def get_fulfillment(order_number: str = None, limit: str = "500", user=Dep
         vals.append(min(max(int(limit) if limit.isdigit() else 500, 1), 1000))
         where = f"WHERE {' AND '.join(conds)}" if conds else ""
         return rows(await c.fetch(
-            f"SELECT fr.*, o.order_number, oi.item_name FROM fulfillment_records fr JOIN orders o ON o.id = fr.order_id JOIN order_items oi ON oi.id = fr.order_item_id {where} ORDER BY fr.created_at DESC LIMIT ${len(vals)}",
-            *vals))
+            f"""SELECT fr.*, o.order_number, oi.item_name FROM fulfillment_records fr
+                  JOIN orders o ON o.id = fr.order_id JOIN order_items oi ON oi.id = fr.order_item_id
+                {where} ORDER BY fr.created_at DESC LIMIT ${len(vals)}""", *vals))
 
 
-# ── Wastage ──
-
-@app.post("/wastage")
-async def create_wastage(request: Request, user=Depends(get_user)):
-    body = await request.json()
-    waste_date = parse_required_date(body.get("date"))
-    weight = body.get("weight")
-    if weight is None or float(weight) <= 0:
-        raise HTTPException(400, "weight must be greater than 0")
-    # wastage_data keeps only the day; the shift/time land on the audit row.
-    business_date, shift, _ = parse_business_context({**body, "business_date": waste_date.isoformat()})
+@app.delete("/fulfillment/{record_id}")
+async def delete_fulfillment(record_id: int, user=Depends(get_user)):
+    """Undo a dispatch: the goods go back into their store."""
     async with pool.acquire() as c:
         async with c.transaction():
-            # MAX(id)+1 outside a lock lets two simultaneous entries pick the same id
-            # and one of them dies on the primary key. Serialise the numbering.
-            await c.execute("LOCK TABLE wastage_data IN EXCLUSIVE MODE")
-            seq = await c.fetchrow("SELECT COALESCE(MAX(id), 0) + 1 AS next_id, COALESCE(MAX(sno), 0) + 1 AS next_sno FROM wastage_data")
-            r_ = await c.fetchrow(
-                "INSERT INTO wastage_data (id, sno, date, weight, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id, sno, date, weight, created_by",
-                seq["next_id"], seq["next_sno"], waste_date, float(weight), user_id_from_token(user))
-            activity = await record_stock_activity(
-                c, action="CREATE", source_domain="WASTAGE", source_id=r_["id"],
-                correlation_id=uuid4(), material_id=None, material_type_id=None,
-                quantity_kg=weight, balances={},
-                reason="Reporting only — no warehouse or floor stock change",
-                created_by=user_id_from_token(user), business_date=business_date, shift=shift)
-    await broadcast("wastage")
-    return AppResponse(status_code=201, content={"message": "Wastage recorded", "data": dict(r_),
-                                                  "activity_id": activity["id"],
-                                                  "stock_impact": "No warehouse or floor stock change"})
-
-
-@app.get("/wastage")
-async def get_wastage(date_from: str = None, date_to: str = None, user=Depends(get_user)):
-    async with pool.acquire() as c:
-        vals = []
-        where = build_date_where(date_from, date_to, vals, "date")
-        vals.append(500)
-        return rows(await c.fetch(f"SELECT id, sno, date, weight, created_by, (created_by IS NULL) AS is_legacy FROM wastage_data {where} ORDER BY sno DESC LIMIT ${len(vals)}", *vals))
-
-
-@app.put("/wastage/{wastage_id}")
-async def update_wastage(wastage_id: int, request: Request, user=Depends(get_user)):
-    body = await request.json()
-    waste_date = parse_required_date(body.get("date"))
-    weight = to_num(body.get("weight"))
-    if wastage_id <= 0 or weight <= 0:
-        raise HTTPException(400, "A valid entry and weight greater than zero are required")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            current = await c.fetchrow(
-                "SELECT id, created_by FROM wastage_data WHERE id = $1 FOR UPDATE",
-                wastage_id)
-            if not current:
-                raise HTTPException(404, "Wastage entry not found")
-            if current["created_by"] is None:
-                raise HTTPException(400, "Legacy wastage entries cannot be changed automatically")
-            require_entry_owner(user, current["created_by"])
-            link = await latest_activity_link(c, "WASTAGE", wastage_id)
-            updated = await c.fetchrow(
-                "UPDATE wastage_data SET date = $1, weight = $2 WHERE id = $3 RETURNING id, sno, date, weight, created_by",
-                waste_date, weight, wastage_id)
-            activity = await record_stock_activity(
-                c, action="UPDATE", source_domain="WASTAGE", source_id=wastage_id,
-                correlation_id=link["correlation_id"] if link else uuid4(),
-                material_id=None, material_type_id=None, quantity_kg=weight,
-                balances={}, reason="Reporting only — no warehouse or floor stock change",
-                created_by=user_id_from_token(user),
-                reverses_activity_id=link["activity_id"] if link else None)
-    await broadcast("wastage")
-    return {"message": "Wastage entry updated", "data": dict(updated),
-            "stock_impact": "No warehouse or floor stock change",
-            "activity_id": activity["id"]}
-
-
-@app.delete("/wastage/{wastage_id}")
-async def delete_wastage(wastage_id: int, user=Depends(get_user)):
-    if wastage_id <= 0:
-        raise HTTPException(400, "Invalid id")
-    async with pool.acquire() as c:
-        async with c.transaction():
-            current = await c.fetchrow(
-                "SELECT id, sno, weight, created_by FROM wastage_data WHERE id = $1 FOR UPDATE",
-                wastage_id)
-            if not current:
-                raise HTTPException(404, "Wastage entry not found")
-            if current["created_by"] is None:
-                raise HTTPException(400, "Legacy wastage entries cannot be deleted automatically")
-            require_entry_owner(user, current["created_by"])
-            link = await latest_activity_link(c, "WASTAGE", wastage_id)
-            activity = await record_stock_activity(
-                c, action="REVERSE", source_domain="WASTAGE", source_id=wastage_id,
-                correlation_id=link["correlation_id"] if link else uuid4(),
-                material_id=None, material_type_id=None, quantity_kg=current["weight"],
-                balances={}, reason="Reporting entry deleted — no stock change",
-                created_by=user_id_from_token(user),
-                reverses_activity_id=link["activity_id"] if link else None)
-            r_ = await c.fetchrow("DELETE FROM wastage_data WHERE id = $1 RETURNING id, sno", wastage_id)
-    await broadcast("wastage")
-    return {"message": "Wastage entry deleted", "deleted": dict(r_),
-            "activity_id": activity["id"],
-            "stock_impact": "No warehouse or floor stock change"}
+            order_id = await c.fetchval("SELECT order_id FROM fulfillment_records WHERE id = $1", record_id)
+            if not order_id:
+                raise HTTPException(404, "Dispatch not found")
+            receipt = await reverse_document(c, doc_type="DISPATCH", doc_id=record_id, user=user)
+            await c.execute("DELETE FROM fulfillment_records WHERE id = $1", record_id)
+            await sync_order_status(c, order_id)
+    await broadcast("orders")
+    await broadcast("stock")
+    return {"success": True, "stock_receipt": receipt}
 
 
 # ── Trading ──
@@ -4126,9 +2156,6 @@ async def delete_trading(trading_id: str, user=Depends(get_user)):
             raise HTTPException(404, "Trading record not found")
     await broadcast("trading")
     return {"success": True}
-
-
-# ─────────────────────────── Table init ───────────────────────────
 
 # ── Issue reports ──
 
@@ -4331,81 +2358,17 @@ async def get_issue_report_attachment(report_id: int, attachment_id: int, user=D
     )
 
 
+
+# ─────────────────────────── Schema ───────────────────────────
+
+SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+
+
 async def initialize_tables():
+    """Apply schema.sql (idempotent) so a fresh database comes up ready to use."""
     async with pool.acquire() as c:
-        await c.execute("CREATE TABLE IF NOT EXISTS system_config (key VARCHAR(255) PRIMARY KEY, value TEXT NOT NULL)")
-        await c.execute("INSERT INTO system_config (key, value) VALUES ('tolerance_percent', '10') ON CONFLICT (key) DO NOTHING")
-        await c.execute("""CREATE TABLE IF NOT EXISTS orders (
-            id SERIAL PRIMARY KEY, order_number VARCHAR(255) UNIQUE,
-            client_name VARCHAR(255), status VARCHAR(50) NOT NULL DEFAULT 'Active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-        await c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_date DATE")
-        await c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_number ON orders(order_number) WHERE order_number IS NOT NULL")
-        await c.execute("""CREATE TABLE IF NOT EXISTS order_items (
-            id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-            item_name VARCHAR(255) NOT NULL, required_quantity NUMERIC(12, 3) NOT NULL,
-            unit_price NUMERIC(12, 2) NOT NULL DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-        await c.execute("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS unit_price NUMERIC(12, 2) NOT NULL DEFAULT 0")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id)")
-        await c.execute("""CREATE TABLE IF NOT EXISTS fulfillment_records (
-            id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-            order_item_id INTEGER NOT NULL REFERENCES order_items(id) ON DELETE CASCADE,
-            supplied_quantity NUMERIC(12, 3) NOT NULL, note TEXT, created_by INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_fulfillment_records_order_id ON fulfillment_records(order_id)")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_fulfillment_records_order_item_id ON fulfillment_records(order_item_id)")
-        await c.execute("""CREATE TABLE IF NOT EXISTS issue_reports (
-            id SERIAL PRIMARY KEY,
-            title VARCHAR(255) NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            page_url TEXT NOT NULL DEFAULT '',
-            app_version VARCHAR(100) NOT NULL DEFAULT '',
-            created_by INTEGER,
-            status VARCHAR(50) NOT NULL DEFAULT 'open',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_issue_reports_created_at ON issue_reports(created_at DESC)")
-        await c.execute("""CREATE TABLE IF NOT EXISTS issue_report_attachments (
-            id SERIAL PRIMARY KEY,
-            report_id INTEGER NOT NULL REFERENCES issue_reports(id) ON DELETE CASCADE,
-            original_filename TEXT NOT NULL,
-            stored_path TEXT NOT NULL,
-            content_type VARCHAR(100) NOT NULL,
-            size_bytes INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_issue_attachments_report_id ON issue_report_attachments(report_id)")
-        # ── Ledger integrity migrations (all additive; existing rows untouched) ──
-        # materials_master ids and material_types ids are different id spaces. These
-        # columns record the floor material explicitly instead of overloading
-        # material_id, which was silently mixing the two.
-        await c.execute("ALTER TABLE production_logs ADD COLUMN IF NOT EXISTS material_type_id BIGINT")
-        await c.execute("ALTER TABLE material_movements ADD COLUMN IF NOT EXISTS material_type_id BIGINT")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_production_logs_material_type ON production_logs(material_type_id)")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_production_logs_created_at ON production_logs(created_at DESC)")
-        await c.execute("""CREATE INDEX IF NOT EXISTS idx_material_movements_consumption_ref
-                           ON material_movements(reference_id) WHERE movement_type = 'CONSUMPTION'""")
-
-        # Last line of defence: the database itself refuses negative stock, so no
-        # code path — present or future — can drive a balance below zero.
-        for table, column, name in (
-            ("raw_material_totals", "total_quantity_kg", "raw_material_totals_nonneg"),
-            ("floor_material_balance", "total_quantity_kg", "floor_material_balance_nonneg"),
-        ):
-            try:
-                await c.execute(
-                    f"ALTER TABLE {table} ADD CONSTRAINT {name} CHECK ({column} >= 0)")
-            except asyncpg.DuplicateObjectError:
-                pass
-            except Exception as e:  # a pre-existing negative row must not block startup
-                logger.warning("Could not add %s: %s", name, e)
-
-        await c.execute("""CREATE TABLE IF NOT EXISTS stock_reset_log (
-            id SERIAL PRIMARY KEY,
-            reset_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            reason TEXT NOT NULL DEFAULT '',
-            snapshot JSONB NOT NULL)""")
-
-        logger.info("Database tables initialized successfully")
+        await c.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+        logger.info("Database schema ready")
 
 
 # ── Wrap with ASGI-level CORS catch-all (after all routes are registered) ─────

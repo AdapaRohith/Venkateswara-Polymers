@@ -5,25 +5,21 @@ import { ToastProvider } from './components/Toast'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
 import RawMaterial from './pages/RawMaterial'
-import Wastage from './pages/Wastage'
 import Login from './components/ui/animated-characters-login-page.jsx'
 import Users from './pages/Users'
 import Orders from './pages/Orders'
 import Production from './pages/Production'
 import ProductionOrders from './pages/ProductionOrders'
 import Fulfillment from './pages/Fulfillment'
-import MachineReports from './pages/MachineReports'
 import Trading from './pages/Trading'
 import IssueReports from './pages/IssueReports'
 import StockActivity from './pages/StockActivity'
 import StockOverview from './pages/StockOverview'
 import StockLedger from './pages/StockLedger'
 import StockTransfers from './pages/StockTransfers'
-import MachineStock from './pages/MachineStock'
-import ProductionBatches from './pages/ProductionBatches'
-import StockReturns from './pages/StockReturns'
-import StockUsage from './pages/StockUsage'
-import StockSearch from './pages/StockSearch'
+import Cutting from './pages/Cutting'
+import StockAdjustments from './pages/StockAdjustments'
+import Reports from './pages/Reports'
 import { getOrders } from './utils/orders'
 
 const AUTH_TOKEN_KEY = 'token'
@@ -93,29 +89,48 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['owner', 'worker']}
-                      element={<Production user={user} />}
+                      element={<Production />}
                     />
                   }
                 />
-                {/* "Send to Floor" is now a Warehouse → Ground Floor stock transfer. */}
                 <Route path="/materials" element={<Navigate to="/stock/transfers" replace />} />
                 <Route
-                  path="/wastage"
+                  path="/cutting"
                   element={
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['owner', 'worker']}
-                      element={<Wastage user={user} />}
+                      element={<Cutting />}
                     />
                   }
                 />
                 <Route
-                  path="/stock-activity"
+                  path="/stock/activity"
                   element={
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['owner', 'worker']}
                       element={<StockActivity />}
+                    />
+                  }
+                />
+                <Route
+                  path="/stock/adjustments"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner']}
+                      element={<StockAdjustments />}
+                    />
+                  }
+                />
+                <Route
+                  path="/reports"
+                  element={
+                    <ProtectedRoute
+                      user={user}
+                      allowedRoles={['owner', 'worker']}
+                      element={<Reports />}
                     />
                   }
                 />
@@ -147,57 +162,7 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
                     <ProtectedRoute
                       user={user}
                       allowedRoles={['owner', 'worker']}
-                      element={<StockTransfers user={user} />}
-                    />
-                  }
-                />
-                <Route
-                  path="/stock/machines"
-                  element={
-                    <ProtectedRoute
-                      user={user}
-                      allowedRoles={['owner', 'worker']}
-                      element={<MachineStock />}
-                    />
-                  }
-                />
-                <Route
-                  path="/stock/returns"
-                  element={
-                    <ProtectedRoute
-                      user={user}
-                      allowedRoles={['owner']}
-                      element={<StockReturns user={user} />}
-                    />
-                  }
-                />
-                <Route
-                  path="/stock/usage"
-                  element={
-                    <ProtectedRoute
-                      user={user}
-                      allowedRoles={['owner', 'worker']}
-                      element={<StockUsage />}
-                    />
-                  }
-                />
-                <Route
-                  path="/stock/search"
-                  element={
-                    <ProtectedRoute
-                      user={user}
-                      allowedRoles={['owner', 'worker']}
-                      element={<StockSearch />}
-                    />
-                  }
-                />
-                <Route
-                  path="/production-batches"
-                  element={
-                    <ProtectedRoute
-                      user={user}
-                      allowedRoles={['owner', 'worker']}
-                      element={<ProductionBatches user={user} />}
+                      element={<StockTransfers />}
                     />
                   }
                 />
@@ -226,21 +191,11 @@ function AnimatedRoutes({ user, handleLogout, ordersList, ordersLoading, refresh
 
                 {/* ─── Reports & Data ─── */}
                 <Route
-                  path="/reports"
-                  element={
-                    <ProtectedRoute
-                      user={user}
-                      allowedRoles={['owner']}
-                      element={<MachineReports />}
-                    />
-                  }
-                />
-                <Route
                   path="/raw-material"
                   element={
                     <ProtectedRoute
                       user={user}
-                      allowedRoles={['owner']}
+                      allowedRoles={['owner', 'worker']}
                       element={<RawMaterial user={user} />}
                     />
                   }

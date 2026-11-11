@@ -11,7 +11,7 @@ npm run lint       # ESLint
 npm run preview    # Preview production build locally
 ```
 
-No test suite exists in this project.
+Tests: `python -m pytest -q tests` (rules) and `tests/e2e/api_flow.py` (disposable API + DB).
 
 ## Architecture
 
@@ -19,7 +19,7 @@ No test suite exists in this project.
 
 ### Auth & Roles
 
-Two roles: `owner` and `worker`. Auth state lives in `localStorage` (`token`, `user_id`, `role`, `demo_user`). `App.jsx` reads localStorage on init, stores user in React state. All protected routes check role via `ProtectedRoute`. Workers only see `/production-log` and `/wastage`; owners see everything.
+Two roles: `owner` and `worker`. Auth state lives in `localStorage` (`token`, `user_id`, `role`, `demo_user`). `App.jsx` reads localStorage on init, stores user in React state. All protected routes check role via `ProtectedRoute`. Workers see daily entry, stock and reports; owners also see the dashboard, adjustments, orders and admin. The API enforces roles and closed days.
 
 ### API Layer (`src/utils/api.js`)
 
@@ -33,34 +33,28 @@ Enable API call logging: `localStorage.setItem('vp_api_logs', '1')` (auto-enable
 
 | Route | Role | Page |
 |---|---|---|
-| `/` | owner | Dashboard |
-| `/trading` | owner | Trading |
-| `/production-log` | owner, worker | Production |
-| `/materials` | owner, worker | MaterialMovement |
-| `/wastage` | owner, worker | Wastage |
-| `/production-orders` | owner | ProductionOrders |
-| `/fulfillment` | owner | Fulfillment |
-| `/reports` | owner | MachineReports |
-| `/raw-material` | owner | RawMaterial |
-| `/users` | owner | Users |
-| `/stock` | owner, worker | StockOverview (all locations, Opening/Closing buttons) |
-| `/stock/ledger?view=opening\|shifts\|closing` | owner, worker | StockLedger (day ledger, AM/PM, Close Day) |
-| `/stock/transfers` | owner, worker | StockTransfers |
-| `/stock/machines` | owner, worker | MachineStock |
-| `/stock/returns` | owner | StockReturns |
-| `/stock/usage` | owner, worker | StockUsage (day-wise usage) |
-| `/stock/search` | owner, worker | StockSearch |
-| `/production-batches` | owner, worker | ProductionBatches (Ground Floor only) |
+| `/` | owner | Dashboard (stores, reorder warnings, today's day/night output, 14-day trend) |
+| `/raw-material` | owner, worker | RawMaterial (receipts onto Ground/1st Floor, material master) |
+| `/stock/transfers` | owner, worker | StockTransfers (Ground Floor ⇄ 1st Floor) |
+| `/production-log` | owner, worker | Production (extruders: resin blend → rolls) |
+| `/cutting` | owner, worker | Cutting (rolls → finished goods) |
+| `/stock/adjustments` | owner | StockAdjustments (physical count, correction, return, damage) |
+| `/stock/ledger` | owner, worker | StockLedger (day register + close day) |
+| `/stock` | owner, worker | StockOverview (all stores, alert levels) |
+| `/stock/activity` | owner, worker | StockActivity (the stock ledger) |
+| `/reports?tab=register\|shift\|summary` | owner, worker | Reports (inventory register, shift sheet, summary; Excel) |
+| `/production-orders`, `/fulfillment`, `/trading`, `/users`, `/issue-reports` | owner | unchanged |
 
-Stock model, shifts, bags (25 kg) and rollout: see `ops/ipms/README.md`. Weights display via
-`src/utils/units.js` (kg below 1,000 kg, tons above).
+Stock model, wastage → regrind, reversals and reports: see `ops/ipms/README.md`. Backend:
+`server.py` (FastAPI) + `ipms_logic.py` (pure rules, unit-tested) + `reports_xlsx.py` (Excel) +
+`schema.sql` (applied on start). Weights display via `src/utils/units.js` (kg below 1,000 kg, tons above).
 
 Route transitions use `framer-motion` `AnimatePresence` with `opacity + y` animation.
 
 ### Component Conventions
 
 - `src/components/ui/` — Radix UI primitives (button, checkbox, input, label) styled with `class-variance-authority` + `tailwind-merge`
-- `src/components/` — app-level shared components (Sidebar, DataTable, EditEntryModal, Toast, Charts, etc.)
+- `src/components/` — app-level shared components (Sidebar, DataTable, Toast, Charts, `ipms/` stock kit, etc.)
 - `src/pages/` — one file per route, contains all page-specific logic
 - `src/utils/` — pure utility modules: `api.js` (HTTP), `orders.js`, `stock.js`, `exportToExcel.js`, `logActions.js`, `productionSession.js`
 - `src/hooks/` — `usePersistentState.js` for localStorage-backed state

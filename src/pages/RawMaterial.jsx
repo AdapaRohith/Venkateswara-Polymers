@@ -1,805 +1,227 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import useSSE from '../hooks/useSSE'
-import DataTable from '../components/DataTable'
-import EditEntryModal from '../components/EditEntryModal'
-import InputWithCamera from '../components/InputWithCamera'
-import Pictogram from '../components/Pictogram'
-import StockImpactReceipt from '../components/StockImpactReceipt'
-import { useToast } from '../components/Toast'
-import usePersistentState from '../hooks/usePersistentState'
+import { useMemo, useState } from 'react'
+import { PackagePlus, Pencil } from 'lucide-react'
+
 import api from '../utils/api'
-import { formatDate, formatTime } from '../utils/datetime'
-import { ShiftDatePicker } from '../components/ipms/Kit'
-import { entryWhenPayload, liveShiftContext, shiftWindows } from '../utils/ipms'
-import { BAG_KG } from '../utils/units'
-import { previewStockAdjustment, validateStockAdjustment } from '../utils/stockAdjustment'
+import { useToast } from '../components/Toast'
+import useLiveData from '../hooks/useLiveData'
+import useEntryWhen from '../hooks/useEntryWhen'
+import { apiError, entryWhenPayload, formatBusinessDate, locationLabel, MATERIAL_LOCATIONS } from '../utils/ipms'
+import { toKg } from '../utils/units'
+import { inputClass, labelClass } from '../components/ipms/styles'
 import {
-  canModifyLocalEntry,
-  deleteRawMaterialBatch,
-  impactReceiptFromResponse,
-  updateRawMaterialBatch,
-} from '../utils/logActions'
+  EmptyState, LocationBadge, PageHeader, Panel, PrimaryButton, QuantityInput, ReverseButton, SecondaryButton,
+  ShiftBadge, ShiftDatePicker, StatusBadge, StockStatusBadge, Weight, td, th,
+} from '../components/ipms/Kit'
 
-function toNumber(value, fallback = 0) {
-  const numericValue = Number(value)
-  return Number.isFinite(numericValue) ? numericValue : fallback
-}
-
-function formatKg(kg) {
-  const numericValue = toNumber(kg)
-  if (Math.abs(numericValue) >= 1000) return `${(numericValue / 1000).toFixed(2)} tons`
-  return `${numericValue.toFixed(2)} kg`
-}
-
-const columns = [
-  { key: 'material_name', label: 'Material', icon: 'material' },
-  {
-    key: 'total_quantity_kg',
-    label: 'In Stock',
-    icon: 'stock',
-    render: (value) => (
-      <span className="font-mono tabular-nums">{toNumber(value).toFixed(2)} kg</span>
-    ),
-  },
-]
-
-const batchColumns = [
-  { key: 'created_at', label: 'Date', icon: 'date', render: (val) => formatDate(val) },
-  {
-    key: 'created_at_time',
-    label: 'Time',
-    icon: 'clock',
-    render: (_val, row) => (
-      <span className="text-text-secondary">{formatTime(row.created_at)}</span>
-    ),
-  },
-  { key: 'material_name', label: 'Material', icon: 'material' },
-  {
-    key: 'quantity_kg',
-    label: 'Quantity',
-    icon: 'weight',
-    render: (value) => (
-      <span className="font-mono tabular-nums">{toNumber(value).toFixed(2)} kg</span>
-    ),
-  },
-  { key: 'created_by_name', label: 'Added By', icon: 'person' },
-  { key: 'note', label: 'Note', icon: 'note' },
-]
-
-const adjustmentColumns = [
-  { key: 'created_at', label: 'Date', icon: 'date', render: (val) => formatDate(val) },
-  { key: 'created_at_time', label: 'Time', icon: 'time', render: (_, row) => formatTime(row.created_at) },
-  { key: 'material_name', label: 'Material', icon: 'material' },
-  {
-    key: 'operation',
-    label: 'Action',
-    icon: 'stock',
-    render: (value) => <span className={value === 'remove' ? 'text-red-400' : 'text-emerald-400'}>{value === 'remove' ? 'Remove' : 'Add'}</span>,
-  },
-  { key: 'quantity_kg', label: 'Quantity', icon: 'weight', render: (value) => `${toNumber(value).toFixed(2)} kg` },
-  { key: 'opening_quantity_kg', label: 'Opening', icon: 'stock', render: (value) => `${toNumber(value).toFixed(2)} kg` },
-  { key: 'closing_quantity_kg', label: 'Closing', icon: 'stock', render: (value) => `${toNumber(value).toFixed(2)} kg` },
-  { key: 'reason', label: 'Reason', icon: 'note' },
-  { key: 'created_by_name', label: 'Adjusted By', icon: 'person' },
-]
+const NEW = '__new__'
 
 export default function RawMaterial({ user }) {
   const toast = useToast()
-  const isWorker = user?.role === 'worker'
-  const [submittingAdd, setSubmittingAdd] = useState(false)
-  const [loadingTotals, setLoadingTotals] = useState(true)
-  const [totalsError, setTotalsError] = useState('')
-  const [rawTotals, setRawTotals] = useState([])
-  const [materialOptions, setMaterialOptions] = useState([])
-  const [loadingMaterialOptions, setLoadingMaterialOptions] = useState(true)
-  const [materialOptionsError, setMaterialOptionsError] = useState('')
+  const isOwner = String(user?.role || '').toLowerCase() === 'owner'
+  const [when, setWhen] = useEntryWhen()
+  const [form, setForm] = useState({ material: '', newName: '', newBrand: '', location: 'GROUND_FLOOR', batch: '', supplier: '', note: '' })
+  const [qty, setQty] = useState({ value: '', unit: 'bags' })
+  const [saving, setSaving] = useState(false)
+  const [editing, setEditing] = useState(null)
 
-  const [exporting, setExporting] = useState(false)
-  const [showAddMaterial, setShowAddMaterial] = useState(false)
-  const [newMaterialName, setNewMaterialName] = useState('')
-  const [submittingMaterial, setSubmittingMaterial] = useState(false)
-  const [deletingBatchId, setDeletingBatchId] = useState(null)
-  const [confirmDelete, setConfirmDelete] = useState(null)  // { id, materialName, quantityKg }
-  const [editTotal, setEditTotal] = useState(null)  // { materialName, currentTotal }
-  const [editOperation, setEditOperation] = useState('add')
-  const [editQuantity, setEditQuantity] = useState('')
-  const [editReason, setEditReason] = useState('')
-  const [submittingEdit, setSubmittingEdit] = useState(false)
-  const [adjustments, setAdjustments] = useState([])
-  const [loadingAdjustments, setLoadingAdjustments] = useState(true)
-  const [adjustmentsError, setAdjustmentsError] = useState('')
-  const [lastReceipt, setLastReceipt] = useState(null)
-  const [editingBatch, setEditingBatch] = useState(null)
-  const [batchEditValues, setBatchEditValues] = useState({})
+  const materials = useLiveData(() => api.get('/materials').then((r) => r.data), [])
+  const receipts = useLiveData(() => api.get('/receipts').then((r) => r.data), [])
+  const list = useMemo(() => materials.data || [], [materials.data])
+  const kg = toKg(qty.value, qty.unit)
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }))
 
-  const handleExport = async () => {
+  const submit = async () => {
+    if (!form.material || (form.material === NEW && !form.newName.trim()) || !kg) {
+      toast.error('Choose the material and enter the quantity')
+      return
+    }
+    setSaving(true)
     try {
-      setExporting(true)
-      await fetch('https://n8n.avlokai.com/webhook-test/77d8abd5-246a-4797-8370-1ebfdb10ffec', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'raw_material_batches', logs: batches }),
-      })
-      toast.success('Logs exported successfully!')
+      const body = {
+        ...(form.material === NEW
+          ? { material_name: form.newName.trim(), brand: form.newBrand.trim() }
+          : { material_id: Number(form.material) }),
+        location: form.location, quantity_kg: kg, batch_no: form.batch, supplier: form.supplier, note: form.note,
+        ...entryWhenPayload(when),
+      }
+      const { data } = await api.post('/receipts', body)
+      const line = data.stock_receipt?.[0]
+      toast.success(`${data.receipt.doc_no}: ${data.receipt.material_name} received — ${locationLabel(form.location)} now ${line ? line.closing_kg.toLocaleString('en-IN') : ''} kg`)
+      setQty({ value: '', unit: qty.unit })
+      set({ batch: '', note: '', ...(form.material === NEW ? { material: '', newName: '', newBrand: '' } : {}) })
     } catch (err) {
-      console.error('Export failed', err)
-      toast.error('Failed to export logs.')
+      toast.error(apiError(err))
     } finally {
-      setExporting(false)
+      setSaving(false)
     }
   }
 
-  const handleAddNewMaterial = async () => {
-    if (!newMaterialName?.trim()) {
-      toast.error('Material name is required')
-      return
-    }
-
-    setSubmittingMaterial(true)
+  const reverse = async (r) => {
     try {
-      const response = await api.post('/materials', {
-        name: newMaterialName.trim(),
-      })
-
-      // Response: { id: 1, name: "Material Name" }
-      const newMaterial = response.data
-
-      // Refresh dropdown so new material appears
-      await refreshMaterialOptions()
-
-      // Auto-select the newly added material by name
-      setAddForm((previous) => ({ ...previous, material_name: newMaterial.name }))
-      setNewMaterialName('')
-      setShowAddMaterial(false)
-      toast.success('Material added successfully!')
-    } catch (error) {
-      console.error('Failed to add material', error)
-      toast.error(error?.response?.data?.error || 'Failed to add material')
-    } finally {
-      setSubmittingMaterial(false)
+      await api.delete(`/receipts/${r.id}`)
+      toast.success(`${r.doc_no} reversed`)
+    } catch (err) {
+      toast.error(apiError(err))
     }
   }
-
-  const handleDeleteBatch = async (batchId) => {
-    setDeletingBatchId(batchId)
-    try {
-      const { data } = await deleteRawMaterialBatch(batchId)
-      setLastReceipt(impactReceiptFromResponse(data))
-      toast.success('Raw material batch deleted. Stock total has been consolidated.')
-      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
-    } catch (error) {
-      console.error('Failed to delete batch', error)
-      toast.error(error?.response?.data?.error || error?.response?.data?.detail || 'Failed to delete batch')
-    } finally {
-      setDeletingBatchId(null)
-      setConfirmDelete(null)
-    }
-  }
-
-  const openEditBatch = (row) => {
-    setEditingBatch(row)
-    setBatchEditValues({
-      material_name: row.material_name || '',
-      quantity_kg: row.quantity_kg || '',
-      note: row.note || '',
-    })
-  }
-
-  const saveBatchEdit = async () => {
-    setSubmittingEdit(true)
-    try {
-      const { data } = await updateRawMaterialBatch(editingBatch.id, batchEditValues)
-      setLastReceipt(impactReceiptFromResponse(data))
-      setEditingBatch(null)
-      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
-      toast.success('Raw material entry updated and Warehouse Stock recalculated.')
-    } catch (error) {
-      toast.error(error?.response?.data?.detail || 'Failed to update raw material entry')
-    } finally {
-      setSubmittingEdit(false)
-    }
-  }
-
-  const promptDelete = (row) => {
-    setConfirmDelete({
-      id: row.id,
-      materialName: row.material_name,
-      quantityKg: toNumber(row.quantity_kg).toFixed(2),
-    })
-  }
-
-  const openEditTotal = (row) => {
-    setEditTotal({
-      materialName: row.material_name,
-      currentTotal: toNumber(row.total_quantity_kg),
-    })
-    setEditOperation('add')
-    setEditQuantity('')
-    setEditReason('')
-    setAdjustWhen(freshWhen())
-  }
-
-  const handleEditTotal = async () => {
-    const validationError = validateStockAdjustment({
-      current: editTotal.currentTotal,
-      operation: editOperation,
-      quantity: editQuantity,
-      reason: editReason,
-    })
-    if (validationError) {
-      toast.error(validationError)
-      return
-    }
-    const qty = toNumber(editQuantity)
-    const closingTotal = previewStockAdjustment(editTotal.currentTotal, editOperation, qty)
-    setSubmittingEdit(true)
-    try {
-      const { data } = await api.post('/raw-material/adjust', {
-        material_name: editTotal.materialName,
-        operation: editOperation,
-        quantity_kg: qty,
-        reason: editReason.trim(),
-        ...entryWhenPayload(adjustWhen),
-      })
-      setLastReceipt(impactReceiptFromResponse(data))
-      toast.success(`${editOperation === 'add' ? 'Added' : 'Removed'} ${qty.toFixed(2)} kg ${editOperation === 'add' ? 'to' : 'from'} ${editTotal.materialName}. Closing stock: ${closingTotal.toFixed(2)} kg.`)
-      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches(), refreshAdjustments()])
-      setEditTotal(null)
-    } catch (error) {
-      console.error('Failed to adjust stock', error)
-      toast.error(error?.response?.data?.error || error?.response?.data?.detail || 'Failed to adjust stock')
-    } finally {
-      setSubmittingEdit(false)
-    }
-  }
-
-  useEffect(() => {
-  }, [])
-
-  const [addForm, setAddForm] = usePersistentState('vp_raw_material_add_form', {
-    material_name: '',
-    quantity: '',
-    date: '',
-    quantityUnit: 'kg',
-    note: '',
-  })
-
-  // A stock entry is often keyed in a day or two after the lorry arrived, so the
-  // date, shift and time are part of the entry. Kept out of the persisted form so
-  // yesterday's backfill date never silently carries over to a new day.
-  const freshWhen = () => ({ ...liveShiftContext(shiftWindows(null)), time: '' })
-  const [addWhen, setAddWhen] = useState(freshWhen)
-  const [adjustWhen, setAdjustWhen] = useState(freshWhen)
-
-  const [batches, setBatches] = useState([])
-  const [loadingBatches, setLoadingBatches] = useState(true)
-  const [batchesError, setBatchesError] = useState('')
-
-  const refreshRawTotals = useCallback(async (silent = false) => {
-    if (!silent) setLoadingTotals(true)
-    setTotalsError('')
-    try {
-      const { data } = await api.get('/raw-material/totals')
-      setRawTotals(Array.isArray(data) ? data : data?.data || [])
-    } catch (error) {
-      console.error('Failed to load raw material totals', error)
-      setTotalsError(error?.response?.data?.error || 'Failed to load raw material totals')
-    } finally {
-      if (!silent) setLoadingTotals(false)
-    }
-  }, [])
-
-  const refreshMaterialOptions = useCallback(async (silent = false) => {
-    if (!silent) setLoadingMaterialOptions(true)
-    setMaterialOptionsError('')
-    try {
-      const { data } = await api.get('/raw-material/options')
-      setMaterialOptions(Array.isArray(data) ? data : data?.data || [])
-    } catch (error) {
-      console.error('Failed to load raw material options', error)
-      setMaterialOptionsError(error?.response?.data?.error || 'Failed to load raw material options')
-    } finally {
-      if (!silent) setLoadingMaterialOptions(false)
-    }
-  }, [])
-
-  const refreshBatches = useCallback(async (silent = false) => {
-    if (!silent) setLoadingBatches(true)
-    setBatchesError('')
-    try {
-      const { data } = await api.get('/raw-material/batches')
-      setBatches(Array.isArray(data) ? data : data?.data || [])
-    } catch (error) {
-      console.error('Failed to load raw material batches', error)
-      setBatchesError(error?.response?.data?.error || 'Failed to load batches')
-    } finally {
-      if (!silent) setLoadingBatches(false)
-    }
-  }, [])
-
-  const refreshAdjustments = useCallback(async (silent = false) => {
-    if (!silent) setLoadingAdjustments(true)
-    setAdjustmentsError('')
-    try {
-      const { data } = await api.get('/raw-material/adjustments')
-      setAdjustments(Array.isArray(data) ? data : data?.data || [])
-    } catch (error) {
-      console.error('Failed to load stock adjustments', error)
-      setAdjustmentsError(error?.response?.data?.error || error?.response?.data?.detail || 'Failed to load adjustments')
-    } finally {
-      if (!silent) setLoadingAdjustments(false)
-    }
-  }, [])
-
-  useSSE(['raw_material'], () => {
-    refreshRawTotals(true).catch(() => {})
-    refreshMaterialOptions(true).catch(() => {})
-    refreshBatches(true).catch(() => {})
-    refreshAdjustments(true).catch(() => {})
-  })
-
-  useEffect(() => {
-    refreshRawTotals().catch(() => {})
-    refreshMaterialOptions().catch(() => {})
-    refreshBatches().catch(() => {})
-    refreshAdjustments().catch(() => {})
-  }, [refreshMaterialOptions, refreshRawTotals, refreshBatches, refreshAdjustments])
-
-  const handleAddChange = (event) => {
-    const { name, value } = event.target
-    setAddForm((previous) => ({ ...previous, [name]: value }))
-  }
-
-  const handleSubmitAdd = async (event) => {
-    event.preventDefault()
-
-    if (!addForm.material_name?.trim()) {
-      toast.error('Material name is required')
-      return
-    }
-
-    const qty = toNumber(addForm.quantity)
-    if (qty <= 0) {
-      toast.error('Quantity must be greater than zero')
-      return
-    }
-
-    const qtyInKg = addForm.quantityUnit === 'tons' ? qty * 1000 : addForm.quantityUnit === 'bags' ? qty * BAG_KG : qty
-
-    setSubmittingAdd(true)
-    try {
-      const { data } = await api.post('/raw-material/add', {
-        material_name: addForm.material_name.trim(),
-        quantity_kg: qtyInKg,
-        ...entryWhenPayload(addWhen),
-        note: addForm.note?.trim() || '',
-      })
-      setLastReceipt(impactReceiptFromResponse(data))
-
-      await Promise.allSettled([refreshRawTotals(), refreshMaterialOptions(), refreshBatches()])
-      toast.success(`Added ${qtyInKg.toFixed(2)} kg of ${addForm.material_name.trim()} on ${formatDate(addWhen.date)}`)
-      setAddForm((previous) => ({ ...previous, quantity: '', note: '' }))
-    } catch (error) {
-      console.error('Failed to add raw material', error)
-      toast.error(error?.response?.data?.error || error?.response?.data?.detail || 'Failed to add raw material')
-    } finally {
-      setSubmittingAdd(false)
-    }
-  }
-
-  const selectClass =
-    'bg-bg-input text-text-primary border border-gray-700 rounded-lg px-3 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold w-24 shrink-0 appearance-none cursor-pointer text-center'
-
-  const totalTypes = (Array.isArray(rawTotals) ? rawTotals : []).length
-  const totalQtyKg = useMemo(
-    () => (Array.isArray(rawTotals) ? rawTotals : []).reduce((sum, row) => sum + toNumber(row.total_quantity_kg), 0),
-    [rawTotals],
-  )
-
-  const tableData = (Array.isArray(rawTotals) ? rawTotals : []).map((row, index) => ({
-    ...row,
-    id: row.material_name ?? index,
-  }))
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="flex items-center gap-2 text-xl font-semibold tracking-tight text-text-primary">
-          <Pictogram name="material" size={20} className="text-accent-gold" />
-          Raw Material
-        </h2>
-        {!isWorker && (
-          <div className="flex items-center gap-2 text-sm">
-            <span className="inline-flex items-center gap-1.5 rounded-lg border border-border-default bg-bg-card px-3 py-1.5">
-              <Pictogram name="material" size={14} className="text-text-secondary/70" />
-              <span className="text-text-secondary">Items</span>
-              <span className="font-semibold text-text-primary tabular-nums">{totalTypes}</span>
-            </span>
-            <span className="inline-flex items-center gap-1.5 rounded-lg border border-border-default bg-bg-card px-3 py-1.5">
-              <Pictogram name="stock" size={14} className="text-text-secondary/70" />
-              <span className="text-text-secondary">In Stock</span>
-              <span className="font-semibold text-accent-gold tabular-nums">{formatKg(totalQtyKg)}</span>
-            </span>
-          </div>
-        )}
-      </div>
+    <div className="space-y-6">
+      <PageHeader icon={PackagePlus} title="Raw Material In"
+        subtitle="Material arriving at the plant. It lands on the Ground Floor raw material bay (or straight on the 1st Floor). 1 bag = 25 kg." />
 
-      {totalsError && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-          {totalsError}
-        </div>
-      )}
-
-      {materialOptionsError && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-          {materialOptionsError}
-        </div>
-      )}
-
-      <div className="bg-bg-card rounded-lg border border-border-default p-4">
-        <h3 className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-secondary">
-          <Pictogram name="add" size={14} />
-          Add Raw Material
-        </h3>
-        <form onSubmit={handleSubmitAdd} className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          <div className="space-y-1.5 md:col-span-2">
-            <div className="flex items-center justify-between">
-              <label className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
-                <Pictogram name="material" size={13} className="text-text-secondary/70" />
-                Material
-              </label>
-              <button
-                type="button"
-                onClick={() => setShowAddMaterial(true)}
-                className="inline-flex items-center gap-1 text-xs font-semibold text-accent-gold transition-colors hover:text-accent-gold-hover"
-              >
-                <Pictogram name="add" size={12} />
-                New
-              </button>
-            </div>
-            <select
-              name="material_name"
-              value={addForm.material_name}
-              onChange={handleAddChange}
-              className="w-full rounded-lg border border-gray-700 bg-bg-input px-3 py-2 text-sm text-text-primary transition-colors duration-200 focus:border-accent-gold"
-              disabled={submittingAdd || loadingMaterialOptions || materialOptions.length === 0}
-              required
-            >
-              <option value="">
-                {loadingMaterialOptions ? 'Loading materials...' : 'Select material name'}
-              </option>
-              {(Array.isArray(materialOptions) ? materialOptions : []).map((row) => (
-                <option key={row.material_name} value={row.material_name}>
-                  {row.material_name}
-                </option>
+      <Panel title="Receive material">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="xl:col-span-2">
+            <label className={labelClass} htmlFor="rm-material">Material</label>
+            <select id="rm-material" className={inputClass} value={form.material} onChange={(e) => set({ material: e.target.value })}>
+              <option value="">Choose…</option>
+              {list.filter((m) => m.active).map((m) => (
+                <option key={m.id} value={m.id}>{m.name}{m.brand ? ` · ${m.brand}` : ''} — {m.total_kg.toLocaleString('en-IN')} kg in plant</option>
               ))}
+              {isOwner && <option value={NEW}>+ New material…</option>}
             </select>
           </div>
-
-          <div className="md:col-span-4">
-            <ShiftDatePicker date={addWhen.date} shift={addWhen.shift} time={addWhen.time}
-              disabled={submittingAdd} onChange={setAddWhen} />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
-              <Pictogram name="weight" size={13} className="text-text-secondary/70" />
-              Quantity
-            </label>
-            <div className="flex gap-2">
-              <InputWithCamera
-                type="text"
-                inputMode="decimal"
-                name="quantity"
-                value={addForm.quantity}
-                onChange={handleAddChange}
-                placeholder="0.00"
-                className="flex-1"
-                required
-                disabled={submittingAdd}
-              />
-              <select
-                name="quantityUnit"
-                value={addForm.quantityUnit}
-                onChange={handleAddChange}
-                className={selectClass}
-                disabled={submittingAdd}
-              >
-                <option value="kg">kg</option>
-                <option value="bags">bags (25 kg)</option>
-                <option value="tons">tons</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="space-y-1.5 md:col-span-3">
-            <label className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
-              <Pictogram name="note" size={13} className="text-text-secondary/70" />
-              Note (Optional)
-            </label>
-            <input
-              type="text"
-              name="note"
-              value={addForm.note}
-              onChange={handleAddChange}
-              placeholder="E.g., Batch #1234 or Supplier ABC"
-              className="w-full rounded-lg border border-gray-700 bg-bg-input px-3 py-2 text-sm text-text-primary transition-colors duration-200 focus:border-accent-gold"
-              disabled={submittingAdd}
-            />
-          </div>
-
-
-          <div className="flex items-end">
-            <button
-              type="submit"
-              disabled={submittingAdd || loadingMaterialOptions || materialOptions.length === 0}
-              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-accent-gold py-2 text-sm font-semibold text-black transition-all duration-200 hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50"
-            >
-              <Pictogram name="add" size={15} />
-              {submittingAdd ? 'Saving...' : 'Add'}
-            </button>
-          </div>
-        </form>
-      </div>
-
-      <DataTable
-        title="Stock On Hand"
-        titleIcon="stock"
-        columns={columns}
-        data={tableData}
-        emptyMessage={loadingTotals ? 'Loading raw material totals...' : 'No raw materials yet.'}
-        onEdit={openEditTotal}
-      />
-
-      <StockImpactReceipt receipt={lastReceipt} title="Warehouse stock receipt" onDismiss={() => setLastReceipt(null)} />
-
-      <div className="space-y-2">
-        {adjustmentsError && (
-          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-            {adjustmentsError}
-          </div>
-        )}
-        <DataTable
-          title="Stock Adjustments"
-          titleIcon="stock"
-          columns={adjustmentColumns}
-          data={adjustments}
-          groupByDate="created_at"
-          emptyMessage={loadingAdjustments ? 'Loading adjustments...' : 'No manual stock adjustments yet.'}
-        />
-      </div>
-
-      <div className="space-y-2">
-        {batchesError && (
-          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-            {batchesError}
-          </div>
-        )}
-        <DataTable
-          title="Entries — Raw Material Inputs"
-          titleIcon="date"
-          columns={batchColumns}
-          data={batches}
-          groupByDate="created_at"
-          emptyMessage={loadingBatches ? 'Loading entries...' : 'No raw material entries found.'}
-          onDelete={promptDelete}
-          onEdit={openEditBatch}
-          canEditRow={(row) => canModifyLocalEntry(user, row)}
-          canDeleteRow={(row) => canModifyLocalEntry(user, row)}
-          rightAction={(
-            <button
-              type="button"
-              onClick={handleExport}
-              disabled={exporting || batches.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border-default px-2.5 py-1 text-xs font-semibold text-text-secondary transition-colors hover:text-accent-gold disabled:opacity-50"
-            >
-              <Pictogram name="export" size={13} />
-              {exporting ? 'Exporting...' : 'Export'}
-            </button>
+          {form.material === NEW && (
+            <>
+              <div>
+                <label className={labelClass} htmlFor="rm-new">New material name</label>
+                <input id="rm-new" className={inputClass} value={form.newName} onChange={(e) => set({ newName: e.target.value })} placeholder="e.g. OPALENE LLDPE" />
+              </div>
+              <div>
+                <label className={labelClass} htmlFor="rm-brand">Brand / type</label>
+                <input id="rm-brand" className={inputClass} value={form.newBrand} onChange={(e) => set({ newBrand: e.target.value })} placeholder="LLDPE, HDPE, LINER FILLER…" />
+              </div>
+            </>
           )}
-        />
-      </div>
-
-      {showAddMaterial && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-bg-card rounded-2xl border border-border-default shadow-2xl max-w-md w-full p-6 space-y-4">
-            <div>
-              <h3 className="text-lg font-semibold text-text-primary">Add New Material</h3>
-              <p className="text-sm text-text-secondary mt-1">Enter the name of the new raw material item</p>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Material Name</label>
-              <input
-                type="text"
-                value={newMaterialName}
-                onChange={(e) => setNewMaterialName(e.target.value)}
-                placeholder="E.g., Plastic Resin, Steel Wire..."
-                className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 focus:border-accent-gold w-full"
-                disabled={submittingMaterial}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleAddNewMaterial()
-                  }
-                }}
-              />
-            </div>
-
-            <div className="flex gap-3 pt-4">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowAddMaterial(false)
-                  setNewMaterialName('')
-                }}
-                disabled={submittingMaterial}
-                className="flex-1 rounded-lg border border-gray-700 px-4 py-2.5 text-sm font-semibold text-text-primary transition-colors hover:bg-bg-input/50 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleAddNewMaterial}
-                disabled={submittingMaterial || !newMaterialName.trim()}
-                className="flex-1 rounded-lg bg-accent-gold px-4 py-2.5 text-sm font-semibold text-black transition-all hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50"
-              >
-                {submittingMaterial ? 'Adding...' : 'Add Material'}
-              </button>
-            </div>
+          <QuantityInput label="Quantity" value={qty.value} unit={qty.unit} onChange={setQty} />
+          <div>
+            <label className={labelClass} htmlFor="rm-loc">Received into</label>
+            <select id="rm-loc" className={inputClass} value={form.location} onChange={(e) => set({ location: e.target.value })}>
+              {MATERIAL_LOCATIONS.map((l) => <option key={l} value={l}>{locationLabel(l)}</option>)}
+            </select>
           </div>
-        </div>
-      )}
-
-      {confirmDelete && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-bg-card rounded-2xl border border-border-default shadow-2xl max-w-md w-full p-6 space-y-4">
-            <div>
-              <h3 className="text-lg font-semibold text-text-primary">Delete Raw Material Batch</h3>
-              <p className="text-sm text-text-secondary mt-1">
-                This will permanently delete this batch entry and deduct its quantity from the total stock.
-                Other entries will remain unchanged.
-              </p>
-            </div>
-
-            <div className="rounded-lg border border-border-default bg-bg-primary/40 p-4 space-y-2">
-              <div className="flex justify-between text-sm">
-                <span className="text-text-secondary">Material</span>
-                <span className="text-text-primary font-medium">{confirmDelete.materialName}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-text-secondary">Quantity</span>
-                <span className="text-red-400 font-semibold">{confirmDelete.quantityKg} kg</span>
-              </div>
-            </div>
-
-            <div className="flex gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(null)}
-                disabled={deletingBatchId !== null}
-                className="flex-1 rounded-lg border border-gray-700 px-4 py-2.5 text-sm font-semibold text-text-primary transition-colors hover:bg-bg-input/50 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDeleteBatch(confirmDelete.id)}
-                disabled={deletingBatchId !== null}
-                className="flex-1 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-red-700 active:scale-[0.98] disabled:opacity-50"
-              >
-                {deletingBatchId === confirmDelete.id ? 'Deleting...' : 'Delete Batch'}
-              </button>
-            </div>
+          <div>
+            <label className={labelClass} htmlFor="rm-batch">Batch no.</label>
+            <input id="rm-batch" className={inputClass} value={form.batch} onChange={(e) => set({ batch: e.target.value })} placeholder="VIPRM-01" />
           </div>
+          <div>
+            <label className={labelClass} htmlFor="rm-sup">Supplier</label>
+            <input id="rm-sup" className={inputClass} value={form.supplier} onChange={(e) => set({ supplier: e.target.value })} />
+          </div>
+          <div className="md:col-span-2">
+            <label className={labelClass} htmlFor="rm-note">Note</label>
+            <input id="rm-note" className={inputClass} value={form.note} onChange={(e) => set({ note: e.target.value })} />
+          </div>
+          <div className="md:col-span-2 xl:col-span-4"><ShiftDatePicker {...when} onChange={setWhen} /></div>
         </div>
-      )}
+        <div className="mt-4 flex justify-end">
+          <PrimaryButton onClick={submit} disabled={saving}>{saving ? 'Saving…' : 'Receive material'}</PrimaryButton>
+        </div>
+      </Panel>
 
-      {editTotal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-bg-card rounded-2xl border border-border-default shadow-2xl max-w-md w-full p-6 space-y-4">
-            <div>
-              <h3 className="text-lg font-semibold text-text-primary">Adjust Stock</h3>
-              <p className="text-sm text-text-secondary mt-1">
-                Add or remove stock for <strong>{editTotal.materialName}</strong>. Every adjustment records its opening and closing balance.
-              </p>
-            </div>
-
-            <div className="rounded-lg border border-border-default bg-bg-primary/40 p-4 space-y-3">
-              <div className="flex justify-between text-sm">
-                <span className="text-text-secondary">Current Total</span>
-                <span className="text-text-primary font-semibold">{editTotal.currentTotal.toFixed(2)} kg</span>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                {['add', 'remove'].map((operation) => (
-                  <button
-                    key={operation}
-                    type="button"
-                    onClick={() => setEditOperation(operation)}
-                    disabled={submittingEdit}
-                    className={`rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${editOperation === operation ? 'border-accent-gold bg-accent-gold/10 text-accent-gold' : 'border-gray-700 text-text-secondary hover:text-text-primary'}`}
-                  >
-                    {operation === 'add' ? 'Add Stock' : 'Remove Stock'}
-                  </button>
+      <Panel title="Received entries" subtitle="Reverse an entry made by mistake; the reversal stays in the stock ledger.">
+        {!receipts.data?.length ? <EmptyState>No material received yet.</EmptyState> : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-border-default">
+              <thead><tr>
+                <th className={th}>No.</th><th className={th}>Date</th><th className={th}>Material</th><th className={th}>Batch</th>
+                <th className={th}>Into</th><th className={`${th} text-right`}>Quantity</th><th className={th}>By</th><th className={th}>Status</th><th className={th} />
+              </tr></thead>
+              <tbody className="divide-y divide-border-default">
+                {receipts.data.map((r) => (
+                  <tr key={r.id} className={r.status === 'REVERSED' ? 'opacity-50' : ''}>
+                    <td className={`${td} font-mono text-xs`}>{r.doc_no}</td>
+                    <td className={td}><div className="flex items-center gap-2">{formatBusinessDate(r.business_date, { weekday: false })}<ShiftBadge shift={r.shift} /></div></td>
+                    <td className={td}>{r.material_name}<div className="text-xs text-text-secondary">{r.brand}{r.supplier ? ` · ${r.supplier}` : ''}</div></td>
+                    <td className={td}>{r.batch_no || '—'}</td>
+                    <td className={td}><LocationBadge location={r.location} /></td>
+                    <td className={`${td} text-right`}><Weight kg={r.quantity_kg} bags /></td>
+                    <td className={`${td} text-xs text-text-secondary`}>{r.created_by_name}</td>
+                    <td className={td}><StatusBadge status={r.status} /></td>
+                    <td className={td}>{r.status === 'ACTIVE' && <ReverseButton onConfirm={() => reverse(r)} />}</td>
+                  </tr>
                 ))}
-              </div>
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Quantity (kg)</label>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  step="0.01"
-                  min="0.01"
-                  value={editQuantity}
-                  onChange={(e) => setEditQuantity(e.target.value)}
-                  placeholder="Enter quantity..."
-                  className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm w-full transition-colors duration-200 focus:border-accent-gold"
-                  disabled={submittingEdit}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleEditTotal()
-                  }}
-                  autoFocus
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-text-secondary tracking-wide uppercase">Reason</label>
-                <input
-                  type="text"
-                  value={editReason}
-                  onChange={(e) => setEditReason(e.target.value)}
-                  placeholder="E.g., physical count correction"
-                  className="bg-bg-input text-text-primary border border-gray-700 rounded-lg px-4 py-2.5 text-sm w-full transition-colors duration-200 focus:border-accent-gold"
-                  disabled={submittingEdit}
-                />
-              </div>
-              <ShiftDatePicker date={adjustWhen.date} shift={adjustWhen.shift} time={adjustWhen.time}
-                disabled={submittingEdit} onChange={setAdjustWhen} />
-              {previewStockAdjustment(editTotal.currentTotal, editOperation, editQuantity) !== null && (
-                <div className="flex justify-between text-sm pt-1 border-t border-border-subtle">
-                  <span className="text-text-secondary">Closing Stock</span>
-                  <span className={`${previewStockAdjustment(editTotal.currentTotal, editOperation, editQuantity) < 0 ? 'text-red-400' : 'text-accent-gold'} font-semibold`}>
-                    {previewStockAdjustment(editTotal.currentTotal, editOperation, editQuantity).toFixed(2)} kg
-                  </span>
-                </div>
-              )}
-            </div>
-
-            <div className="flex gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => { setEditTotal(null); setEditQuantity(''); setEditReason(''); setEditOperation('add') }}
-                disabled={submittingEdit}
-                className="flex-1 rounded-lg border border-gray-700 px-4 py-2.5 text-sm font-semibold text-text-primary transition-colors hover:bg-bg-input/50 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleEditTotal}
-                disabled={submittingEdit || Boolean(validateStockAdjustment({ current: editTotal.currentTotal, operation: editOperation, quantity: editQuantity, reason: editReason }))}
-                className="flex-1 rounded-lg bg-accent-gold px-4 py-2.5 text-sm font-semibold text-black transition-all hover:bg-accent-gold-hover active:scale-[0.98] disabled:opacity-50"
-              >
-                {submittingEdit ? 'Saving...' : 'Save Adjustment'}
-              </button>
-            </div>
+              </tbody>
+            </table>
           </div>
-        </div>
-      )}
+        )}
+      </Panel>
 
-      <EditEntryModal
-        open={Boolean(editingBatch)}
-        title="Edit raw material input"
-        fields={[
-          { name: 'material_name', label: 'Material', required: true },
-          { name: 'quantity_kg', label: 'Quantity (kg)', type: 'number', min: '0.001', step: '0.001', required: true },
-          { name: 'note', label: 'Note' },
-        ]}
-        values={batchEditValues}
-        onChange={(name, value) => setBatchEditValues((current) => ({ ...current, [name]: value }))}
-        onClose={() => setEditingBatch(null)}
-        onSubmit={saveBatchEdit}
-        submitting={submittingEdit}
-        impactSummary="The old input is reversed before the edited input is applied. Warehouse Stock will show the resulting balance."
-      />
+      {isOwner && (
+        <Panel title="Material master" subtitle="Names, brand and stock alert levels. Blank levels use the plant-wide 10 t / 20 t bands.">
+          {!list.length ? <EmptyState>No materials yet — add one when receiving.</EmptyState> : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-border-default">
+                <thead><tr>
+                  <th className={th}>Material</th><th className={th}>Brand</th><th className={`${th} text-right`}>Ground</th>
+                  <th className={`${th} text-right`}>1st Floor</th><th className={`${th} text-right`}>Total</th><th className={th}>Status</th>
+                  <th className={`${th} text-right`}>Reorder below</th><th className={`${th} text-right`}>Optimal above</th><th className={th} />
+                </tr></thead>
+                <tbody className="divide-y divide-border-default">
+                  {list.map((m) => editing?.id === m.id ? (
+                    <MaterialEditRow key={m.id} value={editing} onChange={setEditing} onCancel={() => setEditing(null)}
+                      onSave={async () => {
+                        try {
+                          await api.put(`/materials/${m.id}`, {
+                            name: editing.name, brand: editing.brand, active: editing.active,
+                            reorder_below_kg: editing.reorder_below_kg === '' ? null : Number(editing.reorder_below_kg) * 1000,
+                            optimal_above_kg: editing.optimal_above_kg === '' ? null : Number(editing.optimal_above_kg) * 1000,
+                          })
+                          setEditing(null)
+                          toast.success('Material updated')
+                        } catch (err) { toast.error(apiError(err)) }
+                      }} />
+                  ) : (
+                    <tr key={m.id} className={m.active ? '' : 'opacity-50'}>
+                      <td className={`${td} font-medium`}>{m.name}</td>
+                      <td className={td}>{m.brand || '—'}</td>
+                      <td className={`${td} text-right`}><Weight kg={m.ground_floor_kg} /></td>
+                      <td className={`${td} text-right`}><Weight kg={m.first_floor_kg} /></td>
+                      <td className={`${td} text-right font-semibold`}><Weight kg={m.total_kg} /></td>
+                      <td className={td}><StockStatusBadge status={m.status} /></td>
+                      <td className={`${td} text-right text-xs`}>{m.reorder_below_kg != null ? `${m.reorder_below_kg / 1000} t` : 'default'}</td>
+                      <td className={`${td} text-right text-xs`}>{m.optimal_above_kg != null ? `${m.optimal_above_kg / 1000} t` : 'default'}</td>
+                      <td className={td}>
+                        <SecondaryButton className="px-2 py-1 text-xs" onClick={() => setEditing({
+                          id: m.id, name: m.name, brand: m.brand, active: m.active,
+                          reorder_below_kg: m.reorder_below_kg != null ? m.reorder_below_kg / 1000 : '',
+                          optimal_above_kg: m.optimal_above_kg != null ? m.optimal_above_kg / 1000 : '',
+                        })}><Pencil className="h-3 w-3" />Edit</SecondaryButton>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+      )}
     </div>
+  )
+}
+
+function MaterialEditRow({ value, onChange, onSave, onCancel }) {
+  const set = (patch) => onChange({ ...value, ...patch })
+  const small = `${inputClass} py-1`
+  return (
+    <tr className="bg-bg-input/40">
+      <td className={td}><input className={small} value={value.name} onChange={(e) => set({ name: e.target.value })} aria-label="Material name" /></td>
+      <td className={td}><input className={small} value={value.brand} onChange={(e) => set({ brand: e.target.value })} aria-label="Brand" /></td>
+      <td className={td} colSpan={3}>
+        <label className="inline-flex items-center gap-2 text-xs text-text-secondary">
+          <input type="checkbox" checked={value.active} onChange={(e) => set({ active: e.target.checked })} /> In use
+        </label>
+      </td>
+      <td className={td} />
+      <td className={td}><input className={small} type="number" min="0" step="any" placeholder="t" value={value.reorder_below_kg} onChange={(e) => set({ reorder_below_kg: e.target.value })} aria-label="Reorder below (tons)" /></td>
+      <td className={td}><input className={small} type="number" min="0" step="any" placeholder="t" value={value.optimal_above_kg} onChange={(e) => set({ optimal_above_kg: e.target.value })} aria-label="Optimal above (tons)" /></td>
+      <td className={td}>
+        <div className="flex gap-1">
+          <PrimaryButton className="px-2 py-1 text-xs" onClick={onSave}>Save</PrimaryButton>
+          <SecondaryButton className="px-2 py-1 text-xs" onClick={onCancel}>Cancel</SecondaryButton>
+        </div>
+      </td>
+    </tr>
   )
 }
