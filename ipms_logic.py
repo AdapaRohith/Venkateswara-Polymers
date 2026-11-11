@@ -141,10 +141,27 @@ def day_register(rows, *, thresholds=None) -> list[dict]:
 
 
 def production_totals(entries) -> dict:
-    gross = sum((kg(e["gross_kg"]) for e in entries), Decimal("0"))
+    """Gross is the material weight (weighed − core/tare); net = gross − wastage.
+
+    Yield (efficiency) is net good output per kg of material put through the
+    machine: the share of input that came out as saleable rolls / goods.
+    """
+    gross = sum((kg(e["gross_kg"]) - kg(e.get("tare_kg")) for e in entries), Decimal("0"))
     wastage = sum((kg(e["wastage_kg"]) for e in entries), Decimal("0"))
-    return {"gross_kg": gross, "wastage_kg": wastage, "net_kg": gross - wastage,
-            "wastage_percent": (wastage / gross * 100) if gross else Decimal("0")}
+    net = gross - wastage
+    return {"gross_kg": gross, "wastage_kg": wastage, "net_kg": net,
+            "wastage_percent": (wastage / gross * 100) if gross else Decimal("0"),
+            "yield_percent": (net / gross * 100) if gross else Decimal("0")}
+
+
+def is_late_entry(business_date, shift: str, entered_at, *, am_start, pm_start, grace_hours: int = 4) -> bool:
+    """True when an entry was keyed in more than `grace_hours` after its shift ended."""
+    from datetime import datetime, timedelta
+    if shift == "AM":
+        end = datetime.combine(business_date, pm_start)
+    else:
+        end = datetime.combine(business_date + timedelta(days=1), am_start)
+    return entered_at > end + timedelta(hours=grace_hours)
 
 
 def shift_report(entries) -> dict:

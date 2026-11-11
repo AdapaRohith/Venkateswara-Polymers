@@ -79,7 +79,21 @@ export default function Dashboard() {
         </Panel>
       </div>
 
-      <Panel title="Last 14 days" subtitle={`Plant net ${n1(data.totals_14d.plant.net_kg)} kg (waste ${n1(data.totals_14d.plant.wastage_percent)}%) · Cutting net ${n1(data.totals_14d.cutting.net_kg)} kg (waste ${n1(data.totals_14d.cutting.wastage_percent)}%)`}>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {[['Plant efficiency · 14 days', data.totals_14d.plant.yield_percent, 'Net rolls ÷ material extruded'],
+          ['Cutting efficiency · 14 days', data.totals_14d.cutting.yield_percent, 'Net finished goods ÷ rolls cut'],
+          ['Late entries · 14 days', null, `${data.totals_14d.late_entries} of ${data.totals_14d.entries} keyed in more than 4 h after their shift`]].map(([label, pct, hint]) => (
+          <div key={label} className="rounded-xl border border-border-default bg-bg-card p-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary">{label}</p>
+            {pct !== null
+              ? <p className="mt-1 text-2xl font-bold tabular-nums">{n1(pct)}%</p>
+              : <p className="mt-1 text-2xl font-bold tabular-nums">{data.totals_14d.late_entries}</p>}
+            <p className="text-xs text-text-secondary">{hint}</p>
+          </div>
+        ))}
+      </div>
+
+      <Panel title="Last 14 days" subtitle={`Plant net ${n1(data.totals_14d.plant.net_kg)} kg (yield ${n1(data.totals_14d.plant.yield_percent)}%) · Cutting net ${n1(data.totals_14d.cutting.net_kg)} kg (yield ${n1(data.totals_14d.cutting.yield_percent)}%)`}>
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data.trend.map((d) => ({ day: d.business_date.slice(5), plant: d.plant.net_kg, cutting: d.cutting.net_kg, waste: d.plant.wastage_kg + d.cutting.wastage_kg }))}>

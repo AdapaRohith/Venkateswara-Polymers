@@ -110,8 +110,9 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
 );
 
 -- One row per weighed output: an extruder roll (EXTRUSION) or a cutting run (CUTTING).
--- gross_kg is everything that came off the machine; wastage_kg is the scrap part
--- of it; net_kg is good output that enters the store.
+-- gross_kg is the weighed weight; tare_kg the core / bobbin / packing weighed with it;
+-- gross − tare is the material that went through the machine; wastage_kg is the scrap
+-- part of that; net_kg is good output that enters the store.
 CREATE TABLE IF NOT EXISTS production_entries (
     id SERIAL PRIMARY KEY,
     doc_no TEXT NOT NULL UNIQUE,
@@ -120,8 +121,9 @@ CREATE TABLE IF NOT EXISTS production_entries (
     input_product_id INTEGER REFERENCES products(id),
     output_product_id INTEGER NOT NULL REFERENCES products(id),
     gross_kg NUMERIC(14, 3) NOT NULL CHECK (gross_kg > 0),
+    tare_kg NUMERIC(14, 3) NOT NULL DEFAULT 0 CHECK (tare_kg >= 0),
     wastage_kg NUMERIC(14, 3) NOT NULL DEFAULT 0 CHECK (wastage_kg >= 0),
-    net_kg NUMERIC(14, 3) GENERATED ALWAYS AS (gross_kg - wastage_kg) STORED,
+    net_kg NUMERIC(14, 3) GENERATED ALWAYS AS (gross_kg - tare_kg - wastage_kg) STORED,
     wastage_to_regrind BOOLEAN NOT NULL DEFAULT TRUE,
     worker_name TEXT,
     note TEXT,
@@ -133,7 +135,7 @@ CREATE TABLE IF NOT EXISTS production_entries (
     status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'REVERSED')),
     reversed_by INTEGER,
     reversed_at TIMESTAMP,
-    CHECK (wastage_kg < gross_kg),
+    CHECK (tare_kg + wastage_kg < gross_kg),
     CHECK ((kind = 'CUTTING') = (input_product_id IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS production_entries_bd ON production_entries (business_date, shift);

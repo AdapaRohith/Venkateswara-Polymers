@@ -11,8 +11,10 @@
 
 There is no Warehouse. Raw material is received straight onto a floor.
 
-* **Extrusion** (MCN-1 … MCN-5): materials used (blend lines) must add up to the gross weight.
-  Net = gross − wastage goes to the Roll Store as that roll size.
+* **Weights on every production entry**: weighed gross, core / tare (bobbin, core, packing),
+  wastage. Material = gross − core; net = material − wastage. The operator name is required.
+* **Extrusion** (MCN-1 … MCN-5): materials used (blend lines) must add up to the material weight.
+  Net goes to the Roll Store as that roll size.
 * **Cutting** (CUTTING MCN-1 … 3): consumes rolls from the Roll Store (never resin); net goes to
   Finished Goods. Wastage from either section goes to RP REGRIND on the 1st Floor unless unticked.
 * **Dispatch**: supplying an order item takes the goods out of their store.
@@ -22,6 +24,9 @@ There is no Warehouse. Raw material is received straight onto a floor.
   Stock (plant-wide setting, per-material overrides).
 * **Ledger**: `stock_ledger` is the truth; `stock_balances` is its running total. `GET /stock/verify`
   must return `ok: true`.
+* **Efficiency (yield)** = net ÷ material, per section and machine (dashboard, summary, Excel).
+* **Late entries**: an entry keyed in more than 4 h after its shift ended is flagged LATE ENTRY
+  and counted in the summary, so typed-up-later sheets are visible.
 * Shifts: Day (AM) 08:00–20:00, Night (PM) 20:00–08:00 belonging to the day it started.
 * 1 bag = 25 kg; everything is stored in kg.
 
@@ -38,7 +43,8 @@ There is no Warehouse. Raw material is received straight onto a floor.
 ## Schema and deploy
 
 `schema.sql` is applied on every API start (idempotent). `migrations/010_fresh_start.sql` dropped
-the old Warehouse-model tables and zeroed all figures (Nov 2026).
+the old Warehouse-model tables and zeroed all figures (Nov 2026); `011_core_tare_weight.sql` added
+the core / tare weight.
 
 ```bash
 cp server.py ipms_logic.py reports_xlsx.py schema.sql /root/backend/ && pm2 restart vp-api

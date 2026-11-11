@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from ipms_logic import (
-    allocate_auto, day_register, location_accepts, merge_lines, normalize_product_code,
+    allocate_auto, day_register, is_late_entry, location_accepts, merge_lines, normalize_product_code,
     shift_report, stock_status,
 )
 
@@ -80,3 +80,20 @@ def test_shift_report_matches_plant_sheet_arithmetic():
     assert float(rep["AM"]["plant"]["net_kg"]) == 945.1
     assert float(rep["AM"]["cutting"]["net_kg"]) == 785.5
     assert float(rep["day_and_night"]["plant"]["net_kg"]) == 945.1 + 1349.1
+
+
+def test_tare_is_taken_off_before_wastage_and_yield():
+    from ipms_logic import production_totals
+    t = production_totals([{"gross_kg": 105, "tare_kg": 5, "wastage_kg": 4}])
+    assert t["gross_kg"] == 100 and t["net_kg"] == 96
+    assert t["yield_percent"] == 96 and t["wastage_percent"] == 4
+
+
+def test_late_entry_flag():
+    from datetime import date, datetime, time
+    kw = {"am_start": time(8), "pm_start": time(20)}
+    d = date(2026, 11, 10)
+    assert not is_late_entry(d, "AM", datetime(2026, 11, 10, 23, 59), **kw)
+    assert is_late_entry(d, "AM", datetime(2026, 11, 11, 0, 1), **kw)
+    assert not is_late_entry(d, "PM", datetime(2026, 11, 11, 11, 0), **kw)
+    assert is_late_entry(d, "PM", datetime(2026, 11, 11, 12, 30), **kw)

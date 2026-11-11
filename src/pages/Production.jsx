@@ -31,13 +31,19 @@ export function MachinePicker({ machines, value, onChange }) {
   )
 }
 
-export function OutputFields({ gross, wastage, regrind, onChange, grossLabel = 'Gross weight (kg)' }) {
-  const net = Math.max(Number(gross || 0) - Number(wastage || 0), 0)
+export function OutputFields({ gross, tare, wastage, regrind, onChange, grossLabel = 'Weighed gross (kg)' }) {
+  const material = Math.max(Number(gross || 0) - Number(tare || 0), 0)
+  const net = Math.max(material - Number(wastage || 0), 0)
   return (
     <>
       <div>
         <label className={labelClass} htmlFor="out-gross">{grossLabel}</label>
         <input id="out-gross" type="number" min="0" step="any" className={inputClass} value={gross} onChange={(e) => onChange({ gross: e.target.value })} />
+      </div>
+      <div>
+        <label className={labelClass} htmlFor="out-tare">Core / tare (kg)</label>
+        <input id="out-tare" type="number" min="0" step="any" className={inputClass} value={tare} onChange={(e) => onChange({ tare: e.target.value })} placeholder="0" />
+        <p className="mt-1 text-xs text-text-secondary">Material = {formatWeight(material)}</p>
       </div>
       <div>
         <label className={labelClass} htmlFor="out-waste">Wastage (kg)</label>
@@ -61,7 +67,7 @@ export default function Production() {
   const [when, setWhen] = useEntryWhen()
   const [machineId, setMachineId] = useState('')
   const [size, setSize] = useState('')
-  const [out, setOut] = useState({ gross: '', wastage: '', regrind: true })
+  const [out, setOut] = useState({ gross: '', tare: '', wastage: '', regrind: true })
   const [lines, setLines] = useState([blankLine()])
   const [worker, setWorker] = useState('')
   const [saving, setSaving] = useState(false)
@@ -72,27 +78,28 @@ export default function Production() {
   const mats = (materials.data || []).filter((m) => m.active && m.total_kg > 0)
 
   const gross = Number(out.gross || 0)
+  const material = Math.max(gross - Number(out.tare || 0), 0)
   const single = lines.length === 1
-  const used = single ? gross : lines.reduce((s, l) => s + Number(l.quantity_kg || 0), 0)
-  const mismatch = !single && gross > 0 && Math.abs(used - gross) > 0.001
+  const used = single ? material : lines.reduce((s, l) => s + Number(l.quantity_kg || 0), 0)
+  const mismatch = !single && material > 0 && Math.abs(used - material) > 0.001
   const setLine = (i, patch) => setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)))
 
   const submit = async () => {
-    if (!machineId || !size.trim() || !gross || lines.some((l) => !l.material_id)) {
-      toast.error('Choose the machine, roll size, gross weight and the materials used')
+    if (!machineId || !size.trim() || !gross || !worker.trim() || lines.some((l) => !l.material_id)) {
+      toast.error('Choose the machine, roll size, gross weight, operator and the materials used')
       return
     }
-    if (mismatch) { toast.error('Materials used must add up to the gross weight'); return }
+    if (mismatch) { toast.error('Materials used must add up to gross minus core weight'); return }
     setSaving(true)
     try {
       const { data } = await api.post('/production/extrusion', {
-        machine_id: Number(machineId), output_size: size, gross_kg: gross, wastage_kg: Number(out.wastage || 0),
+        machine_id: Number(machineId), output_size: size, gross_kg: gross, tare_kg: Number(out.tare || 0), wastage_kg: Number(out.wastage || 0),
         wastage_to_regrind: out.regrind, worker_name: worker,
-        inputs: lines.map((l) => ({ material_id: Number(l.material_id), location: l.location, quantity_kg: single ? gross : Number(l.quantity_kg) })),
+        inputs: lines.map((l) => ({ material_id: Number(l.material_id), location: l.location, quantity_kg: single ? material : Number(l.quantity_kg) })),
         ...entryWhenPayload(when),
       })
       toast.success(`${data.entry.doc_no}: ${data.entry.machine_name} · ${data.entry.output_code} · net ${formatWeight(data.entry.net_kg)} to Roll Store`)
-      setOut({ gross: '', wastage: '', regrind: out.regrind })
+      setOut({ gross: '', tare: out.tare, wastage: '', regrind: out.regrind })
       setLines((ls) => ls.map((l) => ({ ...l, quantity_kg: '' })))
     } catch (err) {
       toast.error(apiError(err))
@@ -109,13 +116,13 @@ export default function Production() {
       <Panel title="Log a roll">
         <div className="space-y-4">
           <MachinePicker machines={machines} value={machineId} onChange={setMachineId} />
-          <div className="grid gap-4 md:grid-cols-4">
+          <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-5">
             <div>
               <label className={labelClass} htmlFor="pp-size">Roll size</label>
               <input id="pp-size" list="roll-sizes" className={inputClass} value={size} onChange={(e) => setSize(e.target.value)} placeholder="e.g. 25*30*50MIC" />
               <datalist id="roll-sizes">{(rolls.data || []).map((r) => <option key={r.id} value={r.code} />)}</datalist>
             </div>
-            <OutputFields gross={out.gross} wastage={out.wastage} regrind={out.regrind} onChange={(p) => setOut((o) => ({ ...o, ...p }))} />
+            <OutputFields gross={out.gross} tare={out.tare} wastage={out.wastage} regrind={out.regrind} onChange={(p) => setOut((o) => ({ ...o, ...p }))} />
           </div>
 
           <div className="rounded-lg border border-border-default p-3">
@@ -138,7 +145,7 @@ export default function Production() {
                       <option value="GROUND_FLOOR">Ground Floor only{m ? ` (${m.ground_floor_kg.toLocaleString('en-IN')} kg)` : ''}</option>
                     </select>
                     {single
-                      ? <p className="px-1 py-2 text-xs text-text-secondary">Uses the full gross: <strong>{formatWeight(gross)}</strong></p>
+                      ? <p className="px-1 py-2 text-xs text-text-secondary">Uses all the material: <strong>{formatWeight(material)}</strong></p>
                       : <input aria-label={`Quantity ${i + 1}`} type="number" min="0" step="any" placeholder="kg" className={inputClass} value={l.quantity_kg} onChange={(e) => setLine(i, { quantity_kg: e.target.value })} />}
                     <button type="button" aria-label="Remove material" disabled={single} onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}
                       className="rounded-md p-2 text-text-secondary hover:text-rose-500 disabled:opacity-30"><Trash2 className="h-4 w-4" /></button>
@@ -148,14 +155,14 @@ export default function Production() {
             </div>
             {!single && (
               <p className={`mt-2 text-xs ${mismatch ? 'text-rose-500' : 'text-text-secondary'}`}>
-                Blend total {formatWeight(used)} {mismatch ? `— must equal the gross ${formatWeight(gross)}` : '= gross'}
+                Blend total {formatWeight(used)} {mismatch ? `— must equal gross − core = ${formatWeight(material)}` : '= gross − core'}
               </p>
             )}
           </div>
 
           <div className="grid gap-4 md:grid-cols-4">
             <div>
-              <label className={labelClass} htmlFor="pp-worker">Operator</label>
+              <label className={labelClass} htmlFor="pp-worker">Operator (required)</label>
               <input id="pp-worker" className={inputClass} value={worker} onChange={(e) => setWorker(e.target.value)} />
             </div>
             <div className="md:col-span-3"><ShiftDatePicker {...when} onChange={setWhen} /></div>

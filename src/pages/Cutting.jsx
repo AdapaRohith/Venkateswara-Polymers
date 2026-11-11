@@ -20,7 +20,7 @@ export default function Cutting() {
   const [machineId, setMachineId] = useState('')
   const [rollId, setRollId] = useState('')
   const [size, setSize] = useState('')
-  const [out, setOut] = useState({ gross: '', wastage: '', regrind: true })
+  const [out, setOut] = useState({ gross: '', tare: '', wastage: '', regrind: true })
   const [worker, setWorker] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -30,22 +30,23 @@ export default function Cutting() {
   const finished = (products.data || []).filter((p) => p.kind === 'FINISHED')
   const roll = rolls.find((r) => String(r.id) === String(rollId))
   const gross = Number(out.gross || 0)
-  const over = roll && gross > roll.quantity_kg + 1e-9
+  const material = Math.max(gross - Number(out.tare || 0), 0)
+  const over = roll && material > roll.quantity_kg + 1e-9
 
   const submit = async () => {
-    if (!machineId || !roll || !size.trim() || !gross) {
-      toast.error('Choose the machine, the roll used, the output size and the weight')
+    if (!machineId || !roll || !size.trim() || !gross || !worker.trim()) {
+      toast.error('Choose the machine, the roll used, the output size, the weight and the operator')
       return
     }
     setSaving(true)
     try {
       const { data } = await api.post('/production/cutting', {
-        machine_id: Number(machineId), input_product_id: roll.id, output_size: size, gross_kg: gross,
+        machine_id: Number(machineId), input_product_id: roll.id, output_size: size, gross_kg: gross, tare_kg: Number(out.tare || 0),
         wastage_kg: Number(out.wastage || 0), wastage_to_regrind: out.regrind, worker_name: worker,
         ...entryWhenPayload(when),
       })
       toast.success(`${data.entry.doc_no}: ${data.entry.input_code} → ${data.entry.output_code} · net ${formatWeight(data.entry.net_kg)} to Finished Goods`)
-      setOut({ gross: '', wastage: '', regrind: out.regrind })
+      setOut({ gross: '', tare: out.tare, wastage: '', regrind: out.regrind })
     } catch (err) {
       toast.error(apiError(err))
     } finally {
@@ -61,7 +62,7 @@ export default function Cutting() {
       <Panel title="Log a cutting run">
         <div className="space-y-4">
           <MachinePicker machines={machines} value={machineId} onChange={setMachineId} />
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-4">
             <div>
               <label className={labelClass} htmlFor="ct-roll">Roll used (from Roll Store)</label>
               <select id="ct-roll" className={inputClass} value={rollId} onChange={(e) => setRollId(e.target.value)}>
@@ -76,10 +77,10 @@ export default function Cutting() {
               <datalist id="fg-sizes">{finished.map((p) => <option key={p.id} value={p.code} />)}</datalist>
             </div>
             <div>
-              <label className={labelClass} htmlFor="ct-worker">Operator</label>
+              <label className={labelClass} htmlFor="ct-worker">Operator (required)</label>
               <input id="ct-worker" className={inputClass} value={worker} onChange={(e) => setWorker(e.target.value)} />
             </div>
-            <OutputFields gross={out.gross} wastage={out.wastage} regrind={out.regrind} grossLabel="Rolls used / gross (kg)"
+            <OutputFields gross={out.gross} tare={out.tare} wastage={out.wastage} regrind={out.regrind} grossLabel="Weighed gross (kg)"
               onChange={(p) => setOut((o) => ({ ...o, ...p }))} />
           </div>
           {over && <p className="text-sm text-rose-500">Only {formatWeight(roll.quantity_kg)} of {roll.code} is in the Roll Store.</p>}

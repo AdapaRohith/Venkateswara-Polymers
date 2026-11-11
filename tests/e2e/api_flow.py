@@ -81,14 +81,14 @@ def main():
 
     opal, mb = mats["OPALENE LLDPE"]["id"], mats["WHITE MB"]["id"]
     call("POST", "/production/extrusion", {
-        "machine_id": extruder["id"], "output_size": "25 * 30 * 50 mic", "gross_kg": 300, "wastage_kg": 10,
+        "machine_id": extruder["id"], "worker_name": "Ravi", "output_size": "25 * 30 * 50 mic", "gross_kg": 300, "wastage_kg": 10,
         "inputs": [{"material_id": opal, "location": "AUTO", "quantity_kg": 280},
                    {"material_id": mb, "location": "GROUND_FLOOR", "quantity_kg": 20}]}, expect=200)
     call("POST", "/production/extrusion", {
-        "machine_id": extruder["id"], "output_size": "X", "gross_kg": 100,
+        "machine_id": extruder["id"], "worker_name": "Ravi", "output_size": "X", "gross_kg": 100,
         "inputs": [{"material_id": opal, "quantity_kg": 90}]}, expect=400)
     call("POST", "/production/extrusion", {
-        "machine_id": cutter["id"], "output_size": "X", "gross_kg": 10,
+        "machine_id": cutter["id"], "worker_name": "Ravi", "output_size": "X", "gross_kg": 10,
         "inputs": [{"material_id": opal, "quantity_kg": 10}]}, expect=400)
     _, mats, rolls, _ = stock()
     check("extrusion draws 1st floor running stock first", mats["OPALENE LLDPE"]["first_floor_kg"] == 1720)
@@ -96,11 +96,11 @@ def main():
     check("net roll weight (gross − wastage) in Roll Store", rolls.get("25*30*50MIC") == 290)
     check("wastage becomes RP REGRIND on 1st floor", mats["RP REGRIND"]["first_floor_kg"] == 10)
 
-    ct = call("POST", "/production/cutting", {"machine_id": cutter["id"], "input_size": "25*30*50MIC",
+    ct = call("POST", "/production/cutting", {"machine_id": cutter["id"], "worker_name": "Ravi", "input_size": "25*30*50MIC",
                                               "output_size": "25*30 BAG", "gross_kg": 200, "wastage_kg": 5})
-    call("POST", "/production/cutting", {"machine_id": cutter["id"], "input_size": "25*30*50MIC",
+    call("POST", "/production/cutting", {"machine_id": cutter["id"], "worker_name": "Ravi", "input_size": "25*30*50MIC",
                                          "output_size": "25*30 BAG", "gross_kg": 500}, expect=400)
-    call("POST", "/production/cutting", {"machine_id": cutter["id"], "input_size": "NO SUCH ROLL",
+    call("POST", "/production/cutting", {"machine_id": cutter["id"], "worker_name": "Ravi", "input_size": "NO SUCH ROLL",
                                          "output_size": "Z", "gross_kg": 1}, expect=404)
     _, mats, rolls, fin = stock()
     check("cutting consumes rolls, not resin", rolls["25*30*50MIC"] == 90 and mats["OPALENE LLDPE"]["first_floor_kg"] == 1720)
@@ -116,8 +116,17 @@ def main():
     call("DELETE", f"/production/entries/{ct['entry']['id']}", expect=400)
     check("double reversal refused", True)
 
-    call("POST", "/production/cutting", {"machine_id": cutter["id"], "input_size": "25*30*50MIC",
+    call("POST", "/production/cutting", {"machine_id": cutter["id"], "worker_name": "Ravi", "input_size": "25*30*50MIC",
                                          "output_size": "25*30 BAG", "gross_kg": 100})
+    call("POST", "/production/extrusion", {"machine_id": extruder["id"], "output_size": "X", "gross_kg": 10,
+                                           "inputs": [{"material_id": opal, "quantity_kg": 10}]}, expect=400)
+    check("operator is required on production entries", True)
+    tare_run = call("POST", "/production/extrusion", {
+        "machine_id": extruder["id"], "worker_name": "Ravi", "output_size": "9*10*75MIC", "gross_kg": 105,
+        "tare_kg": 5, "wastage_kg": 4, "inputs": [{"material_id": opal, "location": "AUTO", "quantity_kg": 100}]})
+    check("core weight is taken off before net", tare_run["entry"]["net_kg"] == 96)
+    _, _, rolls, _ = stock()
+    check("roll store gets gross − core − wastage", rolls["9*10*75MIC"] == 96)
     order = call("POST", "/orders", {"order_number": "E2E-1", "client_name": "Test",
                                      "items": [{"item_name": "25*30bag", "required_quantity": 80}]})
     check("order item linked to finished stock", order["items"][0]["product_code"] == "25*30BAG")
@@ -142,7 +151,8 @@ def main():
 
     rep = call("GET", "/reports/shift-production")
     dn = rep["day_and_night"]
-    check("shift report plant net", dn["plant"]["net_kg"] == 290 and dn["plant"]["wastage_kg"] == 10)
+    check("shift report plant net (with core taken off)", dn["plant"]["net_kg"] == 386 and dn["plant"]["wastage_kg"] == 14)
+    check("plant efficiency is net ÷ material", round(dn["plant"]["yield_percent"], 2) == round(386 / 400 * 100, 2))
     check("shift report cutting excludes reversed run", dn["cutting"]["gross_kg"] == 100)
 
     for path in ("/reports/inventory-register.xlsx", "/reports/shift-production.xlsx",

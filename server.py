@@ -625,7 +625,7 @@ async def health():
 from ipms_logic import (  # noqa: E402
     ALL_LOCATIONS, FINISHED_STORE, LOCATION_LABELS, MATERIAL_LOCATIONS, PRODUCT_STORE,
     REGRIND_BRAND, REGRIND_LOCATION, REGRIND_MATERIAL, ROLL_STORE, STATUS_LABELS,
-    allocate_auto, day_register, location_accepts, merge_lines, normalize_material_name,
+    allocate_auto, day_register, is_late_entry, location_accepts, merge_lines, normalize_material_name,
     normalize_product_code, shift_report, stock_status,
 )
 
@@ -1159,13 +1159,17 @@ async def reverse_transfer(doc_id: int, user=Depends(get_user)):
 
 # ── Production: extrusion (resin → rolls) and cutting (rolls → finished goods) ──
 
-def parse_output(body: dict) -> tuple[Decimal, Decimal, bool]:
+def parse_output(body: dict) -> tuple[Decimal, Decimal, Decimal, bool]:
+    """(weighed gross, core/tare, wastage, wastage→regrind). Material = gross − tare."""
     gross = parse_kg(body.get("gross_kg", body.get("gross_weight")), "Gross weight")
+    tare = parse_kg(body.get("tare_kg") or 0, "Core / tare weight", allow_zero=True)
     wastage = parse_kg(body.get("wastage_kg") or 0, "Wastage", allow_zero=True)
-    if wastage >= gross:
-        raise HTTPException(400, "Wastage must be less than the gross weight")
+    if tare + wastage >= gross:
+        raise HTTPException(400, "Core weight plus wastage must be less than the gross weight")
+    if not str(body.get("worker_name") or "").strip():
+        raise HTTPException(400, "Enter the operator who ran the machine")
     to_regrind = body.get("wastage_to_regrind", True) not in (False, "false", 0, "0")
-    return gross, wastage, to_regrind
+    return gross, tare, wastage, to_regrind
 
 
 async def wastage_lines(c, wastage: Decimal, to_regrind: bool) -> list:
@@ -1177,7 +1181,8 @@ async def wastage_lines(c, wastage: Decimal, to_regrind: bool) -> list:
 @app.post("/production/extrusion")
 async def create_extrusion(request: Request, user=Depends(get_user)):
     body = await request.json()
-    gross, wastage, to_regrind = parse_output(body)
+    gross, tare, wastage, to_regrind = parse_output(body)
+    material_kg = gross - tare
     business_date, shift, entry_ts = parse_business_context(body)
     async with pool.acquire() as c:
         async with c.transaction():
@@ -1189,7 +1194,7 @@ async def create_extrusion(request: Request, user=Depends(get_user)):
             raw_inputs = body.get("inputs") or []
             if not raw_inputs and (body.get("material_id") or body.get("material_name")):
                 raw_inputs = [{"material_id": body.get("material_id"), "material_name": body.get("material_name"),
-                               "location": body.get("location") or "AUTO", "quantity_kg": str(gross)}]
+                               "location": body.get("location") or "AUTO", "quantity_kg": str(material_kg)}]
             if not raw_inputs:
                 raise HTTPException(400, "Add the materials this roll was made from")
             bal = await balances_map(c)
@@ -1210,25 +1215,25 @@ async def create_extrusion(request: Request, user=Depends(get_user)):
                     key = ("MATERIAL", material["id"], part_loc)
                     bal[key] = bal.get(key, Decimal("0")) - part_qty
             used = sum((q for _, _, q in inputs), Decimal("0"))
-            if abs(used - gross) > QTY_EPS:
+            if abs(used - material_kg) > QTY_EPS:
                 raise HTTPException(400, (
-                    f"Materials used ({float(used):,.3f} kg) must add up to the gross weight "
-                    f"({float(gross):,.3f} kg) — the gross is everything the machine consumed."))
+                    f"Materials used ({float(used):,.3f} kg) must add up to gross minus core weight "
+                    f"({float(material_kg):,.3f} kg) — that is everything the machine consumed."))
             doc_no = await next_document_no(c, "EX", "production_entries", business_date)
             doc = await c.fetchrow(
                 """INSERT INTO production_entries (doc_no, kind, machine_id, output_product_id, gross_kg, wastage_kg,
-                       wastage_to_regrind, worker_name, note, business_date, shift, entered_at, created_by)
-                   VALUES ($1, 'EXTRUSION', $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()), $12)
+                       wastage_to_regrind, worker_name, note, business_date, shift, entered_at, created_by, tare_kg)
+                   VALUES ($1, 'EXTRUSION', $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()), $12, $13)
                    RETURNING *""",
                 doc_no, machine["id"], roll["id"], gross, wastage, to_regrind,
                 str(body.get("worker_name") or "").strip() or None, str(body.get("note") or "").strip() or None,
-                business_date, shift, entry_ts, user_id_from_token(user))
-            for material, loc, qty in inputs:
+                business_date, shift, entry_ts, user_id_from_token(user), tare)
+            for mat, loc, qty in inputs:
                 await c.execute(
                     "INSERT INTO production_inputs (entry_id, material_id, location, quantity_kg) VALUES ($1, $2, $3, $4)",
-                    doc["id"], material["id"], loc, qty)
+                    doc["id"], mat["id"], loc, qty)
             lines = [("MATERIAL", m["id"], loc, -qty) for m, loc, qty in inputs]
-            lines.append(("PRODUCT", roll["id"], ROLL_STORE, gross - wastage))
+            lines.append(("PRODUCT", roll["id"], ROLL_STORE, material_kg - wastage))
             lines += await wastage_lines(c, wastage, to_regrind)
             receipt = await post_ledger(
                 c, doc_type="EXTRUSION", doc_id=doc["id"], doc_no=doc_no, business_date=business_date, shift=shift,
@@ -1243,7 +1248,8 @@ async def create_extrusion(request: Request, user=Depends(get_user)):
 @app.post("/production/cutting")
 async def create_cutting(request: Request, user=Depends(get_user)):
     body = await request.json()
-    gross, wastage, to_regrind = parse_output(body)
+    gross, tare, wastage, to_regrind = parse_output(body)
+    material_kg = gross - tare
     business_date, shift, entry_ts = parse_business_context(body)
     async with pool.acquire() as c:
         async with c.transaction():
@@ -1260,14 +1266,14 @@ async def create_cutting(request: Request, user=Depends(get_user)):
             doc = await c.fetchrow(
                 """INSERT INTO production_entries (doc_no, kind, machine_id, input_product_id, output_product_id,
                        gross_kg, wastage_kg, wastage_to_regrind, worker_name, note, business_date, shift,
-                       entered_at, created_by)
-                   VALUES ($1, 'CUTTING', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW()), $13)
+                       entered_at, created_by, tare_kg)
+                   VALUES ($1, 'CUTTING', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW()), $13, $14)
                    RETURNING *""",
                 doc_no, machine["id"], roll["id"], finished["id"], gross, wastage, to_regrind,
                 str(body.get("worker_name") or "").strip() or None, str(body.get("note") or "").strip() or None,
-                business_date, shift, entry_ts, user_id_from_token(user))
-            lines = [("PRODUCT", roll["id"], ROLL_STORE, -gross),
-                     ("PRODUCT", finished["id"], FINISHED_STORE, gross - wastage)]
+                business_date, shift, entry_ts, user_id_from_token(user), tare)
+            lines = [("PRODUCT", roll["id"], ROLL_STORE, -material_kg),
+                     ("PRODUCT", finished["id"], FINISHED_STORE, material_kg - wastage)]
             lines += await wastage_lines(c, wastage, to_regrind)
             receipt = await post_ledger(
                 c, doc_type="CUTTING", doc_id=doc["id"], doc_no=doc_no, business_date=business_date, shift=shift,
@@ -1312,6 +1318,10 @@ async def fetch_production_entries(c, *, date_from=None, date_to=None, kind=None
                 WHERE pi.entry_id = ANY($1::int[]) ORDER BY pi.id""", [e["id"] for e in entries]))
         for e in entries:
             e["inputs"] = [i for i in inputs if i["entry_id"] == e["id"]]
+            e["material_kg"] = e["gross_kg"] - e["tare_kg"]
+            # Keyed in long after the shift ended: the sheet was typed up later, not live.
+            e["late_entry"] = is_late_entry(e["business_date"], e["shift"], e["created_at"],
+                                            am_start=SHIFT_AM_START, pm_start=SHIFT_PM_START)
     return entries
 
 
@@ -1603,12 +1613,14 @@ async def summary_data(c, start: dt_date, end: dt_date) -> dict:
             WHERE pe.status = 'ACTIVE' AND pe.business_date BETWEEN $1 AND $2
             GROUP BY 1, 2, 3 ORDER BY 4 DESC""", start, end))
     sizes = rows(await c.fetch(
-        """SELECT pe.kind, p.code, COUNT(*) AS entries, SUM(pe.gross_kg) AS gross_kg,
+        """SELECT pe.kind, p.code, COUNT(*) AS entries, SUM(pe.gross_kg - pe.tare_kg) AS gross_kg,
                   SUM(pe.wastage_kg) AS wastage_kg, SUM(pe.net_kg) AS net_kg
              FROM production_entries pe JOIN products p ON p.id = pe.output_product_id
             WHERE pe.status = 'ACTIVE' AND pe.business_date BETWEEN $1 AND $2
             GROUP BY 1, 2 ORDER BY 1, 6 DESC""", start, end))
     totals = shift_report(entries)["day_and_night"]
+    totals["entries"] = len(entries)
+    totals["late_entries"] = sum(1 for e in entries if e["late_entry"])
     return floatify({"date_from": start.isoformat(), "date_to": end.isoformat(), "days": days,
                      "machines": machine_rows, "material_usage": usage, "sizes": sizes, "totals": totals})
 

@@ -135,7 +135,7 @@ function ShiftColumn({ title, block, cutting }) {
             <tr key={e.id}>
               <td className={`${td} font-semibold`}>{e.machine_name}</td>
               <td className={td}>{cutting ? <>{e.output_code}<div className="text-[11px] text-text-secondary">from {e.input_code}</div></> : e.output_code}</td>
-              <td className={`${td} text-right tabular-nums text-rose-600 dark:text-rose-400`}>{n(e.gross_kg, 1)}</td>
+              <td className={`${td} text-right tabular-nums text-rose-600 dark:text-rose-400`}>{n(e.material_kg, 1)}</td>
               <td className={`${td} text-right tabular-nums`}>{n(e.wastage_kg, 1)}</td>
             </tr>
           ))}
@@ -175,7 +175,7 @@ export function ShiftReportView({ date, onDateChange }) {
           <div key={key} className="flex items-center justify-between rounded-lg bg-sky-100 px-4 py-3 font-bold text-rose-700 dark:bg-sky-500/15 dark:text-sky-200">
             <span className="uppercase">{label}</span>
             <span className="tabular-nums text-text-primary">{n(data.day_and_night[key].net_kg, 1)} kg
-              <span className="ml-2 text-xs font-normal text-text-secondary">waste {n(data.day_and_night[key].wastage_percent, 1)}%</span></span>
+              <span className="ml-2 text-xs font-normal text-text-secondary">yield {n(data.day_and_night[key].yield_percent, 1)}% · waste {n(data.day_and_night[key].wastage_percent, 1)}%</span></span>
           </div>
         ))}
       </div>
@@ -205,6 +205,17 @@ function SummaryView() {
                 </div>
               ))}
             </div>
+            <div className="mb-4 grid gap-3 sm:grid-cols-3">
+              {[['Plant efficiency (yield)', data.totals.plant.yield_percent, 'Net rolls per kg of material extruded'],
+                ['Cutting efficiency (yield)', data.totals.cutting.yield_percent, 'Net finished goods per kg of rolls cut'],
+                ['Late entries', null, `${data.totals.late_entries} of ${data.totals.entries} keyed in more than 4 h after their shift`]].map(([label, pct, hint]) => (
+                <div key={label} className="rounded-lg border border-border-default px-3 py-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary">{label}</p>
+                  {pct !== null && <p className="text-lg font-bold tabular-nums">{n(pct, 1)}%</p>}
+                  <p className="text-xs text-text-secondary">{hint}</p>
+                </div>
+              ))}
+            </div>
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={data.days.map((d) => ({ day: d.business_date.slice(5), plant: d.plant.net_kg, cutting: d.cutting.net_kg }))}>
@@ -222,14 +233,14 @@ function SummaryView() {
         <div className="grid gap-5 xl:grid-cols-2">
           <Panel title="Machine-wise">
             <table className="min-w-full divide-y divide-border-default">
-              <thead><tr><th className={th}>Machine</th><th className={`${th} text-right`}>Gross</th><th className={`${th} text-right`}>Wastage</th><th className={`${th} text-right`}>Net</th><th className={`${th} text-right`}>Waste %</th></tr></thead>
+              <thead><tr><th className={th}>Machine</th><th className={`${th} text-right`}>Gross</th><th className={`${th} text-right`}>Wastage</th><th className={`${th} text-right`}>Net</th><th className={`${th} text-right`}>Waste %</th><th className={`${th} text-right`}>Yield %</th></tr></thead>
               <tbody className="divide-y divide-border-default">
                 {data.machines.map((m) => (
                   <tr key={m.machine_id}><td className={`${td} font-semibold`}>{m.machine_name}</td>
                     <td className={`${td} text-right tabular-nums`}>{n(m.gross_kg, 1)}</td><td className={`${td} text-right tabular-nums`}>{n(m.wastage_kg, 1)}</td>
-                    <td className={`${td} text-right tabular-nums font-semibold`}>{n(m.net_kg, 1)}</td><td className={`${td} text-right tabular-nums`}>{n(m.wastage_percent, 1)}</td></tr>
+                    <td className={`${td} text-right tabular-nums font-semibold`}>{n(m.net_kg, 1)}</td><td className={`${td} text-right tabular-nums`}>{n(m.wastage_percent, 1)}</td><td className={`${td} text-right tabular-nums font-semibold`}>{n(m.yield_percent, 1)}</td></tr>
                 ))}
-                {!data.machines.length && <tr><td className={`${td} text-text-secondary`} colSpan={5}>No production in this period</td></tr>}
+                {!data.machines.length && <tr><td className={`${td} text-text-secondary`} colSpan={6}>No production in this period</td></tr>}
               </tbody>
             </table>
           </Panel>

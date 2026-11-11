@@ -200,7 +200,7 @@ def shift_report_workbook(data: dict) -> bytes:
             for i, e in enumerate(entries):
                 r = 5 + i
                 size = e["output_code"] if section == "plant" else f"{e['input_code']} → {e['output_code']}"
-                for j, value in enumerate([_text(e["machine_name"]), _text(size), e["gross_kg"], e["wastage_kg"]]):
+                for j, value in enumerate([_text(e["machine_name"]), _text(size), e["material_kg"], e["wastage_kg"]]):
                     cell = ws.cell(row=r, column=c0 + j, value=value)
                     cell.border = BOX
                     if j >= 2:
@@ -255,19 +255,30 @@ def summary_workbook(data: dict) -> bytes:
     ws.title = "Daily"
     span = f"{_ddmmyyyy(data['date_from'])} to {_ddmmyyyy(data['date_to'])}"
     _title(ws, f"PRODUCTION SUMMARY — {span}", 11)
-    _table(ws, 3, ["DATE", "PLANT DAY NET", "PLANT NIGHT NET", "PLANT GROSS", "PLANT WASTAGE", "PLANT NET",
-                   "PLANT WASTE %", "CUTTING GROSS", "CUTTING WASTAGE", "CUTTING NET", "CUTTING WASTE %"],
-           [[_ddmmyyyy(d["business_date"]), d["plant_am"]["net_kg"], d["plant_pm"]["net_kg"], d["plant"]["gross_kg"],
-             d["plant"]["wastage_kg"], d["plant"]["net_kg"], d["plant"]["wastage_percent"], d["cutting"]["gross_kg"],
-             d["cutting"]["wastage_kg"], d["cutting"]["net_kg"], d["cutting"]["wastage_percent"]] for d in data["days"]])
+    t = data["totals"]
+    end = _table(ws, 3, ["DATE", "PLANT DAY NET", "PLANT NIGHT NET", "PLANT GROSS", "PLANT WASTAGE", "PLANT NET",
+                         "PLANT YIELD %", "CUTTING GROSS", "CUTTING WASTAGE", "CUTTING NET", "CUTTING YIELD %"],
+                 [[_ddmmyyyy(d["business_date"]), d["plant_am"]["net_kg"], d["plant_pm"]["net_kg"], d["plant"]["gross_kg"],
+                   d["plant"]["wastage_kg"], d["plant"]["net_kg"], d["plant"]["yield_percent"], d["cutting"]["gross_kg"],
+                   d["cutting"]["wastage_kg"], d["cutting"]["net_kg"], d["cutting"]["yield_percent"]] for d in data["days"]])
+    totals_row = ["TOTAL", None, None, t["plant"]["gross_kg"], t["plant"]["wastage_kg"], t["plant"]["net_kg"],
+                  t["plant"]["yield_percent"], t["cutting"]["gross_kg"], t["cutting"]["wastage_kg"],
+                  t["cutting"]["net_kg"], t["cutting"]["yield_percent"]]
+    for col, value in enumerate(totals_row, start=1):
+        cell = ws.cell(row=end + 1, column=col, value=value)
+        cell.border, cell.font = BOX, Font(bold=True)
+        if col > 1 and value is not None:
+            cell.number_format = NUM1
+    ws.cell(row=end + 3, column=1,
+            value=f"Entries: {t['entries']} · keyed in more than 4 h after their shift ended: {t['late_entries']}")
     _widths(ws, [13] + [15] * 10)
 
     ms = wb.create_sheet("Machines")
     _title(ms, f"MACHINE-WISE — {span}", 6)
-    _table(ms, 3, ["MACHINE", "SECTION", "GROSS", "WASTAGE", "NET", "WASTE %"],
+    _table(ms, 3, ["MACHINE", "SECTION", "GROSS", "WASTAGE", "NET", "WASTE %", "YIELD %"],
            [[m["machine_name"], "Plant" if m["kind"] == "EXTRUSION" else "Cutting", m["gross_kg"], m["wastage_kg"],
-             m["net_kg"], m["wastage_percent"]] for m in data["machines"]], num_from=2)
-    _widths(ms, [20, 12, 14, 14, 14, 10])
+             m["net_kg"], m["wastage_percent"], m["yield_percent"]] for m in data["machines"]], num_from=2)
+    _widths(ms, [20, 12, 14, 14, 14, 10, 10])
 
     us = wb.create_sheet("Material Usage")
     _title(us, f"RAW MATERIAL USED — {span}", 4)
